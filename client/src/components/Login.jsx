@@ -56,6 +56,26 @@ export default function Login({ onLogin }) {
             <Lock className="w-4 h-4" /> Se connecter
           </button>
         </div>
+
+        <div className="mt-5 pt-4 border-t border-slate-800">
+          <p className="text-[11px] text-slate-500 mb-2">Connexion rapide (mot de passe : 1234)</p>
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              ['directeur', 'Directeur'],
+              ['chef', 'Chef Atelier'],
+              ['be', 'Bureau Études'],
+              ['karim', 'Opérateur']
+            ].map(([u, label]) => (
+              <button
+                key={u}
+                onClick={() => submit(u, '1234')}
+                className="px-2.5 py-1.5 rounded-lg bg-[#090d16] border border-slate-800 text-xs text-slate-300 hover:border-sky-500 hover:text-white transition cursor-pointer"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
