@@ -1,0 +1,152 @@
+{
+  "users": [
+    {
+      "id": "u1",
+      "nom": "Directeur",
+      "username": "directeur",
+      "passwordHash": "d388b18a9aa6e6beba54684b7f1a3441:3f9fd6eacb7d823d04c665312c8799f75f37ad632d4ec25f4a56bc8c5b41682a1726965a86dbfe22b661ad8e4f9175964195a9276dfb1f3e343c975c4ba0c77d",
+      "role": "directeur"
+    },
+    {
+      "id": "u2",
+      "nom": "Bureau Études",
+      "username": "be",
+      "passwordHash": "addf40da5ac21b1dfa704f38586f9667:e49e62d3344fc638f9902a9a0dd134a3a586f25a1059b2dfdd98bb66255287e794d4f7f937fdcfa06ae2138078dea13c21af8f8c7fe24c54e941d141d5de2019",
+      "role": "be"
+    },
+    {
+      "id": "u3",
+      "nom": "Chef Atelier",
+      "username": "chef",
+      "passwordHash": "c1a8a1324a4d0106904a187d6613d078:62b31bfe9e3b9371180d0af8c681a21f06748a3422f66190fbd862f89d5d168afcb6d8293b29b30c5fb8b78a2f0a7f022359435548e318eeeba9eef5e5cc1982",
+      "role": "chef"
+    },
+    {
+      "id": "u4",
+      "nom": "Karim B.",
+      "username": "karim",
+      "passwordHash": "00c65e90ba4b2814b3b312a755ee256c:3be954b6ac7fe7a64e03aaa2992dd8fd5507dd6070201c80fd7485f3c2ded1dbb295d5caa408e84d64eff5240bdea51616733bb2fda57212cafaac71366e8428",
+      "role": "operateur"
+    },
+    {
+      "id": "u5",
+      "nom": "Yacine M.",
+      "username": "yacine",
+      "passwordHash": "24dbcd68ed5a32b358ec535c5fbd30e4:3d24e00883d640185fffdc32895c25d854ab53a946a6daf4bf289d13472394baea9ee95f135b01e048d0813392f636d4fcf181c907e8741dff197269c2196396",
+      "role": "operateur"
+    },
+    {
+      "id": "u6",
+      "nom": "Sofiane K.",
+      "username": "sofiane",
+      "passwordHash": "b4debebafdc8149ecacd4987c69af1ca:412e04270ef820e2fae3e37242659bf1dcb1bebcdee45be3dafa963a7af9ac929e2570e86eb00df9a3ad8f9e59ea2b3bd63899683e955e3d25393c9f8c49a7ae",
+      "role": "operateur"
+    }
+  ],
+  "machines": [
+    {
+      "id": "m1",
+      "nom": "Tour CNC 1",
+      "type": "Tournage CNC",
+      "actif": true
+    },
+    {
+      "id": "m2",
+      "nom": "Fraiseuse CNC 2",
+      "type": "Fraisage CNC",
+      "actif": true
+    },
+    {
+      "id": "m3",
+      "nom": "Tour Conventionnel",
+      "type": "Tournage Manuel",
+      "actif": true
+    }
+  ],
+  "pieces": [
+    {
+      "id": "OF-2026-101",
+      "nom": "Arbre de transmission Ø45",
+      "client": "SARL MécaSud",
+      "quantitePrevue": 10,
+      "quantiteRealisee": 6,
+      "delai": "2026-11-22",
+      "urgence": "Critique",
+      "statut": "En cours",
+      "machine": "Tour CNC 1",
+      "operateur": "Karim B.",
+      "matiere": "Acier 42CrMo4 Ø50",
+      "chuteDispo": true,
+      "achatFait": true,
+      "fournisseur": "AcierPro DZ",
+      "outils": "Plaquette CNMG 120408, Foret Ø12",
+      "be": {
+        "nomFichier": "ARB-101-REV2",
+        "programme": "O0101_ARB_CNC1.nc",
+        "dessin3d": "ARB-101.step"
+      },
+      "photoDebut": "ok",
+      "photoFin": null,
+      "tempsPrevuMin": 180,
+      "tempsReelMin": 115,
+      "planningValide": true,
+      "ordrePlanning": 1
+    },
+    {
+      "id": "OF-2026-102",
+      "nom": "Bride de fixation hydraulique",
+      "client": "HydroTech",
+      "quantitePrevue": 25,
+      "quantiteRealisee": 0,
+      "delai": "2026-11-23",
+      "urgence": "Urgent",
+      "statut": "À acheter",
+      "machine": "Fraiseuse CNC 2",
+      "operateur": "Yacine M.",
+      "matiere": "Alu 7075 Plat 80x20",
+      "chuteDispo": false,
+      "achatFait": false,
+      "fournisseur": "AluMag",
+      "outils": "Fraise Ø16 4 dents, Taraud M8",
+      "be": {
+        "nomFichier": "BRI-102-V1",
+        "programme": "O0102_BRIDE.nc",
+        "dessin3d": "BRI-102.step"
+      },
+      "photoDebut": null,
+      "photoFin": null,
+      "tempsPrevuMin": 240,
+      "tempsReelMin": 0,
+      "planningValide": true,
+      "ordrePlanning": 2
+    },
+    {
+      "id": "OF-2026-103",
+      "nom": "Bague de centrage",
+      "client": "Industrie Nord",
+      "quantitePrevue": 50,
+      "quantiteRealisee": 50,
+      "delai": "2026-11-21",
+      "urgence": "Normal",
+      "statut": "À clôturer",
+      "machine": "Tour Conventionnel",
+      "operateur": "Sofiane K.",
+      "matiere": "Bronze CuSn12 Ø35",
+      "chuteDispo": true,
+      "achatFait": true,
+      "fournisseur": "MétalPlus",
+      "outils": "Outil à aléser Ø20",
+      "be": {
+        "nomFichier": "BAG-103-FINAL",
+        "programme": "Manuel",
+        "dessin3d": "BAG-103.pdf"
+      },
+      "photoDebut": "ok",
+      "photoFin": "ok",
+      "tempsPrevuMin": 150,
+      "tempsReelMin": 135,
+      "planningValide": true,
+      "ordrePlanning": 3
+    }
+  ]
+}
