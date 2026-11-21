@@ -61,7 +61,8 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
 
   const activeMachines = state.machines.filter(m => m.actif);
   const operators = state.users.filter(u => u.role === 'operateur');
-  const { scheduled, alerts } = computeSchedule(draft, activeMachines);
+  const sortedDraft = [...draft].sort((a, b) => (a.ordrePlanning || 999) - (b.ordrePlanning || 999));
+  const { scheduled, alerts } = computeSchedule(sortedDraft, activeMachines);
 
   function updateField(id, field, val) {
     setDraft(prev => prev.map(p => p.id === id ? { ...p, [field]: val, planningValide: false } : p));
