@@ -1,5 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Save, Upload, Box, Download, CheckSquare, Sparkles } from 'lucide-react';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { Save, Upload, Box, Download, CheckSquare } from 'lucide-react';
 import { api } from '../api';
 import MaterialCalculator from './MaterialCalculator';
 
@@ -24,64 +27,148 @@ function generateBoxSTL(L, W, H) {
 }
 
 export default function BeView({ state, reload }) {
-  const [dims, setDims] = useState({ longueur: 100, largeur: 50, hauteur: 30, tolerance: '±0.05 mm', matiere: 'Acier 42CrMo4' });
+  const [dims, setDims] = useState({ longueur: 120, largeur: 60, hauteur: 40, tolerance: '±0.05 mm', matiere: '42CrMo4' });
   const [verified, setVerified] = useState(false);
-  const [stlReady, setStlReady] = useState(false);
-  const [promptMod, setPromptMod] = useState('');
-  const [angle, setAngle] = useState(0.6);
-  const canvasRef = useRef(null);
+  const [viewMode, setViewMode] = useState('shaded'); // shaded | wireframe | transparent
+  const [showEdges, setShowEdges] = useState(true);
+  const [bboxText, setBboxText] = useState('120 × 60 × 40 mm');
+  const mountRef = useRef(null);
+  const sceneRef = useRef(null);
+  const cameraRef = useRef(null);
+  const controlsRef = useRef(null);
+  const meshRef = useRef(null);
+  const edgesRef = useRef(null);
 
   useEffect(() => {
-    if (!stlReady || !canvasRef.current) return;
-    const ctx = canvasRef.current.getContext('2d');
-    const w = canvasRef.current.width;
-    const h = canvasRef.current.height;
-    ctx.clearRect(0, 0, w, h);
+    const el = mountRef.current;
+    if (!el) return;
 
-    const { longueur: L, largeur: W, hauteur: H } = dims;
-    const scale = Math.min(w, h) / (Math.max(L, W, H) * 2.2);
-    const pts = [
-      [-L/2,-W/2,-H/2], [L/2,-W/2,-H/2], [L/2,W/2,-H/2], [-L/2,W/2,-H/2],
-      [-L/2,-W/2,H/2], [L/2,-W/2,H/2], [L/2,W/2,H/2], [-L/2,W/2,H/2]
-    ].map(([x, y, z]) => {
-      const rx = x * Math.cos(angle) - z * Math.sin(angle);
-      const rz = x * Math.sin(angle) + z * Math.cos(angle);
-      const ry = y * Math.cos(0.4) - rz * Math.sin(0.4);
-      return [w / 2 + rx * scale, h / 2 + ry * scale];
-    });
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color('#0B0F14');
+    sceneRef.current = scene;
 
-    const edges = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
-    ctx.strokeStyle = '#22d3ee';
-    ctx.lineWidth = 2;
-    edges.forEach(([a, b]) => {
-      ctx.beginPath();
-      ctx.moveTo(pts[a][0], pts[a][1]);
-      ctx.lineTo(pts[b][0], pts[b][1]);
-      ctx.stroke();
-    });
-  }, [stlReady, dims, angle]);
+    const camera = new THREE.PerspectiveCamera(45, el.clientWidth / el.clientHeight, 0.1, 2000);
+    camera.position.set(160, 120, 160);
+    cameraRef.current = camera;
 
-  function handlePhotoAnalyze(e) {
-    if (!e.target.files[0]) return;
-    setVerified(false);
-    setStlReady(false);
-    alert('🤖 IA 2D : Plan analysé ! Vérifiez et ajustez les cotes ci-dessous avant de générer le STL.');
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(el.clientWidth, el.clientHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    el.innerHTML = '';
+    el.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controlsRef.current = controls;
+
+    // 3-point lighting
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const key = new THREE.DirectionalLight(0xffffff, 1.4);
+    key.position.set(150, 200, 150);
+    scene.add(key);
+    const fill = new THREE.DirectionalLight(0x22d3ee, 0.5);
+    fill.position.set(-150, 80, -120);
+    scene.add(fill);
+
+    // Grid floor
+    const grid = new THREE.GridHelper(300, 20, 0x1e2a38, 0x151e29);
+    grid.position.y = -40;
+    scene.add(grid);
+
+    // Default geometry
+    const geom = new THREE.BoxGeometry(dims.longueur, dims.hauteur, dims.largeur);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.8, roughness: 0.25 });
+    const mesh = new THREE.Mesh(geom, mat);
+    scene.add(mesh);
+    meshRef.current = mesh;
+
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom), new THREE.LineBasicMaterial({ color: 0x22d3ee }));
+    mesh.add(edges);
+    edgesRef.current = edges;
+
+    let animId;
+    const animate = () => {
+      animId = requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    const onResize = () => {
+      if (!el) return;
+      camera.aspect = el.clientWidth / el.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(el.clientWidth, el.clientHeight);
+    };
+    window.addEventListener('resize', onResize);
+
+    return () => {
+      cancelAnimationFrame(animId);
+      window.removeEventListener('resize', onResize);
+      renderer.dispose();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!meshRef.current) return;
+    const mat = meshRef.current.material;
+    mat.wireframe = viewMode === 'wireframe';
+    mat.transparent = viewMode === 'transparent';
+    mat.opacity = viewMode === 'transparent' ? 0.45 : 1;
+    mat.needsUpdate = true;
+    if (edgesRef.current) edgesRef.current.visible = showEdges;
+  }, [viewMode, showEdges]);
+
+  function updateBoxGeometry() {
+    if (!meshRef.current) return;
+    const geom = new THREE.BoxGeometry(dims.longueur, dims.hauteur, dims.largeur);
+    meshRef.current.geometry.dispose();
+    meshRef.current.geometry = geom;
+    if (edgesRef.current) {
+      edgesRef.current.geometry.dispose();
+      edgesRef.current.geometry = new THREE.EdgesGeometry(geom);
+    }
+    setBboxText(`${dims.longueur} × ${dims.largeur} × ${dims.hauteur} mm`);
   }
 
-  function applyPrompt() {
-    const m = promptMod.match(/(\d+)/g);
-    if (m && m.length >= 1) {
-      setDims(d => ({ ...d, longueur: parseInt(m[0], 10) || d.longueur }));
-    }
-    setPromptMod('');
+  function setCameraPreset(preset) {
+    if (!cameraRef.current || !controlsRef.current) return;
+    const c = cameraRef.current;
+    if (preset === 'iso') c.position.set(160, 120, 160);
+    if (preset === 'face') c.position.set(0, 0, 220);
+    if (preset === 'dessus') c.position.set(0, 220, 0.1);
+    if (preset === 'droite') c.position.set(220, 0, 0);
+    controlsRef.current.target.set(0, 0, 0);
+    controlsRef.current.update();
+  }
+
+  function handleSTLUpload(e) {
+    const file = e.target.files[0];
+    if (!file || !meshRef.current) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const loader = new STLLoader();
+      const geom = loader.parse(ev.target.result);
+      geom.center();
+      geom.computeBoundingBox();
+      const size = new THREE.Vector3();
+      geom.boundingBox.getSize(size);
+      setBboxText(`${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)} mm`);
+      meshRef.current.geometry.dispose();
+      meshRef.current.geometry = geom;
+      if (edgesRef.current) {
+        edgesRef.current.geometry.dispose();
+        edgesRef.current.geometry = new THREE.EdgesGeometry(geom);
+      }
+    };
+    reader.readAsArrayBuffer(file);
   }
 
   function downloadSTL() {
-    if (!verified) return alert('⚠️ Veuillez cocher "Cotes vérifiées par le BE" avant le téléchargement !');
+    if (!verified) return alert('Veuillez cocher "Cotes vérifiées par le BE" avant le téléchargement.');
     const stl = generateBoxSTL(dims.longueur, dims.largeur, dims.hauteur);
-    const blob = new Blob([stl], { type: 'application/octet-stream' });
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
+    a.href = URL.createObjectURL(new Blob([stl], { type: 'application/octet-stream' }));
     a.download = `piece_${dims.longueur}x${dims.largeur}x${dims.hauteur}.stl`;
     a.click();
   }
@@ -94,80 +181,90 @@ export default function BeView({ state, reload }) {
       programme: f.programme.value,
       dessin3d: f.dessin3d.value
     });
-    alert('✅ Dossier BE enregistré');
     reload();
   }
 
   return (
     <div className="space-y-5">
-      <MaterialCalculator />
-      {/* MODULE IA 2D -> STL 3D */}
-      <div className="bg-[#11192b] border border-cyan-500/30 rounded-2xl p-4 space-y-4">
-        <div className="flex flex-wrap justify-between items-center gap-2">
-          <h3 className="font-bold text-base flex items-center gap-2 text-cyan-300">
-            <Box className="w-5 h-5" /> Studio IA 2D → Générateur & Visionneuse STL 3D
-          </h3>
-          <label className="px-3 py-2 rounded-lg bg-purple-600/80 text-xs font-semibold flex items-center gap-2 cursor-pointer">
-            <Upload className="w-4 h-4" /> Envoyer Photo du Plan 2D
-            <input type="file" accept="image/*" className="hidden" onChange={handlePhotoAnalyze} />
-          </label>
-        </div>
-
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
-          <div><label className="text-slate-400">Longueur (mm)</label><input type="number" value={dims.longueur} onChange={e => setDims({ ...dims, longueur: +e.target.value })} className="w-full p-2 rounded bg-[#060a14] border border-slate-700" /></div>
-          <div><label className="text-slate-400">Largeur (mm)</label><input type="number" value={dims.largeur} onChange={e => setDims({ ...dims, largeur: +e.target.value })} className="w-full p-2 rounded bg-[#060a14] border border-slate-700" /></div>
-          <div><label className="text-slate-400">Hauteur (mm)</label><input type="number" value={dims.hauteur} onChange={e => setDims({ ...dims, hauteur: +e.target.value })} className="w-full p-2 rounded bg-[#060a14] border border-slate-700" /></div>
-          <div><label className="text-slate-400">Tolérance</label><input value={dims.tolerance} onChange={e => setDims({ ...dims, tolerance: e.target.value })} className="w-full p-2 rounded bg-[#060a14] border border-slate-700" /></div>
-          <div><label className="text-slate-400">Matière</label><input value={dims.matiere} onChange={e => setDims({ ...dims, matiere: e.target.value })} className="w-full p-2 rounded bg-[#060a14] border border-slate-700" /></div>
-        </div>
-
-        <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
-          <label className="flex items-center gap-2 cursor-pointer text-emerald-300 font-semibold">
-            <input type="checkbox" checked={verified} onChange={e => setVerified(e.target.checked)} />
-            <CheckSquare className="w-4 h-4" /> Cotes vérifiées par le BE (obligatoire)
-          </label>
-          <div className="flex gap-2">
-            <button onClick={() => setStlReady(true)} className="px-3 py-2 rounded-lg bg-cyan-600 font-semibold cursor-pointer">
-              ⚡ Générer & Voir 3D
-            </button>
-            <button onClick={downloadSTL} className={`px-3 py-2 rounded-lg font-semibold flex items-center gap-1 cursor-pointer ${verified ? 'bg-emerald-600' : 'bg-slate-700 opacity-60'}`}>
-              <Download className="w-4 h-4" /> Télécharger .STL
-            </button>
-          </div>
-        </div>
-
-        {stlReady && (
-          <div className="bg-[#060a14] border border-cyan-500/30 rounded-xl p-3 space-y-2">
-            <div className="flex justify-between items-center text-xs">
-              <span className="text-cyan-400 font-bold">Aperçu 3D ({dims.longueur} × {dims.largeur} × {dims.hauteur} mm)</span>
-              <button onClick={() => setAngle(a => a + 0.4)} className="px-2 py-1 rounded border border-slate-700 cursor-pointer">🔄 Tourner 3D</button>
+      {/* 3D VIEWER + PROPERTIES */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        <div className="lg:col-span-8 cyber-card p-3 flex flex-col">
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#1E2A38] text-xs">
+            <div className="flex items-center gap-2 font-semibold text-white">
+              <Box className="w-4 h-4 text-[#22D3EE]" /> Visualiseur 3D (Three.js)
             </div>
-            <canvas ref={canvasRef} width={500} height={220} className="w-full max-w-lg mx-auto block" />
-            <div className="flex gap-2 text-xs">
-              <input value={promptMod} onChange={e => setPromptMod(e.target.value)} placeholder="Prompt modification (ex: longueur 120)" className="flex-1 p-2 rounded bg-[#11192b] border border-slate-700" />
-              <button onClick={applyPrompt} className="px-3 py-2 rounded-lg bg-purple-600 font-semibold flex items-center gap-1 cursor-pointer">
-                <Sparkles className="w-3.5 h-3.5" /> Modifier
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="font-mono-num text-[11px] text-[#22D3EE] px-2 py-0.5 rounded bg-[#0B0F14] border border-[#1E2A38]">{bboxText}</span>
+              <label className="px-2.5 py-1 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] cursor-pointer flex items-center gap-1">
+                <Upload className="w-3.5 h-3.5" /> Importer STL
+                <input type="file" accept=".stl" className="hidden" onChange={handleSTLUpload} />
+              </label>
+            </div>
+          </div>
+
+          <div ref={mountRef} className="w-full h-[300px] sm:h-[380px] rounded-[6px] overflow-hidden my-2" />
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#1E2A38] text-[11px]">
+            <div className="flex flex-wrap gap-1">
+              {[['iso', 'Iso'], ['face', 'Face'], ['dessus', 'Dessus'], ['droite', 'Droite']].map(([id, lbl]) => (
+                <button key={id} onClick={() => setCameraPreset(id)} className="px-2.5 py-1 rounded bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-slate-300 cursor-pointer">
+                  {lbl}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {[['shaded', 'Ombré'], ['wireframe', 'Fil de fer'], ['transparent', 'Transparent']].map(([id, lbl]) => (
+                <button key={id} onClick={() => setViewMode(id)} className={`px-2.5 py-1 rounded border cursor-pointer ${viewMode === id ? 'bg-[#22D3EE]/15 border-[#22D3EE] text-[#22D3EE]' : 'bg-[#0B0F14] border-[#1E2A38] text-slate-400'}`}>
+                  {lbl}
+                </button>
+              ))}
+              <button onClick={() => setShowEdges(!showEdges)} className={`px-2.5 py-1 rounded border cursor-pointer ${showEdges ? 'bg-[#22D3EE]/15 border-[#22D3EE] text-[#22D3EE]' : 'bg-[#0B0F14] border-[#1E2A38] text-slate-400'}`}>
+                Arêtes
               </button>
             </div>
           </div>
-        )}
+        </div>
+
+        {/* RIGHT PANEL: DIMENSIONS & VALIDATION */}
+        <div className="lg:col-span-4 space-y-4">
+          <div className="cyber-card p-4 space-y-3 text-xs">
+            <div className="font-semibold text-sm text-white">Cotes & Validation BE</div>
+            <div className="grid grid-cols-3 gap-2">
+              <div><label className="text-[10px] text-slate-400">L (mm)</label><input type="number" value={dims.longueur} onChange={e => setDims({ ...dims, longueur: +e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" /></div>
+              <div><label className="text-[10px] text-slate-400">l (mm)</label><input type="number" value={dims.largeur} onChange={e => setDims({ ...dims, largeur: +e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" /></div>
+              <div><label className="text-[10px] text-slate-400">H (mm)</label><input type="number" value={dims.hauteur} onChange={e => setDims({ ...dims, hauteur: +e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" /></div>
+            </div>
+            <button onClick={updateBoxGeometry} className="w-full py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] font-medium cursor-pointer">
+              Mettre à jour le modèle 3D
+            </button>
+            <label className="flex items-center gap-2 cursor-pointer text-slate-300 pt-1">
+              <input type="checkbox" checked={verified} onChange={e => setVerified(e.target.checked)} className="accent-[#22D3EE]" />
+              <CheckSquare className="w-3.5 h-3.5 text-[#22D3EE]" /> Cotes vérifiées par le BE (obligatoire)
+            </label>
+            <button onClick={downloadSTL} className={`w-full py-2 rounded-[6px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer ${verified ? 'bg-[#22D3EE] text-[#0B0F14]' : 'bg-slate-800 text-slate-500'}`}>
+              <Download className="w-3.5 h-3.5" /> Télécharger .STL
+            </button>
+          </div>
+
+          <MaterialCalculator />
+        </div>
       </div>
 
       {/* DOSSIERS PIECES BE */}
-      <div className="bg-[#11192b] border border-cyan-500/20 rounded-2xl p-4 space-y-4">
-        <h3 className="font-bold text-base">📐 Dossiers Pièces — Plans, Programmes CNC & Dessins 3D</h3>
+      <div className="cyber-card p-4 space-y-3">
+        <div className="font-semibold text-sm text-white">Dossiers Pièces — Plans, Programmes CNC & Dessins 3D</div>
         {state.pieces.map(p => (
-          <form key={p.id} onSubmit={e => saveBE(p.id, e)} className="bg-[#19243d] border border-slate-700 rounded-xl p-3 text-xs space-y-2">
-            <div className="flex justify-between font-bold text-sm">
-              <span>{p.id} — {p.nom}</span>
-              <span className="text-cyan-400">{p.urgence}</span>
+          <form key={p.id} onSubmit={e => saveBE(p.id, e)} className="bg-[#0B0F14] border border-[#1E2A38] rounded-[6px] p-3 text-xs space-y-2">
+            <div className="flex justify-between font-semibold">
+              <span className="font-mono-num text-white">{p.id} · <span className="font-sans">{p.nom}</span></span>
+              <span className="text-[#22D3EE]">{p.urgence}</span>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-              <input name="nomFichier" defaultValue={p.be.nomFichier} placeholder="Nom fichier" className="p-2 rounded bg-[#060a14] border border-slate-700" />
-              <input name="programme" defaultValue={p.be.programme} placeholder="Programme CNC" className="p-2 rounded bg-[#060a14] border border-slate-700" />
-              <input name="dessin3d" defaultValue={p.be.dessin3d} placeholder="Dessin 3D / Plan" className="p-2 rounded bg-[#060a14] border border-slate-700" />
-              <button type="submit" className="px-3 py-2 rounded-lg bg-blue-600 font-semibold flex items-center justify-center gap-1 cursor-pointer">
-                <Save className="w-4 h-4" /> Enregistrer
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2">
+              <input name="nomFichier" defaultValue={p.be.nomFichier} placeholder="Nom fichier" className="p-2 rounded-[6px] bg-[#111821] border border-[#1E2A38]" />
+              <input name="programme" defaultValue={p.be.programme} placeholder="Programme CNC" className="p-2 rounded-[6px] bg-[#111821] border border-[#1E2A38] font-mono-num" />
+              <input name="dessin3d" defaultValue={p.be.dessin3d} placeholder="Dessin 3D / STEP" className="p-2 rounded-[6px] bg-[#111821] border border-[#1E2A38] font-mono-num" />
+              <button type="submit" className="px-3 py-2 rounded-[6px] bg-[#22D3EE] text-[#0B0F14] font-semibold flex items-center justify-center gap-1.5 cursor-pointer">
+                <Save className="w-3.5 h-3.5" /> Enregistrer
               </button>
             </div>
           </form>
