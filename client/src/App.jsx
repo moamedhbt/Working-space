@@ -161,6 +161,13 @@ export default function App() {
             <span className="px-2 py-0.5 rounded-[6px] bg-[#22D3EE]/10 border border-[#22D3EE]/30 text-[#22D3EE] text-xs font-medium">
               {user.nom}
             </span>
+            <button
+              onClick={() => { localStorage.removeItem('atelier_token'); setUser(null); }}
+              className="md:hidden p-1.5 rounded-[6px] border border-[#1E2A38] text-slate-400 hover:text-white"
+              title="Déconnexion"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
             <span className="hidden sm:inline text-xs font-mono-num text-slate-400">{clock}</span>
           </div>
         </header>
@@ -178,15 +185,15 @@ export default function App() {
       </div>
 
       {/* MOBILE BOTTOM BAR */}
-      <nav className="md:hidden fixed bottom-0 inset-x-0 bg-[#0B0F14] border-t border-[#1E2A38] flex justify-around py-1.5 z-50">
-        {allItems.slice(0, 5).map(([id, label, Icon]) => (
+      <nav className="md:hidden fixed bottom-0 inset-x-0 bg-[#0B0F14] border-t border-[#1E2A38] flex overflow-x-auto px-2 py-1.5 gap-1 z-50">
+        {allItems.map(([id, label, Icon]) => (
           <button
             key={id}
             onClick={() => setTab(id)}
-            className={`flex flex-col items-center gap-0.5 px-2 py-1 text-[10px] ${tab === id ? 'text-[#22D3EE]' : 'text-slate-400'}`}
+            className={`flex flex-col items-center shrink-0 gap-0.5 px-3 py-1 text-[10px] ${tab === id ? 'text-[#22D3EE]' : 'text-slate-400'}`}
           >
             <Icon className="w-4 h-4" />
-            <span className="truncate max-w-[64px]">{label.split(' ')[0]}</span>
+            <span className="truncate max-w-[68px]">{label.split(' ')[0]}</span>
           </button>
         ))}
       </nav>
