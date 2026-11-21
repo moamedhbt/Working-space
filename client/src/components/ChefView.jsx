@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Bot, CheckCircle, Cpu, Plus, AlertTriangle, ChevronDown, ChevronUp, Power, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import MaterialCalculator from './MaterialCalculator';
+import ChefPlanningTab from './ChefPlanningTab';
 
 export default function ChefView({ state, reload }) {
   const [tab, setTab] = useState('dashboard'); // dashboard | planning | ordres | machines | matiere
@@ -166,55 +167,8 @@ export default function ChefView({ state, reload }) {
       </div>
 
       {/* TAB 2: PLANNING MODIFIABLE */}
-      <div className={tab === 'planning' ? 'block space-y-4' : 'hidden'}>
-        <div className="cyber-card p-4 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-white">Planning modifiable (validation requise pour la TV)</h3>
-            <button onClick={validatePlanning} className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] text-[#0B0F14] text-xs font-semibold flex items-center gap-1.5 cursor-pointer">
-              <CheckCircle className="w-3.5 h-3.5" /> Valider et envoyer à la TV
-            </button>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs min-w-[760px]">
-              <thead className="text-[10px] text-slate-500 uppercase border-b border-[#1E2A38]">
-                <tr><th className="py-2">Ordre</th><th className="py-2">OF</th><th className="py-2">Machine</th><th className="py-2">Opérateur</th><th className="py-2">Priorité</th><th className="py-2">Délai</th><th className="py-2">TV</th></tr>
-              </thead>
-              <tbody className="divide-y divide-[#1E2A38]">
-                {sortedPieces.map(p => (
-                  <tr key={p.id}>
-                    <td className="py-2 pr-2">
-                      <input type="number" defaultValue={p.ordrePlanning} onBlur={e => updatePlanningRow(p.id, 'ordrePlanning', e.target.value)} className="w-14 p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num" />
-                    </td>
-                    <td className="py-2 pr-2 font-mono-num text-white">{p.id}</td>
-                    <td className="py-2 pr-2">
-                      <select defaultValue={p.machine} onChange={e => updatePlanningRow(p.id, 'machine', e.target.value)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38]">
-                        {activeMachines.map(m => <option key={m.id} value={m.nom}>{m.nom}</option>)}
-                      </select>
-                    </td>
-                    <td className="py-2 pr-2">
-                      <select defaultValue={p.operateur} onChange={e => updatePlanningRow(p.id, 'operateur', e.target.value)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38]">
-                        {operators.map(o => <option key={o.id} value={o.nom}>{o.nom}</option>)}
-                      </select>
-                    </td>
-                    <td className="py-2 pr-2">
-                      <select defaultValue={p.urgence} onChange={e => updatePlanningRow(p.id, 'urgence', e.target.value)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38]">
-                        <option>Critique</option><option>Urgent</option><option>Normal</option>
-                      </select>
-                    </td>
-                    <td className="py-2 pr-2">
-                      <input type="date" defaultValue={p.delai} onBlur={e => updatePlanningRow(p.id, 'delai', e.target.value)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num" />
-                    </td>
-                    <td className="py-2">
-                      <span className={`px-2 py-0.5 rounded-[4px] border text-[10px] ${p.planningValide ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border-amber-500/30'}`}>
-                        {p.planningValide ? 'Publié' : 'À valider'}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+      <div className={tab === 'planning' ? 'block' : 'hidden'}>
+        <ChefPlanningTab state={state} reload={reload} showToast={showToast} />
       </div>
 
       {/* TAB 3: ORDRES */}
