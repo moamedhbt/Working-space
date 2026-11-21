@@ -57,11 +57,26 @@ router.post('/pieces/:id/:action', auth, (req, res) => {
     runSql('UPDATE pieces SET beNomFichier = ?, beProgramme = ?, beDessin3d = ? WHERE id = ?', [b.nomFichier || '', b.programme || '', b.dessin3d || '', id]);
   } else if (action === 'chef') {
     if (!['directeur', 'chef'].includes(req.user.role)) return res.status(403).json({ error: 'Accès refusé' });
-    const chute = b.chuteDispo ? 1 : 0;
+    const chute = b.chuteDispo !== undefined ? (b.chuteDispo ? 1 : 0) : p.chuteDispo;
     let statut = p.statut;
     if (!chute && !p.achatFait) statut = 'À acheter';
     else if (p.statut === 'À planifier' || p.statut === 'À acheter') statut = 'Prêt atelier';
-    runSql('UPDATE pieces SET machine = ?, operateur = ?, matiere = ?, outils = ?, chuteDispo = ?, statut = ? WHERE id = ?', [b.machine || p.machine, b.operateur || p.operateur, b.matiere || p.matiere, b.outils || p.outils, chute, statut, id]);
+    runSql(
+      'UPDATE pieces SET machine = ?, operateur = ?, matiere = ?, outils = ?, chuteDispo = ?, statut = ?, urgence = ?, delai = ?, ordrePlanning = ?, planningValide = 0 WHERE id = ?',
+      [
+        b.machine || p.machine,
+        b.operateur || p.operateur,
+        b.matiere !== undefined ? b.matiere : p.matiere,
+        b.outils !== undefined ? b.outils : p.outils,
+        chute,
+        statut,
+        b.urgence || p.urgence,
+        b.delai || p.delai,
+        b.ordrePlanning !== undefined ? parseInt(b.ordrePlanning, 10) : p.ordrePlanning,
+        id
+      ]
+    );
+    logAudit(req.user, 'PLANIFICATION MODIFIÉE', `${id} modifié (validation TV requise)`);
   } else if (action === 'op-start') {
     runSql("UPDATE pieces SET statut = 'En cours', photoDebut = ?, startedAt = ? WHERE id = ?", [b.photoUrl || 'ok', Date.now(), id]);
     logAudit(req.user, 'DÉMARRAGE', `${id} démarré`);
