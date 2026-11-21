@@ -141,10 +141,8 @@ export default function App() {
       <div className="flex-1 min-w-0 flex flex-col pb-16 md:pb-0">
         {/* SLIM HEADER */}
         <header className="h-12 bg-[#0B0F14]/90 backdrop-blur border-b border-[#1E2A38] px-4 flex items-center justify-between gap-3 sticky top-0 z-40">
-          <div className="text-xs text-slate-400 flex items-center gap-1.5 truncate">
-            <span className="capitalize">{user.role}</span>
-            <span>/</span>
-            <span className="text-slate-100 font-medium">{activeLabel}</span>
+          <div className="text-xs text-slate-100 font-medium truncate">
+            {activeLabel}
           </div>
 
           <div className="flex items-center gap-3">
@@ -185,17 +183,20 @@ export default function App() {
       </div>
 
       {/* MOBILE BOTTOM BAR */}
-      <nav className="md:hidden fixed bottom-0 inset-x-0 bg-[#0B0F14] border-t border-[#1E2A38] flex overflow-x-auto px-2 py-1.5 gap-1 z-50">
-        {allItems.map(([id, label, Icon]) => (
-          <button
-            key={id}
-            onClick={() => setTab(id)}
-            className={`flex flex-col items-center shrink-0 gap-0.5 px-3 py-1 text-[10px] ${tab === id ? 'text-[#22D3EE]' : 'text-slate-400'}`}
-          >
-            <Icon className="w-4 h-4" />
-            <span className="truncate max-w-[68px]">{label.split(' ')[0]}</span>
-          </button>
-        ))}
+      <nav className="md:hidden fixed bottom-0 inset-x-0 bg-[#0B0F14] border-t border-[#1E2A38] flex overflow-x-auto px-1 py-1.5 gap-0.5 z-50">
+        {allItems.map(([id, label, Icon]) => {
+          const short = id === 'tv' ? 'TV' : id === 'admin' ? 'Admin' : label.split(' ')[0];
+          return (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              className={`flex flex-col items-center shrink-0 gap-0.5 px-2.5 py-1 text-[10px] ${tab === id ? 'text-[#22D3EE]' : 'text-slate-400'}`}
+            >
+              <Icon className="w-4 h-4" />
+              <span className="whitespace-nowrap">{short}</span>
+            </button>
+          );
+        })}
       </nav>
     </div>
   );

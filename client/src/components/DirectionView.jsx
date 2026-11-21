@@ -183,8 +183,8 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
           </div>
 
           {/* GANTT + AI SYNTHESIS */}
-          <div className="grid lg:grid-cols-3 gap-4">
-            <div className="lg:col-span-2 cyber-card p-4">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="lg:col-span-2 min-w-0 cyber-card p-4 overflow-hidden">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-sm font-semibold text-white">Planning par machine</h2>
                 <span className="flex items-center gap-1.5 text-[10px] font-mono-num text-emerald-400">
@@ -221,7 +221,7 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
               </div>
             </div>
 
-            <div className="cyber-card cyber-corners p-4 flex flex-col justify-between space-y-3">
+            <div className="min-w-0 cyber-card cyber-corners p-4 flex flex-col justify-between space-y-3">
               <div className="space-y-2.5">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-semibold text-white flex items-center gap-2">
@@ -303,7 +303,19 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
               <button onClick={validateAll} className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] text-[#0B0F14] font-semibold text-xs flex items-center gap-1.5 cursor-pointer"><CheckCircle className="w-3.5 h-3.5" /> Valider TV</button>
             </div>
           </div>
-          <div className="overflow-x-auto">
+          <div className="md:hidden space-y-2.5">
+            {filteredPieces.map((p, i) => (
+              <div key={p.id} className="bg-[#0B0F14] border border-[#1E2A38] rounded-[6px] p-3 text-xs space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono-num font-semibold text-white">#{p.ordrePlanning || i + 1} · {p.id}</span>
+                  <span className={`px-2 py-0.5 rounded-[4px] border text-[11px] whitespace-nowrap ${statusBadge(p.statut, p.urgence)}`}>{p.statut}</span>
+                </div>
+                <div className="text-slate-200 font-medium">{p.nom}</div>
+                <div className="text-slate-400">{p.machine} · {p.operateur} · {p.delai}</div>
+              </div>
+            ))}
+          </div>
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-left text-xs min-w-[700px]">
               <thead className="text-[10px] text-slate-500 uppercase border-b border-[#1E2A38]">
                 <tr><th className="py-2">Ordre</th><th className="py-2">OF</th><th className="py-2">Pièce</th><th className="py-2">Machine</th><th className="py-2">Opérateur</th><th className="py-2">Délai</th><th className="py-2">Statut</th></tr>
@@ -357,9 +369,9 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
         <div className="space-y-3">
           {filteredPieces.map(p => (
             <div key={p.id} className="cyber-card p-4 text-xs space-y-2">
-              <div className="flex justify-between font-semibold text-sm">
-                <span className="font-mono-num">{p.id} — {p.nom}</span>
-                <span className="text-[#22D3EE]">{p.statut}</span>
+              <div className="flex flex-wrap items-center justify-between gap-2 font-semibold text-sm">
+                <span className="font-mono-num">{p.id} — <span className="font-sans">{p.nom}</span></span>
+                <span className={`px-2 py-0.5 rounded-[4px] border text-[11px] whitespace-nowrap ${statusBadge(p.statut, p.urgence)}`}>{p.statut}</span>
               </div>
               <div className="text-slate-400">BE: {p.be.nomFichier || '—'} | Prog: {p.be.programme || '—'} | 3D: {p.be.dessin3d || '—'}</div>
               <div className="flex flex-wrap gap-2 pt-1">
