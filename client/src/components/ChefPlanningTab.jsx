@@ -30,8 +30,8 @@ function computeSchedule(pieces, machines) {
     }
     return {
       ...p,
-      debutStr: formatHour(start),
-      finStr: formatHour(end),
+      debutStr: p.debutStr || formatHour(start),
+      finStr: p.finStr || formatHour(end),
       ecartMin: (p.tempsReelMin || 0) - dur
     };
   });
@@ -275,8 +275,8 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
                     <option>Critique</option><option>Urgent</option><option>Normal</option>
                   </select>
                 </td>
-                <td className="py-2 pr-2 font-mono-num text-slate-300">{p.debutStr}</td>
-                <td className="py-2 pr-2 font-mono-num text-slate-300">{p.finStr}</td>
+                <td className="py-2 pr-2"><input type="time" value={p.debutStr} onChange={e => updateField(p.id, 'debutStr', e.target.value)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-slate-200" /></td>
+                <td className="py-2 pr-2"><input type="time" value={p.finStr} onChange={e => updateField(p.id, 'finStr', e.target.value)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-slate-200" /></td>
                 <td className="py-2 pr-2 font-mono-num text-slate-400">{p.tempsReelMin}/{p.tempsPrevuMin}m</td>
                 <td className="py-2 pr-2 font-mono-num text-slate-300">{p.quantiteRealisee}/{p.quantitePrevue}</td>
                 <td className="py-2 pr-2">{p.chuteDispo || p.achatFait ? <span className="text-emerald-400">Dispo</span> : <span className="text-amber-400">À acheter</span>}</td>
