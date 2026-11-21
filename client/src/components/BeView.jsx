@@ -32,6 +32,9 @@ export default function BeView({ state, reload }) {
   const [viewMode, setViewMode] = useState('shaded'); // shaded | wireframe | transparent
   const [showEdges, setShowEdges] = useState(true);
   const [bboxText, setBboxText] = useState('120 × 60 × 40 mm');
+  const [parts, setParts] = useState([]);
+  const [explode, setExplode] = useState(0);
+  const [loading3d, setLoading3d] = useState(false);
   const mountRef = useRef(null);
   const sceneRef = useRef(null);
   const cameraRef = useRef(null);
@@ -142,26 +145,59 @@ export default function BeView({ state, reload }) {
     controlsRef.current.update();
   }
 
-  function handleSTLUpload(e) {
+  async function handleFileUpload(e) {
     const file = e.target.files[0];
-    if (!file || !meshRef.current) return;
-    const reader = new FileReader();
-    reader.onload = ev => {
-      const loader = new STLLoader();
-      const geom = loader.parse(ev.target.result);
-      geom.center();
-      geom.computeBoundingBox();
-      const size = new THREE.Vector3();
-      geom.boundingBox.getSize(size);
-      setBboxText(`${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)} mm`);
-      meshRef.current.geometry.dispose();
-      meshRef.current.geometry = geom;
-      if (edgesRef.current) {
-        edgesRef.current.geometry.dispose();
-        edgesRef.current.geometry = new THREE.EdgesGeometry(geom);
+    if (!file || !sceneRef.current) return;
+    const ext = file.name.split('.').pop().toLowerCase();
+
+    if (ext === 'stl') {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        const loader = new STLLoader();
+        const geom = loader.parse(ev.target.result);
+        geom.center();
+        geom.computeBoundingBox();
+        const size = new THREE.Vector3();
+        geom.boundingBox.getSize(size);
+        setBboxText(`${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)} mm`);
+        meshRef.current.geometry.dispose();
+        meshRef.current.geometry = geom;
+        if (edgesRef.current) {
+          edgesRef.current.geometry.dispose();
+          edgesRef.current.geometry = new THREE.EdgesGeometry(geom);
+        }
+        setParts([{ id: 0, name: file.name, visible: true, color: '#94a3b8', opacity: 1 }]);
+      };
+      reader.readAsArrayBuffer(file);
+    } else if (ext === 'step' || ext === 'stp') {
+      setLoading3d(true);
+      try {
+        if (!window.occtimportjs) {
+          await new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = 'https://cdn.jsdelivr.net/npm/occt-import-js@0.0.22/dist/occt-import-js.js';
+            s.onload = resolve;
+            s.onerror = reject;
+            document.head.appendChild(s);
+          });
+        }
+        const occt = await window.occtimportjs();
+        const buf = new Uint8Array(await file.arrayBuffer());
+        const res = occt.ReadStepFile(buf, null);
+        const loadedParts = (res.meshes || []).map((m, idx) => ({
+          id: idx,
+          name: m.name || `Pièce ${idx + 1}`,
+          visible: true,
+          color: '#94a3b8',
+          opacity: 1
+        }));
+        setParts(loadedParts.length ? loadedParts : [{ id: 0, name: file.name, visible: true, color: '#94a3b8', opacity: 1 }]);
+      } catch (err) {
+        alert('Erreur lecture STEP : ' + err.message);
+      } finally {
+        setLoading3d(false);
       }
-    };
-    reader.readAsArrayBuffer(file);
+    }
   }
 
   function downloadSTL() {
@@ -196,8 +232,8 @@ export default function BeView({ state, reload }) {
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="font-mono-num text-[11px] text-[#22D3EE] px-2 py-0.5 rounded bg-[#0B0F14] border border-[#1E2A38]">{bboxText}</span>
               <label className="px-2.5 py-1 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] cursor-pointer flex items-center gap-1">
-                <Upload className="w-3.5 h-3.5" /> Importer STL
-                <input type="file" accept=".stl" className="hidden" onChange={handleSTLUpload} />
+                <Upload className="w-3.5 h-3.5" /> {loading3d ? 'Chargement...' : 'Importer STL / STEP'}
+                <input type="file" accept=".stl,.step,.stp" className="hidden" onChange={handleFileUpload} />
               </label>
             </div>
           </div>
