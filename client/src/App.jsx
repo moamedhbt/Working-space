@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { LogOut, Cpu } from 'lucide-react';
+import { LogOut, Cpu, LayoutDashboard, Wrench, Compass, Smartphone, Tv } from 'lucide-react';
 import { api } from './api';
 import Login from './components/Login';
 import DirectionView from './components/DirectionView';
@@ -10,7 +10,7 @@ import TvView from './components/TvView';
 
 export default function App() {
   const [user, setUser] = useState(null);
-  const [state, setState] = useState({ users: [], machines: [], pieces: [] });
+  const [state, setState] = useState({ users: [], machines: [], pieces: [], auditLogs: [] });
   const [tab, setTab] = useState('');
 
   async function reload() {
@@ -38,45 +38,53 @@ export default function App() {
 
   const tabs = [];
   if (user.role === 'directeur') {
-    tabs.push(['direction', '👔 Direction & Planning'], ['chef', '🛠️ Chef Atelier'], ['be', '📐 BE'], ['tv', '📺 TV']);
+    tabs.push(
+      ['direction', 'Direction & Planning', LayoutDashboard],
+      ['chef', 'Chef Atelier', Wrench],
+      ['be', 'Bureau d\'Études', Compass],
+      ['tv', 'Écran TV', Tv]
+    );
   } else if (user.role === 'chef') {
-    tabs.push(['chef', '🛠️ Chef Atelier'], ['tv', '📺 TV']);
+    tabs.push(['chef', 'Chef Atelier', Wrench], ['tv', 'Écran TV', Tv]);
   } else if (user.role === 'be') {
-    tabs.push(['be', '📐 Bureau Études']);
+    tabs.push(['be', 'Bureau d\'Études', Compass]);
   } else {
-    tabs.push(['operateur', '📱 Mon Travail'], ['tv', '📺 TV']);
+    tabs.push(['operateur', 'Poste Opérateur', Smartphone], ['tv', 'Écran TV', Tv]);
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_right,#0f172a,#060a14_65%)]">
-      <header className="sticky top-0 z-50 bg-[#060a14]/90 backdrop-blur border-b border-cyan-500/20 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2 font-bold">
-          <Cpu className="w-5 h-5 text-cyan-400 animate-pulse" />
-          <span>Atelier Manager Pro</span>
-          <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-xs">{user.nom}</span>
+    <div className="min-h-screen bg-[#090d16] text-slate-100">
+      <header className="sticky top-0 z-50 bg-[#090d16]/95 backdrop-blur border-b border-slate-800 px-5 py-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <Cpu className="w-5 h-5 text-sky-400" />
+          <span className="font-semibold tracking-tight text-sm">ATELIER MANAGER</span>
+          <span className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-sky-400 text-xs font-medium">{user.nom}</span>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {tabs.map(([id, label]) => (
+
+        <nav className="flex flex-wrap gap-1.5">
+          {tabs.map(([id, label, Icon]) => (
             <button
               key={id}
               onClick={() => setTab(id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
-                tab === id ? 'bg-gradient-to-r from-blue-600 to-cyan-500 text-white' : 'bg-[#19243d] text-slate-300 border border-slate-700'
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition cursor-pointer ${
+                tab === id ? 'bg-sky-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800'
               }`}
             >
+              <Icon className="w-3.5 h-3.5" />
               {label}
             </button>
           ))}
-        </div>
+        </nav>
+
         <button
           onClick={() => { localStorage.removeItem('atelier_token'); setUser(null); }}
-          className="px-3 py-1.5 rounded-lg border border-slate-700 text-xs flex items-center gap-1 hover:border-red-400 cursor-pointer"
+          className="px-3 py-1.5 rounded-lg border border-slate-800 text-xs text-slate-400 hover:text-white hover:border-slate-700 flex items-center gap-1.5 cursor-pointer"
         >
           <LogOut className="w-3.5 h-3.5" /> Déconnexion
         </button>
       </header>
 
-      <main className="max-w-7xl mx-auto p-4">
+      <main className="max-w-7xl mx-auto p-5">
         {tab === 'direction' && <DirectionView state={state} reload={reload} />}
         {tab === 'chef' && <ChefView state={state} reload={reload} />}
         {tab === 'be' && <BeView state={state} reload={reload} />}
