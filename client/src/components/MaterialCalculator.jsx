@@ -50,6 +50,34 @@ export default function MaterialCalculator() {
         <Scale className="w-4 h-4 text-[#22D3EE]" /> Calculateur matière première
       </div>
 
+      <div className="bg-[#0B0F14] border border-[#1E2A38] rounded-[6px] p-2.5 flex items-center justify-center">
+        <svg width="160" height="72" viewBox="0 0 160 72">
+          {shape === 'rond' && (
+            <>
+              <circle cx="42" cy="36" r="22" fill="none" stroke="#22D3EE" strokeWidth="2" />
+              <line x1="20" y1="36" x2="64" y2="36" stroke="#64748B" strokeDasharray="3" />
+              <rect x="82" y="18" width="60" height="36" fill="none" stroke="#38BDF8" strokeWidth="1.5" />
+              <text x="26" y="68" fill="#22D3EE" fontSize="10" fontFamily="JetBrains Mono">Ø {d} mm</text>
+              <text x="94" y="68" fill="#94A3B8" fontSize="10" fontFamily="JetBrains Mono">L={len}</text>
+            </>
+          )}
+          {shape === 'plat' && (
+            <>
+              <rect x="25" y="16" width="110" height="32" fill="none" stroke="#22D3EE" strokeWidth="2" />
+              <text x="45" y="64" fill="#22D3EE" fontSize="10" fontFamily="JetBrains Mono">{w} × {h} × {len} mm</text>
+            </>
+          )}
+          {shape === 'tube' && (
+            <>
+              <circle cx="50" cy="36" r="24" fill="none" stroke="#22D3EE" strokeWidth="2" />
+              <circle cx="50" cy="36" r="12" fill="none" stroke="#F59E0B" strokeWidth="1.5" />
+              <text x="86" y="32" fill="#22D3EE" fontSize="10" fontFamily="JetBrains Mono">Øext {d}</text>
+              <text x="86" y="48" fill="#F59E0B" fontSize="10" fontFamily="JetBrains Mono">Øint {di}</text>
+            </>
+          )}
+        </svg>
+      </div>
+
       <div className="grid grid-cols-2 gap-2 text-xs">
         <div>
           <label className="text-[11px] text-slate-400">Forme</label>
