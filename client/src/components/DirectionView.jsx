@@ -1,27 +1,34 @@
 import React, { useState } from 'react';
-import { Bot, CheckCircle, Plus, FolderCheck, UserPlus, ShoppingCart, FileText, FileSpreadsheet, Archive } from 'lucide-react';
+import {
+  Bot, CheckCircle, Plus, FolderCheck, UserPlus, ShoppingCart,
+  FileText, FileSpreadsheet, Archive, BarChart3, Calendar, Sliders, FolderOpen, Shield
+} from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import JSZip from 'jszip';
 import { api } from '../api';
 
 export default function DirectionView({ state, reload }) {
+  const [panel, setPanel] = useState('overview');
   const [newUser, setNewUser] = useState({ nom: '', username: '', password: '', role: 'operateur' });
   const [sim, setSim] = useState({ nom: '', quantite: 20, delai: '2026-11-26', machine: 'Tour CNC 1', matiereDispo: true, delaiFournisseurJours: 0, tempsParPieceMin: 0 });
   const [simResult, setSimResult] = useState(null);
   const [prices, setPrices] = useState({});
 
+  const enCours = state.pieces.filter(p => p.statut === 'En cours').length;
+  const aAcheter = state.pieces.filter(p => p.statut === 'À acheter').length;
+  const clotures = state.pieces.filter(p => p.statut === 'Clôturé').length;
+  const critiques = state.pieces.filter(p => p.urgence === 'Critique').length;
+
   function proposePriceAI(p) {
     const hours = (p.tempsReelMin || p.tempsPrevuMin || 120) / 60;
     const machineCost = Math.round(hours * 2500);
     const matCost = p.chuteDispo ? 1500 : 6000;
-    const suggested = Math.round((machineCost + matCost) * 1.3);
-    setPrices(prev => ({ ...prev, [p.id]: suggested }));
+    setPrices(prev => ({ ...prev, [p.id]: Math.round((machineCost + matCost) * 1.3) }));
   }
 
   async function runSimulation() {
-    const res = await api('/api/planning/simulate', 'POST', sim);
-    setSimResult(res);
+    setSimResult(await api('/api/planning/simulate', 'POST', sim));
   }
 
   async function validateSimulation() {
@@ -29,14 +36,8 @@ export default function DirectionView({ state, reload }) {
     await api('/api/pieces', 'POST', { nom: sim.nom, client: 'Commande Simulée', quantitePrevue: sim.quantite, delai: sim.delai, urgence: 'Urgent' });
     setSimResult(null);
     setSim({ nom: '', quantite: 20, delai: '2026-11-26', machine: 'Tour CNC 1', matiereDispo: true, delaiFournisseurJours: 0, tempsParPieceMin: 0 });
-    alert('✅ Commande validée et ajoutée au planning !');
     reload();
   }
-
-  const enCours = state.pieces.filter(p => p.statut === 'En cours').length;
-  const aAcheter = state.pieces.filter(p => p.statut === 'À acheter').length;
-  const clotures = state.pieces.filter(p => p.statut === 'Clôturé').length;
-  const critiques = state.pieces.filter(p => p.urgence === 'Critique').length;
 
   async function addPiece() {
     const nom = prompt('Nom de la pièce :');
@@ -50,7 +51,6 @@ export default function DirectionView({ state, reload }) {
 
   async function validateAll() {
     await api('/api/planning/validate', 'POST');
-    alert('✅ Planning validé et publié sur la TV et les téléphones !');
     reload();
   }
 
@@ -66,61 +66,20 @@ export default function DirectionView({ state, reload }) {
 
   function exportPDF() {
     const doc = new jsPDF('landscape');
-    doc.setFontSize(16);
-    doc.text('ATELIER MANAGER PRO — PLANNING & RAPPORT JOURNALIER', 14, 16);
-    doc.setFontSize(10);
-    doc.text(`Date: ${new Date().toLocaleDateString('fr-FR')} | En cours: ${enCours} | Achats en attente: ${aAcheter} | Clotures: ${clotures}`, 14, 24);
+    doc.setFontSize(15);
+    doc.text('ATELIER MANAGER — PLANNING & RAPPORT', 14, 16);
+    doc.setFontSize(9);
+    doc.text(`Date: ${new Date().toLocaleDateString('fr-FR')} | En cours: ${enCours} | Achats: ${aAcheter} | Clotures: ${clotures}`, 14, 23);
     autoTable(doc, {
-      startY: 30,
+      startY: 28,
       head: [['Ordre', 'OF', 'Piece', 'Client', 'Machine', 'Operateur', 'Delai', 'Urgence', 'Statut', 'Qte']],
       body: state.pieces.map((p, i) => [
-        `#${p.ordrePlanning || i + 1}`,
-        p.id,
-        p.nom,
-        p.client,
-        p.machine,
-        p.operateur,
-        p.delai,
-        p.urgence,
-        p.statut,
-        `${p.quantiteRealisee}/${p.quantitePrevue}`
+        `#${p.ordrePlanning || i + 1}`, p.id, p.nom, p.client, p.machine, p.operateur, p.delai, p.urgence, p.statut, `${p.quantiteRealisee}/${p.quantitePrevue}`
       ]),
       styles: { fontSize: 8 },
-      headStyles: { fillColor: [6, 182, 212] }
+      headStyles: { fillColor: [14, 165, 233] }
     });
     doc.save(`Planning_Atelier_${new Date().toISOString().slice(0, 10)}.pdf`);
-  }
-
-  async function downloadPieceZip(p) {
-    const doc = new jsPDF();
-    doc.setFontSize(15);
-    doc.text(`DOSSIER PIECE : ${p.id}`, 14, 18);
-    doc.setFontSize(10);
-    doc.text(`Piece : ${p.nom} | Client : ${p.client}`, 14, 26);
-    autoTable(doc, {
-      startY: 32,
-      head: [['Champ', 'Detail']],
-      body: [
-        ['Statut', p.statut],
-        ['Urgence / Delai', `${p.urgence} — ${p.delai}`],
-        ['Machine / Operateur', `${p.machine} — ${p.operateur}`],
-        ['Quantite (Realisee / Prevue)', `${p.quantiteRealisee} / ${p.quantitePrevue}`],
-        ['Temps (Reel / Prevu)', `${p.tempsReelMin} min / ${p.tempsPrevuMin} min`],
-        ['Matiere / Chute', `${p.matiere} (${p.chuteDispo ? 'Chute' : p.achatFait ? 'Achetee' : 'A acheter'})`],
-        ['Outillage', p.outils || '—'],
-        ['BE (Fichier / Prog / 3D)', `${p.be.nomFichier || '—'} / ${p.be.programme || '—'} / ${p.be.dessin3d || '—'}`],
-        ['Photos Atelier', `Debut: ${p.photoDebut ? 'OK' : 'Non'} | Fin: ${p.photoFin ? 'OK' : 'Non'}`]
-      ],
-      headStyles: { fillColor: [6, 182, 212] }
-    });
-    const zip = new JSZip();
-    zip.file(`Fiche_${p.id}.pdf`, doc.output('blob'));
-    zip.file(`BE_${p.id}_infos.txt`, `Fichier: ${p.be.nomFichier}\nProgramme: ${p.be.programme}\nDessin 3D: ${p.be.dessin3d}\n`);
-    const content = await zip.generateAsync({ type: 'blob' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(content);
-    a.download = `${p.id}_Dossier_Complet.zip`;
-    a.click();
   }
 
   function exportExcel() {
@@ -129,236 +88,285 @@ export default function DirectionView({ state, reload }) {
       p.ordrePlanning || i + 1, p.id, p.nom, p.client, p.machine, p.operateur, p.delai, p.urgence, p.statut, p.quantiteRealisee, p.quantitePrevue
     ]);
     const csv = '\uFEFF' + [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(';')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
     a.download = `Planning_Atelier_${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
   }
 
+  async function downloadPieceZip(p) {
+    const doc = new jsPDF();
+    doc.setFontSize(14);
+    doc.text(`DOSSIER PIECE : ${p.id}`, 14, 18);
+    autoTable(doc, {
+      startY: 26,
+      head: [['Champ', 'Detail']],
+      body: [
+        ['Piece / Client', `${p.nom} — ${p.client}`],
+        ['Statut', p.statut],
+        ['Urgence / Delai', `${p.urgence} — ${p.delai}`],
+        ['Machine / Operateur', `${p.machine} — ${p.operateur}`],
+        ['Quantite', `${p.quantiteRealisee} / ${p.quantitePrevue}`],
+        ['Temps (Reel / Prevu)', `${p.tempsReelMin} min / ${p.tempsPrevuMin} min`],
+        ['Matiere', p.matiere],
+        ['Outillage', p.outils || '—'],
+        ['BE (Fichier / Prog / 3D)', `${p.be.nomFichier || '—'} / ${p.be.programme || '—'} / ${p.be.dessin3d || '—'}`]
+      ],
+      headStyles: { fillColor: [14, 165, 233] }
+    });
+    const zip = new JSZip();
+    zip.file(`Fiche_${p.id}.pdf`, doc.output('blob'));
+    zip.file(`BE_${p.id}_infos.txt`, `Fichier: ${p.be.nomFichier}\nProgramme: ${p.be.programme}\nDessin 3D: ${p.be.dessin3d}\n`);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(await zip.generateAsync({ type: 'blob' }));
+    a.download = `${p.id}_Dossier_Complet.zip`;
+    a.click();
+  }
+
+  const menu = [
+    ['overview', 'Vue d\'ensemble', BarChart3],
+    ['planning', 'Planning & Gantt', Calendar],
+    ['simulator', 'Simulateur (What-If)', Sliders],
+    ['dossiers', 'Dossiers & Clôture', FolderOpen],
+    ['admin', 'Comptes & Audit', Shield]
+  ];
+
   return (
-    <div className="space-y-5">
-      <div className="bg-gradient-to-r from-purple-900/30 to-cyan-900/20 border border-purple-500/40 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h3 className="font-bold flex items-center gap-2 text-purple-300">
-            <Bot className="w-5 h-5" /> Assistant IA Direction — Rapport Journalier & Prédictions
-          </h3>
-          <p className="text-xs text-slate-300 mt-1">
-            Bilan : <strong>{enCours}</strong> en cours | <strong>{aAcheter}</strong> bloquée(s) | <strong>{clotures}</strong> clôturée(s).{' '}
-            {critiques > 0 ? '⚠️ Priorité absolue sur les pièces Critiques.' : '✅ Délais maîtrisés.'} Vitesse moyenne : <strong className="text-cyan-400">+10%</strong>.
-          </p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {[
-          ['Total Dossiers', state.pieces.length, 'text-white'],
-          ['En Fabrication', enCours, 'text-cyan-400'],
-          ['Achats en attente', aAcheter, 'text-amber-400'],
-          ['Clôturés', clotures, 'text-emerald-400']
-        ].map(([lbl, val, cls]) => (
-          <div key={lbl} className="bg-[#11192b] border border-cyan-500/20 rounded-xl p-4">
-            <div className="text-xs text-slate-400 uppercase">{lbl}</div>
-            <div className={`text-2xl font-extrabold mt-1 ${cls}`}>{val}</div>
-          </div>
+    <div className="flex flex-col md:flex-row gap-5">
+      {/* SIDEBAR */}
+      <aside className="md:w-56 shrink-0 bg-[#111827] border border-slate-800 rounded-xl p-3 h-fit space-y-1">
+        {menu.map(([id, label, Icon]) => (
+          <button
+            key={id}
+            onClick={() => setPanel(id)}
+            className={`w-full px-3 py-2.5 rounded-lg text-xs font-medium flex items-center gap-2.5 transition cursor-pointer ${
+              panel === id ? 'bg-sky-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/70'
+            }`}
+          >
+            <Icon className="w-4 h-4" />
+            {label}
+          </button>
         ))}
-      </div>
+      </aside>
 
-      <div className="bg-[#11192b] border border-purple-500/30 rounded-2xl p-4 space-y-3">
-        <h3 className="font-bold text-base text-purple-300">🔮 Simulateur de Décision IA (What-If) — Avant d'accepter une commande</h3>
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-xs">
-          <input placeholder="Nom pièce" value={sim.nom} onChange={e => setSim({ ...sim, nom: e.target.value })} className="p-2 rounded bg-[#060a14] border border-slate-700" />
-          <input type="number" placeholder="Qté" value={sim.quantite} onChange={e => setSim({ ...sim, quantite: +e.target.value })} className="p-2 rounded bg-[#060a14] border border-slate-700" />
-          <select value={sim.machine} onChange={e => setSim({ ...sim, machine: e.target.value })} className="p-2 rounded bg-[#060a14] border border-slate-700">
-            {state.machines.map(m => <option key={m.id} value={m.nom}>{m.nom}</option>)}
-          </select>
-          <input type="number" placeholder="Min / pièce" value={sim.tempsParPieceMin || ''} onChange={e => setSim({ ...sim, tempsParPieceMin: +e.target.value })} className="p-2 rounded bg-[#060a14] border border-slate-700" />
-          <label className="flex items-center gap-1.5 px-2 cursor-pointer">
-            <input type="checkbox" checked={sim.matiereDispo} onChange={e => setSim({ ...sim, matiereDispo: e.target.checked })} /> Matière dispo DZ
-          </label>
-          {!sim.matiereDispo && (
-            <input type="number" placeholder="Délai fourn. (j)" value={sim.delaiFournisseurJours || ''} onChange={e => setSim({ ...sim, delaiFournisseurJours: +e.target.value })} className="p-2 rounded bg-[#060a14] border border-slate-700" />
-          )}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button onClick={runSimulation} className="px-3 py-2 rounded-lg bg-purple-600 text-xs font-semibold cursor-pointer">⚡ Simuler l'impact</button>
-          {simResult && (
-            <button onClick={validateSimulation} className="px-3 py-2 rounded-lg bg-emerald-600 text-xs font-semibold cursor-pointer">✅ Valider & Créer la Commande</button>
-          )}
-        </div>
-        {simResult && (
-          <div className="bg-[#060a14] border border-purple-500/30 rounded-xl p-3 text-xs space-y-1">
-            {simResult.missing.length > 0 && (
-              <div className="text-amber-400 font-bold">❓ Infos manquantes (corrigez ci-dessus) : {simResult.missing.join(' | ')}</div>
-            )}
-            <div>📊 Charge actuelle {sim.machine} : <strong>{simResult.currentLoadHours}h</strong> + Nouvelle : <strong>{simResult.newLoadHours}h</strong> = <strong>{simResult.totalHours}h</strong></div>
-            <div className="font-bold text-cyan-300">{simResult.verdict}</div>
-          </div>
-        )}
-      </div>
-
-      <div className="bg-[#11192b] border border-cyan-500/20 rounded-2xl p-4">
-        <h3 className="font-bold text-base mb-3">📊 Diagramme de Gantt Visuel (Charge & Ordre par Machine)</h3>
-        <div className="space-y-3 text-xs">
-          {state.machines.map(m => {
-            const mPieces = state.pieces.filter(p => p.machine === m.nom && p.statut !== 'Clôturé');
-            return (
-              <div key={m.id} className="bg-[#060a14] border border-slate-800 rounded-xl p-3">
-                <div className="font-bold text-cyan-400 mb-2">🏭 {m.nom}</div>
-                {mPieces.length === 0 ? (
-                  <div className="text-slate-500 italic">Disponible</div>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {mPieces.map(p => {
-                      const bg = p.urgence === 'Critique' ? 'bg-red-600/80 border-red-400' : p.urgence === 'Urgent' ? 'bg-amber-600/80 border-amber-400' : 'bg-blue-600/80 border-blue-400';
-                      const widthPct = Math.min(100, Math.max(22, Math.round((p.tempsPrevuMin || 120) / 4)));
-                      return (
-                        <div key={p.id} style={{ minWidth: `${widthPct}%` }} className={`${bg} border rounded-lg px-3 py-2 text-white flex justify-between items-center gap-2`}>
-                          <span className="font-bold truncate">#{p.ordrePlanning} {p.id} — {p.nom}</span>
-                          <span className="text-[11px] opacity-90">{Math.round((p.tempsPrevuMin || 120) / 60 * 10) / 10}h</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="bg-[#11192b] border border-cyan-500/20 rounded-2xl p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-          <h3 className="font-bold text-base">📅 Tableau de Planning Général</h3>
-          <div className="flex flex-wrap gap-2">
-            <button onClick={exportPDF} className="px-3 py-2 rounded-lg bg-red-600/90 text-xs font-semibold flex items-center gap-1 cursor-pointer">
-              <FileText className="w-4 h-4" /> Export PDF
-            </button>
-            <button onClick={exportExcel} className="px-3 py-2 rounded-lg bg-teal-600 text-xs font-semibold flex items-center gap-1 cursor-pointer">
-              <FileSpreadsheet className="w-4 h-4" /> Export Excel
-            </button>
-            <button onClick={validateAll} className="px-3 py-2 rounded-lg bg-emerald-600 text-xs font-semibold flex items-center gap-1 cursor-pointer">
-              <CheckCircle className="w-4 h-4" /> Valider & Publier TV
-            </button>
-            <button onClick={addPiece} className="px-3 py-2 rounded-lg bg-blue-600 text-xs font-semibold flex items-center gap-1 cursor-pointer">
-              <Plus className="w-4 h-4" /> Nouvelle Pièce
-            </button>
-          </div>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs min-w-[750px]">
-            <thead className="bg-[#060a14] text-cyan-400 uppercase">
-              <tr>
-                <th className="p-3">Ordre</th>
-                <th className="p-3">OF / Pièce</th>
-                <th className="p-3">Client</th>
-                <th className="p-3">Machine</th>
-                <th className="p-3">Opérateur</th>
-                <th className="p-3">Délai</th>
-                <th className="p-3">Urgence</th>
-                <th className="p-3">Statut</th>
-                <th className="p-3">Validation</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800">
-              {state.pieces.map((p, i) => (
-                <tr key={p.id} className="hover:bg-cyan-500/5">
-                  <td className="p-3 font-bold">#{p.ordrePlanning || i + 1}</td>
-                  <td className="p-3"><strong>{p.id}</strong><div className="text-slate-400">{p.nom}</div></td>
-                  <td className="p-3">{p.client}</td>
-                  <td className="p-3">{p.machine}</td>
-                  <td className="p-3">{p.operateur}</td>
-                  <td className="p-3">{p.delai}</td>
-                  <td className="p-3">{p.urgence}</td>
-                  <td className="p-3">{p.statut}</td>
-                  <td className="p-3">{p.planningValide ? '✅ Validé' : '⏳ À valider'}</td>
-                </tr>
+      {/* CONTENT PANEL */}
+      <div className="flex-1 min-w-0 space-y-5">
+        {panel === 'overview' && (
+          <>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              {[
+                ['Total Dossiers', state.pieces.length, 'text-white'],
+                ['En Fabrication', enCours, 'text-sky-400'],
+                ['Achats en attente', aAcheter, 'text-amber-400'],
+                ['Clôturés', clotures, 'text-emerald-400']
+              ].map(([lbl, val, cls]) => (
+                <div key={lbl} className="bg-[#111827] border border-slate-800 rounded-xl p-4">
+                  <div className="text-xs text-slate-400">{lbl}</div>
+                  <div className={`text-2xl font-bold mt-1 ${cls}`}>{val}</div>
+                </div>
               ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+            </div>
 
-      <div className="grid md:grid-cols-2 gap-4">
-        <div className="bg-[#11192b] border border-cyan-500/20 rounded-2xl p-4 space-y-3">
-          <h3 className="font-bold">📁 Dossiers Complets & Clôture</h3>
-          {state.pieces.map(p => (
-            <div key={p.id} className="bg-[#19243d] border border-slate-700 rounded-xl p-3 text-xs space-y-1">
-              <div className="flex justify-between font-bold">
-                <span>{p.id} — {p.nom}</span>
-                <span className="text-cyan-400">{p.statut}</span>
+            <div className="bg-[#111827] border border-slate-800 rounded-xl p-5 space-y-2">
+              <div className="flex items-center gap-2 text-sky-400 font-semibold text-sm">
+                <Bot className="w-4 h-4" /> Synthèse IA Direction
               </div>
-              <div className="text-slate-400">📐 BE: {p.be.nomFichier || '—'} | Prog: {p.be.programme || '—'} | 3D: {p.be.dessin3d || '—'}</div>
-              <div className="text-slate-400">📸 Photos: Début {p.photoDebut ? '✅' : '❌'} / Fin {p.photoFin ? '✅' : '❌'} | Qté: {p.quantiteRealisee}/{p.quantitePrevue} | ⏱️ Temps: {p.tempsReelMin}m / {p.tempsPrevuMin}m</div>
-              <div className="flex flex-wrap gap-2 pt-1">
-                <button onClick={() => downloadPieceZip(p)} className="px-2.5 py-1.5 rounded bg-cyan-600 text-white font-semibold flex items-center gap-1 cursor-pointer">
-                  <Archive className="w-3.5 h-3.5" /> Dossier .ZIP
-                </button>
-                {p.statut === 'À acheter' && (
-                  <button onClick={async () => { await api(`/api/pieces/${p.id}/buy`, 'POST'); reload(); }} className="px-2.5 py-1.5 rounded bg-amber-500 text-black font-semibold flex items-center gap-1 cursor-pointer">
-                    <ShoppingCart className="w-3.5 h-3.5" /> Valider Achat
-                  </button>
-                )}
-                {p.statut === 'À clôturer' && (
-                  <div className="w-full space-y-2 pt-2 border-t border-slate-700">
-                    <div className="flex flex-wrap gap-2 items-center">
-                      <button onClick={() => proposePriceAI(p)} className="px-2.5 py-1.5 rounded bg-purple-600 text-white font-semibold cursor-pointer">
-                        🤖 Proposition Prix IA
-                      </button>
-                      <input
-                        type="number"
-                        placeholder="Prix final (DZD)"
-                        value={prices[p.id] || ''}
-                        onChange={e => setPrices(prev => ({ ...prev, [p.id]: e.target.value }))}
-                        className="w-36 p-1.5 rounded bg-[#060a14] border border-slate-700 text-white"
-                      />
-                      <button onClick={async () => { await api(`/api/pieces/${p.id}/close`, 'POST', { prixFinal: prices[p.id] }); reload(); }} className="px-2.5 py-1.5 rounded bg-emerald-600 text-white font-semibold flex items-center gap-1 cursor-pointer">
-                        <FolderCheck className="w-3.5 h-3.5" /> Valider & Clôturer
-                      </button>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                {enCours} ordre(s) en cours de fabrication, {aAcheter} bloqué(s) en attente d'approvisionnement matière, {clotures} dossier(s) clôturé(s).{' '}
+                {critiques > 0 ? `${critiques} pièce(s) critique(s) nécessitent un suivi prioritaire.` : 'Aucune alerte critique détectée.'}
+              </p>
+            </div>
+          </>
+        )}
+
+        {panel === 'planning' && (
+          <div className="space-y-5">
+            <div className="bg-[#111827] border border-slate-800 rounded-xl p-4">
+              <h3 className="font-semibold text-sm mb-3">Diagramme de Gantt par Machine</h3>
+              <div className="space-y-2.5 text-xs">
+                {state.machines.map(m => {
+                  const mPieces = state.pieces.filter(p => p.machine === m.nom && p.statut !== 'Clôturé');
+                  return (
+                    <div key={m.id} className="bg-[#090d16] border border-slate-800 rounded-lg p-3">
+                      <div className="font-medium text-slate-300 mb-2">{m.nom}</div>
+                      {mPieces.length === 0 ? (
+                        <span className="text-slate-500">Disponible</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {mPieces.map(p => {
+                            const cls = p.urgence === 'Critique' ? 'bg-red-950 border-red-700 text-red-200' : p.urgence === 'Urgent' ? 'bg-amber-950 border-amber-700 text-amber-200' : 'bg-sky-950 border-sky-700 text-sky-200';
+                            return (
+                              <div key={p.id} className={`${cls} border rounded px-3 py-1.5 flex items-center gap-3`}>
+                                <span className="font-semibold">#{p.ordrePlanning} {p.id} — {p.nom}</span>
+                                <span className="opacity-75">{Math.round((p.tempsPrevuMin || 120) / 60 * 10) / 10}h</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                )}
+                  );
+                })}
               </div>
             </div>
-          ))}
-        </div>
 
-        <div className="bg-[#11192b] border border-cyan-500/20 rounded-2xl p-4">
-          <h3 className="font-bold mb-3 flex items-center gap-2"><UserPlus className="w-4 h-4 text-cyan-400" /> Gestion des Comptes</h3>
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <input placeholder="Nom complet" value={newUser.nom} onChange={e => setNewUser({ ...newUser, nom: e.target.value })} className="p-2 rounded bg-[#060a14] border border-slate-700" />
-            <input placeholder="Identifiant" value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} className="p-2 rounded bg-[#060a14] border border-slate-700" />
-            <input type="password" placeholder="Mot de passe" value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} className="p-2 rounded bg-[#060a14] border border-slate-700" />
-            <select value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })} className="p-2 rounded bg-[#060a14] border border-slate-700">
-              <option value="operateur">Opérateur</option>
-              <option value="chef">Chef d'Atelier</option>
-              <option value="be">Bureau d'Études</option>
-              <option value="directeur">Directeur</option>
-            </select>
+            <div className="bg-[#111827] border border-slate-800 rounded-xl p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <h3 className="font-semibold text-sm">Tableau de Planning Général</h3>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={exportPDF} className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium flex items-center gap-1.5 cursor-pointer">
+                    <FileText className="w-3.5 h-3.5" /> PDF
+                  </button>
+                  <button onClick={exportExcel} className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium flex items-center gap-1.5 cursor-pointer">
+                    <FileSpreadsheet className="w-3.5 h-3.5" /> Excel
+                  </button>
+                  <button onClick={validateAll} className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-medium flex items-center gap-1.5 cursor-pointer">
+                    <CheckCircle className="w-3.5 h-3.5" /> Valider TV
+                  </button>
+                  <button onClick={addPiece} className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-xs font-medium flex items-center gap-1.5 cursor-pointer">
+                    <Plus className="w-3.5 h-3.5" /> Nouvelle Pièce
+                  </button>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs min-w-[700px]">
+                  <thead className="bg-[#090d16] text-slate-400 uppercase">
+                    <tr>
+                      <th className="p-2.5">Ordre</th><th className="p-2.5">OF / Pièce</th><th className="p-2.5">Client</th>
+                      <th className="p-2.5">Machine</th><th className="p-2.5">Opérateur</th><th className="p-2.5">Délai</th>
+                      <th className="p-2.5">Urgence</th><th className="p-2.5">Statut</th><th className="p-2.5">TV</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                    {state.pieces.map((p, i) => (
+                      <tr key={p.id} className="hover:bg-slate-800/40">
+                        <td className="p-2.5 font-semibold">#{p.ordrePlanning || i + 1}</td>
+                        <td className="p-2.5"><div className="font-medium text-white">{p.id}</div><div className="text-slate-400">{p.nom}</div></td>
+                        <td className="p-2.5">{p.client}</td>
+                        <td className="p-2.5">{p.machine}</td>
+                        <td className="p-2.5">{p.operateur}</td>
+                        <td className="p-2.5">{p.delai}</td>
+                        <td className="p-2.5">{p.urgence}</td>
+                        <td className="p-2.5">{p.statut}</td>
+                        <td className="p-2.5">{p.planningValide ? 'Validé' : 'En attente'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
-          <button onClick={createUser} className="mt-2 px-3 py-2 rounded-lg bg-blue-600 text-xs font-semibold cursor-pointer">+ Créer le compte</button>
-          <div className="mt-4 divide-y divide-slate-800 text-xs">
-            {state.users.map(u => (
-              <div key={u.id} className="py-2 flex justify-between">
-                <span><strong>{u.nom}</strong> ({u.username})</span>
-                <span className="text-cyan-400 uppercase">{u.role}</span>
+        )}
+
+        {panel === 'simulator' && (
+          <div className="bg-[#111827] border border-slate-800 rounded-xl p-5 space-y-4">
+            <h3 className="font-semibold text-sm">Simulateur de Décision (What-If)</h3>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+              <input placeholder="Nom pièce" value={sim.nom} onChange={e => setSim({ ...sim, nom: e.target.value })} className="p-2.5 rounded-lg bg-[#090d16] border border-slate-800" />
+              <input type="number" placeholder="Quantité" value={sim.quantite} onChange={e => setSim({ ...sim, quantite: +e.target.value })} className="p-2.5 rounded-lg bg-[#090d16] border border-slate-800" />
+              <select value={sim.machine} onChange={e => setSim({ ...sim, machine: e.target.value })} className="p-2.5 rounded-lg bg-[#090d16] border border-slate-800">
+                {state.machines.map(m => <option key={m.id} value={m.nom}>{m.nom}</option>)}
+              </select>
+              <input type="number" placeholder="Minutes / pièce" value={sim.tempsParPieceMin || ''} onChange={e => setSim({ ...sim, tempsParPieceMin: +e.target.value })} className="p-2.5 rounded-lg bg-[#090d16] border border-slate-800" />
+              <label className="flex items-center gap-2 px-2 cursor-pointer">
+                <input type="checkbox" checked={sim.matiereDispo} onChange={e => setSim({ ...sim, matiereDispo: e.target.checked })} /> Matière disponible DZ
+              </label>
+              {!sim.matiereDispo && (
+                <input type="number" placeholder="Délai fournisseur (j)" value={sim.delaiFournisseurJours || ''} onChange={e => setSim({ ...sim, delaiFournisseurJours: +e.target.value })} className="p-2.5 rounded-lg bg-[#090d16] border border-slate-800" />
+              )}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={runSimulation} className="px-4 py-2 rounded-lg bg-sky-600 text-xs font-medium cursor-pointer">Simuler l'impact</button>
+              {simResult && (
+                <button onClick={validateSimulation} className="px-4 py-2 rounded-lg bg-emerald-600 text-xs font-medium cursor-pointer">Valider & Créer Commande</button>
+              )}
+            </div>
+            {simResult && (
+              <div className="bg-[#090d16] border border-slate-800 rounded-lg p-3 text-xs space-y-1">
+                {simResult.missing.length > 0 && <div className="text-amber-400">Infos manquantes : {simResult.missing.join(' | ')}</div>}
+                <div>Charge {sim.machine} : {simResult.currentLoadHours}h + {simResult.newLoadHours}h = <strong>{simResult.totalHours}h</strong></div>
+                <div className="font-semibold text-sky-400">{simResult.verdict}</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {panel === 'dossiers' && (
+          <div className="space-y-3">
+            {state.pieces.map(p => (
+              <div key={p.id} className="bg-[#111827] border border-slate-800 rounded-xl p-4 text-xs space-y-2">
+                <div className="flex justify-between font-semibold text-sm">
+                  <span>{p.id} — {p.nom}</span>
+                  <span className="text-sky-400">{p.statut}</span>
+                </div>
+                <div className="text-slate-400">BE: {p.be.nomFichier || '—'} | Prog: {p.be.programme || '—'} | 3D: {p.be.dessin3d || '—'}</div>
+                <div className="text-slate-400">Qté: {p.quantiteRealisee}/{p.quantitePrevue} | Temps: {p.tempsReelMin}m / {p.tempsPrevuMin}m</div>
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <button onClick={() => downloadPieceZip(p)} className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 font-medium flex items-center gap-1.5 cursor-pointer">
+                    <Archive className="w-3.5 h-3.5" /> Dossier .ZIP
+                  </button>
+                  {p.statut === 'À acheter' && (
+                    <button onClick={async () => { await api(`/api/pieces/${p.id}/buy`, 'POST'); reload(); }} className="px-3 py-1.5 rounded-lg bg-amber-600 text-white font-medium flex items-center gap-1.5 cursor-pointer">
+                      <ShoppingCart className="w-3.5 h-3.5" /> Valider Achat
+                    </button>
+                  )}
+                  {p.statut === 'À clôturer' && (
+                    <div className="flex flex-wrap gap-2 items-center">
+                      <button onClick={() => proposePriceAI(p)} className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 font-medium cursor-pointer">
+                        Calculer Prix IA
+                      </button>
+                      <input type="number" placeholder="Prix final (DZD)" value={prices[p.id] || ''} onChange={e => setPrices(prev => ({ ...prev, [p.id]: e.target.value }))} className="w-32 p-1.5 rounded bg-[#090d16] border border-slate-800" />
+                      <button onClick={async () => { await api(`/api/pieces/${p.id}/close`, 'POST', { prixFinal: prices[p.id] }); reload(); }} className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-medium flex items-center gap-1.5 cursor-pointer">
+                        <FolderCheck className="w-3.5 h-3.5" /> Clôturer
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             ))}
           </div>
-        </div>
-      </div>
+        )}
 
-      <div className="bg-[#11192b] border border-cyan-500/20 rounded-2xl p-4">
-        <h3 className="font-bold mb-3">📜 Journal d'Audit (Sécurité — Qui a fait quoi)</h3>
-        <div className="space-y-1.5 text-xs max-h-48 overflow-y-auto">
-          {(state.auditLogs || []).length === 0 && <p className="text-slate-400">Aucune action enregistrée pour l'instant.</p>}
-          {(state.auditLogs || []).map(l => (
-            <div key={l.id} className="flex justify-between py-1.5 border-b border-slate-800">
-              <span><strong className="text-cyan-400">{l.user}</strong> ({l.action}) — {l.details}</span>
-              <span className="text-slate-500">{l.createdAt}</span>
+        {panel === 'admin' && (
+          <div className="grid md:grid-cols-2 gap-4">
+            <div className="bg-[#111827] border border-slate-800 rounded-xl p-4">
+              <h3 className="font-semibold text-sm mb-3 flex items-center gap-2"><UserPlus className="w-4 h-4 text-sky-400" /> Comptes Utilisateurs</h3>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <input placeholder="Nom complet" value={newUser.nom} onChange={e => setNewUser({ ...newUser, nom: e.target.value })} className="p-2 rounded bg-[#090d16] border border-slate-800" />
+                <input placeholder="Identifiant" value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} className="p-2 rounded bg-[#090d16] border border-slate-800" />
+                <input type="password" placeholder="Mot de passe" value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} className="p-2 rounded bg-[#090d16] border border-slate-800" />
+                <select value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })} className="p-2 rounded bg-[#090d16] border border-slate-800">
+                  <option value="operateur">Opérateur</option>
+                  <option value="chef">Chef d'Atelier</option>
+                  <option value="be">Bureau d'Études</option>
+                  <option value="directeur">Directeur</option>
+                </select>
+              </div>
+              <button onClick={createUser} className="mt-2 px-3 py-2 rounded-lg bg-sky-600 text-xs font-medium cursor-pointer">Créer le compte</button>
+              <div className="mt-4 divide-y divide-slate-800 text-xs">
+                {state.users.map(u => (
+                  <div key={u.id} className="py-2 flex justify-between">
+                    <span><strong>{u.nom}</strong> ({u.username})</span>
+                    <span className="text-sky-400 uppercase">{u.role}</span>
+                  </div>
+                ))}
+              </div>
             </div>
-          ))}
-        </div>
+
+            <div className="bg-[#111827] border border-slate-800 rounded-xl p-4">
+              <h3 className="font-semibold text-sm mb-3">Journal d'Audit</h3>
+              <div className="space-y-1.5 text-xs max-h-64 overflow-y-auto">
+                {(state.auditLogs || []).length === 0 && <p className="text-slate-500">Aucune action enregistrée.</p>}
+                {(state.auditLogs || []).map(l => (
+                  <div key={l.id} className="flex justify-between py-1.5 border-b border-slate-800">
+                    <span><strong className="text-sky-400">{l.user}</strong> ({l.action}) — {l.details}</span>
+                    <span className="text-slate-500">{l.createdAt}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
