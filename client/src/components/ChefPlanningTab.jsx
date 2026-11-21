@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Bot, RefreshCw, RotateCcw, Save, CheckCircle, AlertTriangle, Check, X } from 'lucide-react';
+import { Bot, RefreshCw, RotateCcw, Save, CheckCircle, AlertTriangle, Check, X, ArrowUp, ArrowDown } from 'lucide-react';
 import { api } from '../api';
 
 const PRIO_RANK = { Critique: 1, Urgent: 2, Normal: 3 };
@@ -66,6 +66,15 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
 
   function updateField(id, field, val) {
     setDraft(prev => prev.map(p => p.id === id ? { ...p, [field]: val, planningValide: false } : p));
+    setDirtyCount(c => c + 1);
+  }
+
+  function moveOrder(index, dir) {
+    const arr = [...sortedDraft];
+    const target = index + dir;
+    if (target < 0 || target >= arr.length) return;
+    [arr[index], arr[target]] = [arr[target], arr[index]];
+    setDraft(arr.map((p, i) => ({ ...p, ordrePlanning: i + 1, planningValide: false })));
     setDirtyCount(c => c + 1);
   }
 
@@ -256,9 +265,15 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
             </tr>
           </thead>
           <tbody className="divide-y divide-[#1E2A38]">
-            {scheduled.map(p => (
+            {scheduled.map((p, idx) => (
               <tr key={p.id}>
-                <td className="py-2 pr-1"><input type="number" value={p.ordrePlanning} onChange={e => updateField(p.id, 'ordrePlanning', +e.target.value)} className="w-12 p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num" /></td>
+                <td className="py-2 pr-1">
+                  <div className="flex items-center gap-1">
+                    <span className="font-mono-num text-white w-5">#{idx + 1}</span>
+                    <button type="button" onClick={() => moveOrder(idx, -1)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] cursor-pointer"><ArrowUp className="w-3 h-3" /></button>
+                    <button type="button" onClick={() => moveOrder(idx, 1)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] cursor-pointer"><ArrowDown className="w-3 h-3" /></button>
+                  </div>
+                </td>
                 <td className="py-2 pr-2"><div className="font-mono-num text-white">{p.id}</div><div className="text-slate-400 truncate max-w-[140px]">{p.nom}</div></td>
                 <td className="py-2 pr-2 text-slate-400">{p.client}</td>
                 <td className="py-2 pr-2">
