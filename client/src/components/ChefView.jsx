@@ -7,15 +7,23 @@ export default function ChefView({ state, reload }) {
   const [mNom, setMNom] = useState('');
   const [mType, setMType] = useState('');
   const [aiAlerts, setAiAlerts] = useState([]);
+  const [toast, setToast] = useState('');
+
+  function showToast(msg) {
+    setToast(msg);
+    setTimeout(() => setToast(''), 3000);
+  }
 
   async function optimizeAI() {
     const res = await api('/api/planning/optimize', 'POST');
     setAiAlerts(res.alerts || []);
+    showToast('Planning optimisé par l\'IA.');
     reload();
   }
 
   async function validatePlanning() {
     await api('/api/planning/validate', 'POST');
+    showToast('Planning validé et publié sur l\'écran TV.');
     reload();
   }
 
@@ -37,11 +45,17 @@ export default function ChefView({ state, reload }) {
       outils: f.outils.value,
       chuteDispo: f.chuteDispo.checked
     });
+    showToast(`Ordre ${id} validé et planifié.`);
     reload();
   }
 
   return (
     <div className="space-y-5">
+      {toast && (
+        <div className="p-3 rounded-[6px] bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs font-medium">
+          {toast}
+        </div>
+      )}
       {/* AI BANNER */}
       <div className="cyber-card cyber-corners p-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-start gap-3">
