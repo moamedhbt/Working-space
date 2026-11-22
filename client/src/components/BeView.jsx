@@ -142,7 +142,7 @@ export default function BeView({ state, reload }) {
 
       {/* CNC CODE PREVIEW MODAL */}
       {codeModal && (
-        <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[70] bg-black/75 flex items-center justify-center p-4">
           <div className="w-full max-w-2xl cyber-card cyber-corners p-4 space-y-3">
             <div className="flex items-center justify-between border-b border-[#1E2A38] pb-2">
               <span className="text-sm font-semibold text-white font-mono-num">{codeModal.title}</span>

@@ -31,6 +31,7 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
 
   const [toast, setToast] = useState({ type: 'ok', text: '' });
   const [showNewModal, setShowNewModal] = useState(false);
+  const [showAdvancedNew, setShowAdvancedNew] = useState(false);
   const [newPieceForm, setNewPieceForm] = useState({
     nom: '',
     client: '',
@@ -207,6 +208,7 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
   }
 
   function openCreateModal() {
+    setShowAdvancedNew(false);
     setNewPieceForm({
       nom: '',
       client: '',
@@ -474,123 +476,122 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
         </div>
       )}
 
-      {/* CREATE OF MODAL */}
+      {/* CREATE OF MODAL — MOBILE-FIRST COMPACT SHEET */}
       {showNewModal && (
         <div
-          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
+          className="fixed inset-0 z-[70] bg-black/75 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4"
           onClick={e => { if (e.target === e.currentTarget) setShowNewModal(false); }}
         >
-          <form onSubmit={submitNewPiece} className="w-full max-w-xl max-h-[90vh] overflow-y-auto cyber-card cyber-corners p-5 space-y-4 text-xs my-auto">
-            <div className="flex items-center justify-between border-b border-[#1E2A38] pb-3">
-              <div>
-                <h3 className="text-sm font-semibold text-white">Nouvel Ordre de Fabrication (OF)</h3>
-                <p className="text-[11px] text-slate-400 mt-0.5">Renseignez la pièce et le délai — la gamme pourra être complétée côté Chef d'atelier.</p>
-              </div>
-              <button type="button" onClick={() => setShowNewModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer">
+          <form
+            onSubmit={submitNewPiece}
+            className="w-full sm:max-w-md max-h-[88dvh] flex flex-col bg-[#111821] border-t sm:border border-[#1E2A38] rounded-t-2xl sm:rounded-lg shadow-2xl overflow-hidden"
+          >
+            {/* STICKY HEADER */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[#1E2A38] shrink-0">
+              <h3 className="text-sm font-semibold text-white">Nouvelle pièce (OF)</h3>
+              <button
+                type="button"
+                onClick={() => setShowNewModal(false)}
+                className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-white/5 cursor-pointer"
+              >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* 1. COMMANDE */}
-            <div className="space-y-3">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-[#22D3EE]">1. Commande & Délai</div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="sm:col-span-2">
-                  <label className="text-[11px] text-slate-300 font-medium">Nom de la pièce *</label>
-                  <input
-                    required
-                    autoFocus
-                    value={newPieceForm.nom}
-                    onChange={e => setNewPieceForm({ ...newPieceForm, nom: e.target.value })}
-                    placeholder="Ex: Axe d'entraînement Ø60"
-                    className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none text-white"
-                  />
-                </div>
-                <div>
-                  <label className="text-[11px] text-slate-300 font-medium">Client</label>
+            {/* SCROLLABLE COMPACT BODY */}
+            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Nom de la pièce *</label>
+                <input
+                  required
+                  value={newPieceForm.nom}
+                  onChange={e => setNewPieceForm({ ...newPieceForm, nom: e.target.value })}
+                  placeholder="Ex: Axe d'entraînement Ø60"
+                  className="w-full px-3 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none text-base sm:text-xs text-white"
+                />
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div className="col-span-2">
+                  <label className="block text-[11px] text-slate-400 mb-1">Client</label>
                   <input
                     value={newPieceForm.client}
                     onChange={e => setNewPieceForm({ ...newPieceForm, client: e.target.value })}
-                    placeholder="Ex: SARL MécaSud"
-                    className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none text-white"
+                    placeholder="SARL MécaSud"
+                    className="w-full px-3 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none text-base sm:text-xs text-white"
                   />
                 </div>
                 <div>
-                  <label className="text-[11px] text-slate-300 font-medium">Quantité à fabriquer *</label>
+                  <label className="block text-[11px] text-slate-400 mb-1">Qté *</label>
                   <input
                     type="number"
+                    inputMode="numeric"
                     min="1"
                     required
                     value={newPieceForm.quantitePrevue}
                     onChange={e => setNewPieceForm({ ...newPieceForm, quantitePrevue: e.target.value })}
-                    placeholder="Ex: 10"
-                    className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-white"
+                    placeholder="10"
+                    className="w-full px-2.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-base sm:text-xs text-white"
                   />
                 </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-[11px] text-slate-300 font-medium">Délai souhaité</label>
+                  <label className="block text-[11px] text-slate-400 mb-1">Délai</label>
                   <input
                     type="date"
                     value={newPieceForm.delai}
                     onChange={e => setNewPieceForm({ ...newPieceForm, delai: e.target.value })}
-                    className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-white"
+                    className="w-full px-2.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-base sm:text-xs text-white"
                   />
                 </div>
                 <div>
-                  <label className="text-[11px] text-slate-300 font-medium">Niveau d'urgence</label>
-                  <div className="grid grid-cols-3 gap-1.5 mt-1">
-                    {[
-                      ['Normal', 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'],
-                      ['Urgent', 'border-amber-500/40 bg-amber-500/15 text-amber-300'],
-                      ['Critique', 'border-red-500/40 bg-red-500/15 text-red-300']
-                    ].map(([u, activeCls]) => (
-                      <button
-                        key={u}
-                        type="button"
-                        onClick={() => setNewPieceForm({ ...newPieceForm, urgence: u })}
-                        className={`py-2 rounded-[6px] border text-[11px] font-medium transition cursor-pointer ${
-                          newPieceForm.urgence === u
-                            ? activeCls
-                            : 'border-[#1E2A38] bg-[#0B0F14] text-slate-400 hover:text-slate-200'
-                        }`}
-                      >
-                        {u}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* 2. MATIÈRE */}
-            <div className="space-y-2.5 pt-2 border-t border-[#1E2A38]">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-[#22D3EE]">2. Matière première</div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
-                <div>
-                  <label className="text-[11px] text-slate-300 font-medium">Nuance & dimensions</label>
+                  <label className="block text-[11px] text-slate-400 mb-1">Matière</label>
                   <input
                     value={newPieceForm.matiere}
                     onChange={e => setNewPieceForm({ ...newPieceForm, matiere: e.target.value })}
-                    placeholder="Ex: Acier 42CrMo4 Ø65"
-                    className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none text-white"
+                    placeholder="Acier 42CrMo4"
+                    className="w-full px-2.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none text-base sm:text-xs text-white"
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-1.5">
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 items-center">
+                <div className="grid grid-cols-3 gap-1">
+                  {[
+                    ['Normal', 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'],
+                    ['Urgent', 'border-amber-500/40 bg-amber-500/15 text-amber-300'],
+                    ['Critique', 'border-red-500/40 bg-red-500/15 text-red-300']
+                  ].map(([u, activeCls]) => (
+                    <button
+                      key={u}
+                      type="button"
+                      onClick={() => setNewPieceForm({ ...newPieceForm, urgence: u })}
+                      className={`py-2 rounded-[6px] border text-[11px] font-medium cursor-pointer ${
+                        newPieceForm.urgence === u ? activeCls : 'border-[#1E2A38] bg-[#0B0F14] text-slate-400'
+                      }`}
+                    >
+                      {u}
+                    </button>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 gap-1">
                   <button
                     type="button"
                     onClick={() => setNewPieceForm({ ...newPieceForm, chuteDispo: true })}
-                    className={`py-2 px-2 rounded-[6px] border text-[11px] font-medium cursor-pointer ${
+                    className={`py-2 rounded-[6px] border text-[11px] font-medium cursor-pointer ${
                       newPieceForm.chuteDispo
                         ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
                         : 'border-[#1E2A38] bg-[#0B0F14] text-slate-400'
                     }`}
                   >
-                    En stock / Chute
+                    En stock
                   </button>
                   <button
                     type="button"
                     onClick={() => setNewPieceForm({ ...newPieceForm, chuteDispo: false })}
-                    className={`py-2 px-2 rounded-[6px] border text-[11px] font-medium cursor-pointer ${
+                    className={`py-2 rounded-[6px] border text-[11px] font-medium cursor-pointer ${
                       !newPieceForm.chuteDispo
                         ? 'border-amber-500/40 bg-amber-500/15 text-amber-300'
                         : 'border-[#1E2A38] bg-[#0B0F14] text-slate-400'
@@ -600,100 +601,119 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                   </button>
                 </div>
               </div>
-            </div>
 
-            {/* 3. AFFECTATION & TEMPS */}
-            <div className="space-y-3 pt-2 border-t border-[#1E2A38]">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-[#22D3EE]">3. Machine, Opérateur & Temps estimé</span>
-                <div className="inline-flex rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] p-0.5 text-[10px]">
-                  <button
-                    type="button"
-                    onClick={() => setNewPieceForm({ ...newPieceForm, timeMode: 'detail' })}
-                    className={`px-2 py-0.5 rounded cursor-pointer ${newPieceForm.timeMode === 'detail' ? 'bg-[#22D3EE] text-[#0B0F14] font-semibold' : 'text-slate-400'}`}
-                  >
-                    Réglage + Unitaire
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewPieceForm({ ...newPieceForm, timeMode: 'total', tempsTotalMin: String(computedModalMin || 60) })}
-                    className={`px-2 py-0.5 rounded cursor-pointer ${newPieceForm.timeMode === 'total' ? 'bg-[#22D3EE] text-[#0B0F14] font-semibold' : 'text-slate-400'}`}
-                  >
-                    Temps global
-                  </button>
-                </div>
-              </div>
+              {/* COLLAPSIBLE OPTIONAL WORKSHOP SETTINGS */}
+              <div className="border border-[#1E2A38] rounded-[6px] bg-[#0B0F14]/60">
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedNew(v => !v)}
+                  className="w-full px-3 py-2 flex items-center justify-between text-xs text-slate-300 cursor-pointer"
+                >
+                  <span>Machine, Opérateur & Temps (optionnel)</span>
+                  <span className="text-[11px] font-mono-num text-[#22D3EE]">
+                    {computedModalMin}m {showAdvancedNew ? '▲' : '▼'}
+                  </span>
+                </button>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[11px] text-slate-300 font-medium">Machine principale</label>
-                  <select value={newPieceForm.machineId} onChange={e => setNewPieceForm({ ...newPieceForm, machineId: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white">
-                    {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-[11px] text-slate-300 font-medium">Opérateur</label>
-                  <select value={newPieceForm.operateurId} onChange={e => setNewPieceForm({ ...newPieceForm, operateurId: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white">
-                    {operators.map(o => <option key={o.id} value={o.id}>{o.nom}</option>)}
-                  </select>
-                </div>
-
-                {newPieceForm.timeMode === 'detail' ? (
-                  <>
-                    <div>
-                      <label className="text-[11px] text-slate-300 font-medium">Temps de réglage (min)</label>
-                      <input
-                        type="number"
-                        min="0"
-                        value={newPieceForm.tempsReglageMin}
-                        onChange={e => setNewPieceForm({ ...newPieceForm, tempsReglageMin: e.target.value })}
-                        placeholder="Ex: 20"
-                        className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-white"
-                      />
+                {showAdvancedNew && (
+                  <div className="px-3 pb-3 pt-1 space-y-2.5 border-t border-[#1E2A38]">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">Machine</label>
+                        <select value={newPieceForm.machineId} onChange={e => setNewPieceForm({ ...newPieceForm, machineId: e.target.value })} className="w-full px-2 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-base sm:text-xs text-white">
+                          {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">Opérateur</label>
+                        <select value={newPieceForm.operateurId} onChange={e => setNewPieceForm({ ...newPieceForm, operateurId: e.target.value })} className="w-full px-2 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-base sm:text-xs text-white">
+                          {operators.map(o => <option key={o.id} value={o.id}>{o.nom}</option>)}
+                        </select>
+                      </div>
                     </div>
-                    <div>
-                      <label className="text-[11px] text-slate-300 font-medium">Temps par pièce (min)</label>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.5"
-                        value={newPieceForm.tempsUnitaireMin}
-                        onChange={e => setNewPieceForm({ ...newPieceForm, tempsUnitaireMin: e.target.value })}
-                        placeholder="Ex: 6"
-                        className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-white"
-                      />
+
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-400">Mode temps :</span>
+                      <div className="inline-flex rounded bg-[#0B0F14] border border-[#1E2A38] p-0.5 text-[10px]">
+                        <button
+                          type="button"
+                          onClick={() => setNewPieceForm({ ...newPieceForm, timeMode: 'detail' })}
+                          className={`px-2 py-0.5 rounded cursor-pointer ${newPieceForm.timeMode === 'detail' ? 'bg-[#22D3EE] text-[#0B0F14] font-semibold' : 'text-slate-400'}`}
+                        >
+                          Réglage + Unit.
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewPieceForm({ ...newPieceForm, timeMode: 'total', tempsTotalMin: String(computedModalMin || 60) })}
+                          className={`px-2 py-0.5 rounded cursor-pointer ${newPieceForm.timeMode === 'total' ? 'bg-[#22D3EE] text-[#0B0F14] font-semibold' : 'text-slate-400'}`}
+                        >
+                          Total
+                        </button>
+                      </div>
                     </div>
-                  </>
-                ) : (
-                  <div className="sm:col-span-2">
-                    <label className="text-[11px] text-slate-300 font-medium">Temps total prévu pour toute la série (min)</label>
-                    <input
-                      type="number"
-                      min="1"
-                      value={newPieceForm.tempsTotalMin}
-                      onChange={e => setNewPieceForm({ ...newPieceForm, tempsTotalMin: e.target.value })}
-                      placeholder="Ex: 120"
-                      className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-white"
-                    />
+
+                    {newPieceForm.timeMode === 'detail' ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[10px] text-slate-400 mb-1">Réglage (min)</label>
+                          <input
+                            type="number"
+                            inputMode="numeric"
+                            min="0"
+                            value={newPieceForm.tempsReglageMin}
+                            onChange={e => setNewPieceForm({ ...newPieceForm, tempsReglageMin: e.target.value })}
+                            placeholder="20"
+                            className="w-full px-2.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-base sm:text-xs text-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-slate-400 mb-1">Par pièce (min)</label>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            min="0"
+                            step="0.5"
+                            value={newPieceForm.tempsUnitaireMin}
+                            onChange={e => setNewPieceForm({ ...newPieceForm, tempsUnitaireMin: e.target.value })}
+                            placeholder="6"
+                            className="w-full px-2.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-base sm:text-xs text-white"
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">Temps total (min)</label>
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          min="1"
+                          value={newPieceForm.tempsTotalMin}
+                          onChange={e => setNewPieceForm({ ...newPieceForm, tempsTotalMin: e.target.value })}
+                          placeholder="80"
+                          className="w-full px-2.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-base sm:text-xs text-white"
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
-
-              <div className="p-2.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                <span className="text-slate-400">
-                  {newPieceForm.timeMode === 'detail'
-                    ? `Calcul : ${modalReg} min réglage + (${modalQty} pcs × ${modalUnit} min)`
-                    : `Temps fixe saisi pour ${modalQty} pièce(s)`}
-                </span>
-                <span className="font-mono-num font-semibold text-[#22D3EE]">
-                  Total : {computedModalMin} min ({(computedModalMin / 60).toFixed(1)} h)
-                </span>
-              </div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-3 border-t border-[#1E2A38]">
-              <button type="button" onClick={() => setShowNewModal(false)} className="px-3.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-slate-300 hover:text-white cursor-pointer">Annuler</button>
-              <button type="submit" className="px-4 py-2 rounded-[6px] bg-[#22D3EE] hover:bg-cyan-300 text-[#0B0F14] font-semibold cursor-pointer">Créer l'OF</button>
+            {/* STICKY FOOTER */}
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-[#1E2A38] bg-[#0B0F14]/80 shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowNewModal(false)}
+                className="px-3.5 py-2 rounded-[6px] bg-[#111821] border border-[#1E2A38] text-xs text-slate-300 cursor-pointer"
+              >
+                Annuler
+              </button>
+              <button
+                type="submit"
+                className="flex-1 sm:flex-none px-5 py-2 rounded-[6px] bg-[#22D3EE] hover:bg-cyan-300 text-[#0B0F14] text-xs font-semibold cursor-pointer"
+              >
+                Créer l'OF
+              </button>
             </div>
           </form>
         </div>

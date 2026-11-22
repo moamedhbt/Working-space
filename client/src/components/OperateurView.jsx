@@ -167,7 +167,7 @@ export default function OperateurView({ state, user, reload }) {
     <div className="max-w-lg mx-auto space-y-4">
       {/* PLAN PDF / IMAGE MODAL */}
       {planModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-3">
+        <div className="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-3">
           <div className="w-full max-w-4xl h-[85vh] cyber-card cyber-corners p-3 flex flex-col gap-2">
             <div className="flex items-center justify-between border-b border-[#1E2A38] pb-2">
               <div className="text-xs font-semibold text-white">
@@ -192,7 +192,7 @@ export default function OperateurView({ state, user, reload }) {
 
       {/* CNC PROGRAM MODAL */}
       {cncModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-3">
+        <div className="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-3">
           <div className="w-full max-w-2xl cyber-card cyber-corners p-4 space-y-3">
             <div className="flex items-center justify-between border-b border-[#1E2A38] pb-2">
               <div className="text-xs font-semibold text-white font-mono-num">
@@ -214,7 +214,7 @@ export default function OperateurView({ state, user, reload }) {
 
       {/* 3D MODEL MODAL FOR OPERATOR */}
       {model3dModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-3">
+        <div className="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-3">
           <div className="w-full max-w-4xl space-y-2">
             <div className="flex justify-end">
               <button onClick={() => setModel3dModal(null)} className="px-3 py-1.5 rounded bg-[#111821] border border-[#1E2A38] text-white text-xs flex items-center gap-1 cursor-pointer">

@@ -265,7 +265,7 @@ export default function App() {
       </div>
 
       {/* MOBILE BOTTOM BAR */}
-      <nav className="md:hidden fixed bottom-0 inset-x-0 bg-[#0B0F14] border-t border-[#1E2A38] flex overflow-x-auto px-1 py-1.5 gap-0.5 z-50">
+      <nav className="md:hidden fixed bottom-0 inset-x-0 bg-[#0B0F14] border-t border-[#1E2A38] flex overflow-x-auto px-1 py-1.5 gap-0.5 z-40">
         {allItems.map(([id, label, Icon]) => {
           const short = id === 'tv' ? 'TV' : id === 'admin' ? 'Admin' : label.split(' ')[0];
           return (
