@@ -52,6 +52,7 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
   const [dirtyCount, setDirtyCount] = useState(0);
   const [aiSuggestions, setAiSuggestions] = useState([]);
   const [dragId, setDragId] = useState(null);
+  const [ganttMode, setGanttMode] = useState('jour'); // 'jour' | 'semaines'
 
   useEffect(() => {
     if (dirtyCount === 0) {
@@ -199,7 +200,14 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
       {/* GANTT + ALERTS */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 min-w-0 cyber-card p-4 overflow-x-auto">
-          <div className="text-xs font-semibold text-white mb-3">Gantt par machine (glisser-déposer un OF)</div>
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <div className="text-xs font-semibold text-white">Gantt par machine (glisser-déposer un OF)</div>
+            <div className="flex bg-[#0B0F14] border border-[#1E2A38] rounded-[4px] p-0.5 text-[10px]">
+              <button type="button" onClick={() => setGanttMode('jour')} className={`px-2 py-0.5 rounded cursor-pointer ${ganttMode === 'jour' ? 'bg-[#22D3EE] text-[#0B0F14] font-semibold' : 'text-slate-400'}`}>Jour</button>
+              <button type="button" onClick={() => setGanttMode('semaines')} className={`px-2 py-0.5 rounded cursor-pointer ${ganttMode === 'semaines' ? 'bg-[#22D3EE] text-[#0B0F14] font-semibold' : 'text-slate-400'}`}>2 Semaines</button>
+            </div>
+          </div>
+          {ganttMode === 'jour' ? (
           <div className="min-w-[540px]">
             <div className="grid grid-cols-10 text-[10px] font-mono-num text-slate-500 border-b border-[#1E2A38] pb-1.5 mb-2 pl-32">
               {hoursAxis.map(h => <div key={h}>{h}</div>)}
@@ -237,6 +245,41 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
               })}
             </div>
           </div>
+          ) : (
+            <div className="min-w-[680px] space-y-2">
+              <div className="grid grid-cols-14 gap-1 text-[9px] font-mono-num text-slate-500 border-b border-[#1E2A38] pb-1 pl-28">
+                {Array.from({ length: 14 }, (_, i) => {
+                  const d = new Date(Date.now() + i * 86400000);
+                  return <div key={i} className="text-center">{d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}</div>;
+                })}
+              </div>
+              {activeMachines.map(m => {
+                const mPieces = scheduled.filter(p => p.machine === m.nom && p.statut !== 'Clôturé');
+                return (
+                  <div key={m.id} className="flex items-center gap-2 text-xs">
+                    <div className="w-28 shrink-0 font-medium text-slate-300 truncate">{m.nom}</div>
+                    <div className="flex-1 grid grid-cols-14 gap-1">
+                      {Array.from({ length: 14 }, (_, i) => {
+                        const dStr = new Date(Date.now() + i * 86400000).toISOString().slice(0, 10);
+                        const dayPieces = mPieces.filter(p => p.delai === dStr || (i === 0 && p.delai < dStr));
+                        return (
+                          <div key={i} className="min-h-[26px] bg-[#0B0F14] border border-[#1E2A38] rounded-[3px] p-0.5 flex flex-col gap-0.5">
+                            {dayPieces.map(p => (
+                              <div key={p.id} title={`${p.id} (${p.debutStr}-${p.finStr})`} className={`text-[8px] font-mono-num px-1 rounded truncate ${
+                                p.urgence === 'Critique' ? 'bg-red-500/20 text-red-300' :
+                                p.urgence === 'Urgent' ? 'bg-amber-500/20 text-amber-300' :
+                                'bg-emerald-500/20 text-emerald-300'
+                              }`}>{p.id.slice(-3)}</div>
+                            ))}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div className="min-w-0 cyber-card p-4 space-y-2 text-xs">
