@@ -537,22 +537,22 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
               </div>
 
               <div className="grid grid-cols-2 gap-2">
-                <div>
+                <div className="min-w-0">
                   <label className="block text-[11px] text-slate-400 mb-1">Délai</label>
                   <input
                     type="date"
                     value={newPieceForm.delai}
                     onChange={e => setNewPieceForm({ ...newPieceForm, delai: e.target.value })}
-                    className="w-full px-2.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-base sm:text-xs text-white"
+                    className="w-full min-w-0 max-w-full px-2 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-sm sm:text-xs text-white"
                   />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <label className="block text-[11px] text-slate-400 mb-1">Matière</label>
                   <input
                     value={newPieceForm.matiere}
                     onChange={e => setNewPieceForm({ ...newPieceForm, matiere: e.target.value })}
                     placeholder="Acier 42CrMo4"
-                    className="w-full px-2.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none text-base sm:text-xs text-white"
+                    className="w-full min-w-0 px-2.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none text-base sm:text-xs text-white"
                   />
                 </div>
               </div>
@@ -700,7 +700,7 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
             </div>
 
             {/* STICKY FOOTER */}
-            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-[#1E2A38] bg-[#0B0F14]/80 shrink-0">
+            <div className="flex items-center justify-end gap-2 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] border-t border-[#1E2A38] bg-[#0B0F14]/80 shrink-0">
               <button
                 type="button"
                 onClick={() => setShowNewModal(false)}

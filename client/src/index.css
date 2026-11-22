@@ -4,6 +4,14 @@
   color-scheme: dark;
 }
 
+input[type="date"],
+input[type="time"] {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  -webkit-appearance: none;
+}
+
 .bg-cyber-grid {
   background-color: #0B0F14;
   background-image:
