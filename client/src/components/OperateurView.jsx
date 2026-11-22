@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Camera, Play, CheckCircle } from 'lucide-react';
+import { Camera, Play, CheckCircle, Pause, AlertTriangle } from 'lucide-react';
 import { api } from '../api';
 
 export default function OperateurView({ state, user, reload }) {
@@ -48,6 +48,17 @@ export default function OperateurView({ state, user, reload }) {
     } finally {
       setUploading(false);
     }
+  }
+
+  async function handlePause(id) {
+    await api(`/api/pieces/${id}/pause`, 'POST');
+    reload();
+  }
+
+  async function handlePanne(id) {
+    const motif = window.prompt('Motif de la panne (optionnel) :') || '';
+    await api(`/api/pieces/${id}/panne`, 'POST', { motif });
+    reload();
   }
 
   return (

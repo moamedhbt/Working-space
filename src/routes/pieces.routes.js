@@ -84,6 +84,13 @@ router.post('/pieces/:id/:action', auth, (req, res) => {
     const mins = p.startedAt ? Math.max(1, Math.round((Date.now() - p.startedAt) / 60000)) : p.tempsPrevuMin;
     runSql("UPDATE pieces SET quantiteRealisee = ?, photoFin = ?, tempsReelMin = ?, statut = 'À clôturer' WHERE id = ?", [parseInt(b.quantiteRealisee || p.quantitePrevue, 10), b.photoUrl || 'ok', mins, id]);
     logAudit(req.user, 'FINITION', `${id} terminé (${b.quantiteRealisee || p.quantitePrevue} pcs en ${mins} min)`);
+  } else if (action === 'pause') {
+    runSql("UPDATE pieces SET statut = 'En pause' WHERE id = ?", [id]);
+    logAudit(req.user, 'PAUSE', `${id} mis en pause`);
+  } else if (action === 'panne') {
+    const motif = b.motif ? ` (${b.motif})` : '';
+    runSql("UPDATE pieces SET statut = 'Panne machine' WHERE id = ?", [id]);
+    logAudit(req.user, 'PANNE SIGNALÉE', `${id}${motif}`);
   } else if (action === 'buy') {
     if (req.user.role !== 'directeur') return res.status(403).json({ error: 'Réservé au Directeur' });
     runSql("UPDATE pieces SET achatFait = 1, statut = 'Prêt atelier' WHERE id = ?", [id]);

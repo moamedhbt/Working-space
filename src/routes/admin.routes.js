@@ -16,6 +16,19 @@ router.post('/users', auth, requireRole('directeur'), (req, res) => {
   }
 });
 
+router.put('/users/:id', auth, requireRole('directeur'), (req, res) => {
+  const { id } = req.params;
+  const u = queryOne('SELECT * FROM users WHERE id = ?', [id]);
+  if (!u) return res.status(404).json({ error: 'Utilisateur introuvable' });
+  const { nom, role, password } = req.body || {};
+  const newNom = nom !== undefined ? nom : u.nom;
+  const newRole = role !== undefined ? role : u.role;
+  const newPass = password ? hashPassword(password) : u.password;
+  runSql('UPDATE users SET nom = ?, role = ?, password = ? WHERE id = ?', [newNom, newRole, newPass, id]);
+  logAudit(req.user, 'UTILISATEUR MODIFIÉ', `${newNom} (${newRole})${password ? ' · MDP réinitialisé' : ''}`);
+  res.json({ ok: true });
+});
+
 router.post('/machines', auth, requireRole('directeur', 'chef'), (req, res) => {
   const { nom, type } = req.body || {};
   if (!nom) return res.status(400).json({ error: 'Nom requis' });
