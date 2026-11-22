@@ -1,8 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { Bot, RefreshCw, RotateCcw, Save, CheckCircle, AlertTriangle, Check, X, ArrowUp, ArrowDown } from 'lucide-react';
+import {
+  Bot, RefreshCw, RotateCcw, Save, CheckCircle, AlertTriangle, Check, X,
+  ArrowUp, ArrowDown, CalendarDays
+} from 'lucide-react';
 import { api } from '../api';
 
 const PRIO_RANK = { Critique: 1, Urgent: 2, Normal: 3 };
+const DAY_LABELS = [
+  [0, 'Dim'], [1, 'Lun'], [2, 'Mar'], [3, 'Mer'], [4, 'Jeu'], [5, 'Ven'], [6, 'Sam']
+];
 
 function formatHour(minsFrom8am) {
   const total = 8 * 60 + minsFrom8am;
@@ -19,35 +25,16 @@ function nowLinePercent() {
   return Math.max(0, Math.min(100, ((mins - start) / (end - start)) * 100));
 }
 
-function computeSchedule(pieces, machines) {
+function computeLocalSchedule(pieces, machines) {
   const machineCursor = {};
-  const machineCap = {};
-  machines.forEach(m => {
-    machineCursor[m.id] = 0;
-    machineCap[m.id] = m.capaciteJourMin || 480;
-  });
+  machines.forEach(m => { machineCursor[m.id] = 0; });
 
-  const alerts = [];
-  machines.forEach(m => {
-    if (m.enPanne) {
-      alerts.push({ type: 'panne', text: `Machine en panne : ${m.nom}` });
-    }
-  });
-
-  const scheduled = pieces.map(p => {
+  return pieces.map(p => {
     const dur = p.tempsPrevuMin || 120;
     const key = p.machineId || p.machine;
     const start = machineCursor[key] || 0;
     const end = start + dur;
     machineCursor[key] = end;
-
-    if (!p.chuteDispo && !p.achatFait && p.statut !== 'Clôturé') {
-      alerts.push({ type: 'matiere', text: `Matière manquante : ${p.id} (${p.nom})` });
-    }
-    const cap = machineCap[key] || 480;
-    if (end > cap && p.statut !== 'Clôturé') {
-      alerts.push({ type: 'capacite', text: `Machine saturée (>${(cap / 60).toFixed(0)}h) : ${p.machine} sur ${p.id}` });
-    }
     return {
       ...p,
       debutStr: p.debutStr || formatHour(start),
@@ -55,34 +42,43 @@ function computeSchedule(pieces, machines) {
       ecartMin: (p.tempsReelMin || 0) - dur
     };
   });
-
-  const today = new Date().toISOString().slice(0, 10);
-  scheduled.forEach(p => {
-    if (p.delai && p.delai < today && p.statut !== 'Clôturé') {
-      alerts.push({ type: 'retard', text: `OF en retard : ${p.id} (délai ${p.delai})` });
-    }
-  });
-
-  return { scheduled, alerts };
 }
 
 export default function ChefPlanningTab({ state, reload, showToast }) {
   const [draft, setDraft] = useState([]);
   const [dirtyIds, setDirtyIds] = useState(new Set());
-  const [aiSuggestions, setAiSuggestions] = useState([]);
+  const [dismissedAiIds, setDismissedAiIds] = useState(new Set());
   const [dragId, setDragId] = useState(null);
   const [ganttMode, setGanttMode] = useState('jour');
+  const [showCalendarCfg, setShowCalendarCfg] = useState(false);
+  const [calForm, setCalForm] = useState({
+    workDays: [0, 1, 2, 3, 4],
+    shiftStart: '08:00',
+    shiftEnd: '17:00'
+  });
 
   useEffect(() => {
     if (dirtyIds.size === 0) {
-      setDraft(state.pieces);
+      setDraft(state.pieces.filter(p => !p.archived));
     }
   }, [state.pieces, dirtyIds.size]);
+
+  useEffect(() => {
+    if (state.settings) {
+      setCalForm({
+        workDays: state.settings.workDays || [0, 1, 2, 3, 4],
+        shiftStart: state.settings.shiftStart || '08:00',
+        shiftEnd: state.settings.shiftEnd || '17:00'
+      });
+    }
+  }, [state.settings]);
 
   const activeMachines = state.machines.filter(m => m.actif);
   const operators = state.users.filter(u => u.role === 'operateur' && u.actif !== 0);
   const sortedDraft = [...draft].sort((a, b) => (a.ordrePlanning || 999) - (b.ordrePlanning || 999));
-  const { scheduled, alerts } = computeSchedule(sortedDraft, activeMachines);
+  const scheduled = computeLocalSchedule(sortedDraft, activeMachines);
+  const serverConflicts = state.conflicts || [];
+  const aiSuggestions = (state.aiRecommendations || []).filter(r => !dismissedAiIds.has(r.id));
 
   function markDirty(ids) {
     setDirtyIds(prev => {
@@ -119,7 +115,30 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
     markDirty(reordered.map(p => p.id));
   }
 
-  function recalculateEngine() {
+  async function runServerOptimizeAI() {
+    try {
+      const res = await api('/api/planning/optimize', 'POST');
+      setDirtyIds(new Set());
+      setDismissedAiIds(new Set());
+      showToast(`Planning IA recalculé (gammes + jours ouvrés) · ${res.conflicts?.length || 0} alerte(s).`);
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  async function applyAiRecommendation(rec) {
+    try {
+      await api('/api/planning/ai-apply', 'POST', { actionType: rec.actionType, payload: rec.payload });
+      setDirtyIds(new Set());
+      showToast(`Recommandation IA appliquée : ${rec.title}`);
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  function recalculateLocal() {
     const sorted = [...draft].sort((a, b) => {
       const aBlock = (!a.chuteDispo && !a.achatFait) ? 1 : 0;
       const bBlock = (!b.chuteDispo && !b.achatFait) ? 1 : 0;
@@ -128,40 +147,12 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
     }).map((p, i) => ({ ...p, ordrePlanning: i + 1, planningValide: false }));
     setDraft(sorted);
     markDirty(sorted.map(p => p.id));
-    showToast('Moteur déterministe recalculé (cliquez sur Enregistrer ou Valider TV).');
-  }
-
-  function proposeAI() {
-    const critBlocked = scheduled.find(p => p.urgence === 'Critique' && !p.chuteDispo && !p.achatFait);
-    const readyUrgent = scheduled.find(p => p.urgence === 'Urgent' && (p.chuteDispo || p.achatFait));
-    const sugs = [];
-    if (critBlocked && readyUrgent) {
-      sugs.push({
-        id: 'sug-1',
-        text: `Passer ${readyUrgent.id} avant ${critBlocked.id} car la matière de ${critBlocked.id} est manquante.`,
-        apply: () => {
-          updateField(readyUrgent.id, 'ordrePlanning', 1);
-          updateField(critBlocked.id, 'ordrePlanning', 2);
-        }
-      });
-    } else if (scheduled.length >= 1) {
-      const healthyMachine = activeMachines.find(m => !m.enPanne) || activeMachines[0];
-      if (healthyMachine) {
-        sugs.push({
-          id: 'sug-2',
-          text: `Affecter ${scheduled[0].id} sur ${healthyMachine.nom} pour équilibrer la charge.`,
-          apply: () => updateField(scheduled[0].id, 'machineId', healthyMachine.id)
-        });
-      }
-    }
-    setAiSuggestions(sugs);
-    showToast('Propositions IA prêtes (Accepter ou Refuser).');
+    showToast('Ordre recalculé (cliquez sur Enregistrer ou Valider TV).');
   }
 
   function cancelEdits() {
-    setDraft(state.pieces);
+    setDraft(state.pieces.filter(p => !p.archived));
     setDirtyIds(new Set());
-    setAiSuggestions([]);
     showToast('Modifications annulées.');
   }
 
@@ -208,29 +199,57 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
     }
   }
 
+  function toggleWorkDay(dayNum) {
+    setCalForm(prev => {
+      const exists = prev.workDays.includes(dayNum);
+      const next = exists ? prev.workDays.filter(d => d !== dayNum) : [...prev.workDays, dayNum].sort();
+      return { ...prev, workDays: next };
+    });
+  }
+
+  async function saveCalendarSettings() {
+    try {
+      await api('/api/settings', 'PUT', calForm);
+      setShowCalendarCfg(false);
+      showToast('Calendrier atelier sauvegardé.');
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
   const hoursAxis = ['08h', '09h', '10h', '11h', '12h', '13h', '14h', '15h', '16h', '17h'];
   const nowPct = nowLinePercent();
+  const workDaysSet = new Set(calForm.workDays);
 
   return (
     <div className="space-y-4">
       {/* TOP ACTION BAR */}
       <div className="cyber-card p-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10px] font-mono-num">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> LIVE
           </span>
+          <button
+            type="button"
+            onClick={() => setShowCalendarCfg(!showCalendarCfg)}
+            className="px-2 py-1 rounded bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-[11px] text-slate-300 flex items-center gap-1 cursor-pointer"
+          >
+            <CalendarDays className="w-3.5 h-3.5 text-[#22D3EE]" />
+            {DAY_LABELS.filter(([d]) => workDaysSet.has(d)).map(([, lbl]) => lbl).join('-')} · {calForm.shiftStart}–{calForm.shiftEnd}
+          </button>
           {dirtyIds.size > 0 && (
             <span className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[10px] font-mono-num">
-              {dirtyIds.size} OF modifié(s) non enregistré(s)
+              {dirtyIds.size} OF modifié(s)
             </span>
           )}
         </div>
         <div className="flex flex-wrap gap-1.5 text-xs">
-          <button onClick={proposeAI} className="px-2.5 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] flex items-center gap-1 cursor-pointer">
-            <Bot className="w-3.5 h-3.5 text-[#22D3EE]" /> Proposer par IA
+          <button onClick={runServerOptimizeAI} className="px-2.5 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#22D3EE]/50 hover:border-[#22D3EE] text-[#22D3EE] flex items-center gap-1 cursor-pointer">
+            <Bot className="w-3.5 h-3.5" /> Optimiser par IA
           </button>
-          <button onClick={recalculateEngine} className="px-2.5 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] flex items-center gap-1 cursor-pointer">
-            <RefreshCw className="w-3.5 h-3.5" /> Recalculer
+          <button onClick={recalculateLocal} className="px-2.5 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] flex items-center gap-1 cursor-pointer">
+            <RefreshCw className="w-3.5 h-3.5" /> Trier
           </button>
           <button onClick={cancelEdits} className="px-2.5 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-slate-400 hover:text-white flex items-center gap-1 cursor-pointer">
             <RotateCcw className="w-3.5 h-3.5" /> Annuler
@@ -244,30 +263,63 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
         </div>
       </div>
 
-      {/* AI SUGGESTIONS */}
+      {/* WORKSHOP CALENDAR CONFIG */}
+      {showCalendarCfg && (
+        <div className="cyber-card p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-slate-400 font-medium">Jours ouvrés :</span>
+            {DAY_LABELS.map(([num, lbl]) => (
+              <button
+                key={num}
+                type="button"
+                onClick={() => toggleWorkDay(num)}
+                className={`px-2 py-1 rounded border text-[11px] cursor-pointer ${
+                  workDaysSet.has(num) ? 'bg-[#22D3EE]/15 border-[#22D3EE] text-[#22D3EE]' : 'bg-[#0B0F14] border-[#1E2A38] text-slate-500'
+                }`}
+              >
+                {lbl}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-slate-400">Horaires :</span>
+            <input type="time" value={calForm.shiftStart} onChange={e => setCalForm({ ...calForm, shiftStart: e.target.value })} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num" />
+            <span>→</span>
+            <input type="time" value={calForm.shiftEnd} onChange={e => setCalForm({ ...calForm, shiftEnd: e.target.value })} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num" />
+            <button type="button" onClick={saveCalendarSettings} className="px-3 py-1.5 rounded bg-emerald-600 text-white font-semibold cursor-pointer">Enregistrer</button>
+          </div>
+        </div>
+      )}
+
+      {/* LIVE IA RECOMMENDATIONS */}
       {aiSuggestions.length > 0 && (
         <div className="cyber-card cyber-corners p-3 space-y-2 text-xs">
-          <div className="font-semibold text-[#22D3EE] flex items-center gap-1.5"><Bot className="w-4 h-4" /> Propositions IA (à valider)</div>
+          <div className="font-semibold text-[#22D3EE] flex items-center gap-1.5">
+            <Bot className="w-4 h-4" /> Recommandations IA d'ordonnancement ({aiSuggestions.length})
+          </div>
           {aiSuggestions.map(s => (
             <div key={s.id} className="flex flex-wrap items-center justify-between gap-2 bg-[#0B0F14] p-2.5 rounded border border-[#1E2A38]">
-              <span className="text-slate-200">{s.text}</span>
+              <div>
+                <div className={`font-semibold ${s.severity === 'high' ? 'text-red-300' : s.severity === 'medium' ? 'text-amber-300' : 'text-white'}`}>{s.title}</div>
+                <div className="text-slate-400 text-[11px]">{s.reason}</div>
+              </div>
               <div className="flex gap-1.5">
-                <button onClick={() => { s.apply(); setAiSuggestions([]); }} className="px-2.5 py-1 rounded bg-emerald-600 text-white flex items-center gap-1 cursor-pointer"><Check className="w-3 h-3" /> Accepter</button>
-                <button onClick={() => setAiSuggestions([])} className="px-2.5 py-1 rounded bg-slate-800 text-slate-300 flex items-center gap-1 cursor-pointer"><X className="w-3 h-3" /> Refuser</button>
+                <button onClick={() => applyAiRecommendation(s)} className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1 cursor-pointer"><Check className="w-3 h-3" /> Accepter</button>
+                <button onClick={() => setDismissedAiIds(prev => new Set(prev).add(s.id))} className="px-2.5 py-1 rounded bg-slate-800 text-slate-300 flex items-center gap-1 cursor-pointer"><X className="w-3 h-3" /> Ignorer</button>
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* GANTT + ALERTS */}
+      {/* GANTT + REAL CONSTRAINTS / CONFLICTS */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 min-w-0 cyber-card p-4 overflow-x-auto">
           <div className="flex items-center justify-between gap-2 mb-3">
             <div className="text-xs font-semibold text-white">Gantt par machine (glisser-déposer un OF)</div>
             <div className="flex bg-[#0B0F14] border border-[#1E2A38] rounded-[4px] p-0.5 text-[10px]">
               <button type="button" onClick={() => setGanttMode('jour')} className={`px-2 py-0.5 rounded cursor-pointer ${ganttMode === 'jour' ? 'bg-[#22D3EE] text-[#0B0F14] font-semibold' : 'text-slate-400'}`}>Jour</button>
-              <button type="button" onClick={() => setGanttMode('semaines')} className={`px-2 py-0.5 rounded cursor-pointer ${ganttMode === 'semaines' ? 'bg-[#22D3EE] text-[#0B0F14] font-semibold' : 'text-slate-400'}`}>2 Semaines</button>
+              <button type="button" onClick={() => setGanttMode('semaines')} className={`px-2 py-0.5 rounded cursor-pointer ${ganttMode === 'semaines' ? 'bg-[#22D3EE] text-[#0B0F14] font-semibold' : 'text-slate-400'}`}>2 Semaines (Ouvrés)</button>
             </div>
           </div>
 
@@ -294,7 +346,7 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
                     >
                       <div className="w-28 shrink-0 font-medium text-slate-300 truncate flex items-center gap-1">
                         <span className="truncate">{m.nom}</span>
-                        {m.enPanne ? <span className="text-[9px] text-red-400 font-bold">!</span> : null}
+                        {m.enPanne ? <span className="text-[9px] text-red-400 font-bold">PANNE</span> : null}
                       </div>
                       <div className={`flex-1 min-h-[30px] bg-[#0B0F14] border rounded-[4px] flex flex-wrap items-center gap-1 p-1 ${m.enPanne ? 'border-red-500/40' : 'border-[#1E2A38]'}`}>
                         {mPieces.map(p => (
@@ -318,11 +370,16 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
               </div>
             </div>
           ) : (
-            <div className="min-w-[680px] space-y-2">
+            <div className="min-w-[700px] space-y-2">
               <div className="grid grid-cols-14 gap-1 text-[9px] font-mono-num text-slate-500 border-b border-[#1E2A38] pb-1 pl-28">
                 {Array.from({ length: 14 }, (_, i) => {
                   const d = new Date(Date.now() + i * 86400000);
-                  return <div key={i} className="text-center">{d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}</div>;
+                  const isOff = !workDaysSet.has(d.getDay());
+                  return (
+                    <div key={i} className={`text-center ${isOff ? 'text-slate-600 line-through' : ''}`}>
+                      {d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}
+                    </div>
+                  );
                 })}
               </div>
               {activeMachines.map(m => {
@@ -332,10 +389,15 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
                     <div className="w-28 shrink-0 font-medium text-slate-300 truncate">{m.nom}</div>
                     <div className="flex-1 grid grid-cols-14 gap-1">
                       {Array.from({ length: 14 }, (_, i) => {
-                        const dStr = new Date(Date.now() + i * 86400000).toISOString().slice(0, 10);
-                        const dayPieces = mPieces.filter(p => p.delai === dStr || (i === 0 && p.delai && p.delai < dStr));
+                        const d = new Date(Date.now() + i * 86400000);
+                        const dStr = d.toISOString().slice(0, 10);
+                        const isOff = !workDaysSet.has(d.getDay());
+                        const dayPieces = mPieces.filter(p => {
+                          const plannedDate = p.operations?.find(o => o.machineId === m.id && o.datePlanifiee)?.datePlanifiee || p.delai;
+                          return plannedDate === dStr || (i === 0 && plannedDate && plannedDate < dStr);
+                        });
                         return (
-                          <div key={i} className="min-h-[26px] bg-[#0B0F14] border border-[#1E2A38] rounded-[3px] p-0.5 flex flex-col gap-0.5">
+                          <div key={i} className={`min-h-[26px] border rounded-[3px] p-0.5 flex flex-col gap-0.5 ${isOff ? 'bg-[#070A0E] border-[#151E29]' : 'bg-[#0B0F14] border-[#1E2A38]'}`}>
                             {dayPieces.map(p => (
                               <div key={p.id} title={`${p.id} (${p.debutStr}-${p.finStr})`} className={`text-[8px] font-mono-num px-1 rounded truncate ${
                                 p.urgence === 'Critique' ? 'bg-red-500/20 text-red-300' :
@@ -356,14 +418,23 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
 
         <div className="min-w-0 cyber-card p-4 space-y-2 text-xs">
           <div className="font-semibold text-white flex items-center gap-1.5">
-            <AlertTriangle className="w-4 h-4 text-amber-400" /> Alertes moteur ({alerts.length})
+            <AlertTriangle className="w-4 h-4 text-amber-400" /> Contraintes & conflits ({serverConflicts.length})
           </div>
-          {alerts.length === 0 ? (
-            <div className="text-slate-500">Aucun conflit détecté.</div>
+          {serverConflicts.length === 0 ? (
+            <div className="text-emerald-400 text-[11px]">Aucun conflit opérateur, gamme ou machine détecté.</div>
           ) : (
-            <div className="space-y-1.5 max-h-40 overflow-y-auto">
-              {alerts.map((a, i) => (
-                <div key={i} className="p-2 rounded bg-red-500/10 border border-red-500/30 text-red-300 text-[11px]">{a.text}</div>
+            <div className="space-y-1.5 max-h-48 overflow-y-auto">
+              {serverConflicts.map((c, i) => (
+                <div
+                  key={i}
+                  className={`p-2 rounded border text-[11px] ${
+                    c.severity === 'high'
+                      ? 'bg-red-500/10 border-red-500/30 text-red-300'
+                      : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                  }`}
+                >
+                  {c.text}
+                </div>
               ))}
             </div>
           )}
@@ -372,12 +443,12 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
 
       {/* DETAILED TABLE */}
       <div className="cyber-card p-4 overflow-x-auto">
-        <table className="w-full text-left text-[11px] min-w-[1020px]">
+        <table className="w-full text-left text-[11px] min-w-[1060px]">
           <thead className="text-[10px] text-slate-500 uppercase border-b border-[#1E2A38]">
             <tr>
               <th className="py-2">Ordre</th><th className="py-2">OF / Pièce</th><th className="py-2">Client</th>
               <th className="py-2">Machine</th><th className="py-2">Opérateur</th><th className="py-2">Priorité</th>
-              <th className="py-2">Début</th><th className="py-2">Fin</th><th className="py-2">Durée</th>
+              <th className="py-2">Début</th><th className="py-2">Fin</th><th className="py-2">Régl. / Durée</th>
               <th className="py-2">Qté / Ops</th><th className="py-2">Matière</th><th className="py-2">Écart</th><th className="py-2">TV</th>
             </tr>
           </thead>
@@ -410,7 +481,10 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
                 </td>
                 <td className="py-2 pr-2"><input type="time" value={p.debutStr} onChange={e => updateField(p.id, 'debutStr', e.target.value)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-slate-200" /></td>
                 <td className="py-2 pr-2"><input type="time" value={p.finStr} onChange={e => updateField(p.id, 'finStr', e.target.value)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-slate-200" /></td>
-                <td className="py-2 pr-2 font-mono-num text-slate-400">{p.tempsReelMin}/{p.tempsPrevuMin}m</td>
+                <td className="py-2 pr-2 font-mono-num text-slate-400">
+                  <div className="text-[10px] text-[#22D3EE]">Régl. {p.totalReglageMin || 0}m</div>
+                  <div>{p.tempsReelMin}/{p.tempsPrevuMin}m</div>
+                </td>
                 <td className="py-2 pr-2">
                   <div className="flex items-center gap-1.5">
                     <div className="w-12 h-1.5 bg-[#0B0F14] rounded-full overflow-hidden">

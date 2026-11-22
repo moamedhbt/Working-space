@@ -7,12 +7,28 @@ const {
   hashPassword,
   logAudit,
   backupDB,
+  getSettings,
+  saveSettings,
   syncPieceFromOperations
 } = require('../db/database');
 const { auth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 const ALLOWED_ROLES = ['directeur', 'chef', 'be', 'operateur', 'tv'];
+
+router.get('/settings', auth, (req, res) => {
+  res.json(getSettings());
+});
+
+router.put('/settings', auth, requireRole('directeur', 'chef'), (req, res) => {
+  const { workDays, shiftStart, shiftEnd } = req.body || {};
+  if (workDays !== undefined && (!Array.isArray(workDays) || workDays.length === 0)) {
+    return res.status(400).json({ error: 'Sélectionnez au moins un jour ouvré' });
+  }
+  saveSettings({ workDays, shiftStart, shiftEnd });
+  logAudit(req.user, 'CALENDRIER ATELIER MODIFIÉ', `${shiftStart || '08:00'}–${shiftEnd || '17:00'}`);
+  res.json({ ok: true, settings: getSettings() });
+});
 
 router.post('/users', auth, requireRole('directeur'), (req, res) => {
   const { nom, username, password, role } = req.body || {};
@@ -47,7 +63,6 @@ router.put('/users/:id', auth, requireRole('directeur'), (req, res) => {
     return res.status(400).json({ error: `Rôle invalide (${ALLOWED_ROLES.join(', ')})` });
   }
 
-  // Prevent locking out the last active director
   if (u.role === 'directeur' && (newRole !== 'directeur' || !newActif)) {
     const otherDirectors = queryOne(
       "SELECT COUNT(*) AS c FROM users WHERE role = 'directeur' AND actif = 1 AND id != ?",
@@ -76,14 +91,15 @@ router.put('/users/:id', auth, requireRole('directeur'), (req, res) => {
 });
 
 router.post('/machines', auth, requireRole('directeur', 'chef'), (req, res) => {
-  const { nom, type, tauxHoraire, capaciteJourMin } = req.body || {};
+  const { nom, type, tauxHoraire, capaciteJourMin, intervalleEntretienH } = req.body || {};
   if (!nom?.trim()) return res.status(400).json({ error: 'Nom de machine requis' });
   const id = 'm_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
   const taux = Number(tauxHoraire) > 0 ? Number(tauxHoraire) : 2500;
   const cap = Number(capaciteJourMin) > 0 ? Math.round(Number(capaciteJourMin)) : 480;
+  const inter = Number(intervalleEntretienH) > 0 ? Number(intervalleEntretienH) : 200;
   runSql(
-    'INSERT INTO machines (id, nom, type, tauxHoraire, capaciteJourMin, actif, enPanne) VALUES (?,?,?,?,?,1,0)',
-    [id, nom.trim(), (type || 'Usinage').trim(), taux, cap]
+    'INSERT INTO machines (id, nom, type, tauxHoraire, capaciteJourMin, actif, enPanne, heuresCompteur, intervalleEntretienH, dernierEntretienH, dernierEntretienDate) VALUES (?,?,?,?,?,1,0,0,?,0,?)',
+    [id, nom.trim(), (type || 'Usinage').trim(), taux, cap, inter, new Date().toISOString().slice(0, 10)]
   );
   logAudit(req.user, 'MACHINE AJOUTÉE', `${nom.trim()} (${taux} DZD/h)`);
   res.status(201).json({ ok: true, id });
@@ -94,18 +110,20 @@ router.put('/machines/:id', auth, requireRole('directeur', 'chef'), (req, res) =
   const m = queryOne('SELECT * FROM machines WHERE id = ?', [id]);
   if (!m) return res.status(404).json({ error: 'Machine introuvable' });
 
-  const { nom, type, actif, tauxHoraire, capaciteJourMin, enPanne } = req.body || {};
+  const { nom, type, actif, tauxHoraire, capaciteJourMin, enPanne, intervalleEntretienH, heuresCompteur } = req.body || {};
   const newNom = nom !== undefined && String(nom).trim() ? String(nom).trim() : m.nom;
   const newType = type !== undefined && String(type).trim() ? String(type).trim() : m.type;
   const newActif = actif !== undefined ? (actif ? 1 : 0) : m.actif;
   const newTaux = tauxHoraire !== undefined && Number(tauxHoraire) > 0 ? Number(tauxHoraire) : m.tauxHoraire;
   const newCap = capaciteJourMin !== undefined && Number(capaciteJourMin) > 0 ? Math.round(Number(capaciteJourMin)) : m.capaciteJourMin;
   const newPanne = enPanne !== undefined ? (enPanne ? 1 : 0) : m.enPanne;
+  const newInter = intervalleEntretienH !== undefined && Number(intervalleEntretienH) > 0 ? Number(intervalleEntretienH) : (m.intervalleEntretienH || 200);
+  const newHeures = heuresCompteur !== undefined && Number(heuresCompteur) >= 0 ? Number(heuresCompteur) : (m.heuresCompteur || 0);
 
   transaction(() => {
     runSql(
-      'UPDATE machines SET nom = ?, type = ?, tauxHoraire = ?, capaciteJourMin = ?, actif = ?, enPanne = ? WHERE id = ?',
-      [newNom, newType, newTaux, newCap, newActif, newPanne, id]
+      'UPDATE machines SET nom = ?, type = ?, tauxHoraire = ?, capaciteJourMin = ?, actif = ?, enPanne = ?, intervalleEntretienH = ?, heuresCompteur = ? WHERE id = ?',
+      [newNom, newType, newTaux, newCap, newActif, newPanne, newInter, newHeures, id]
     );
     if (!newActif) {
       runSql(
@@ -118,6 +136,31 @@ router.put('/machines/:id', auth, requireRole('directeur', 'chef'), (req, res) =
 
   logAudit(req.user, 'MACHINE MODIFIÉE', `${newNom} (${newActif ? 'Active' : 'Désactivée'})`);
   res.json({ ok: true });
+});
+
+router.post('/machines/:id/maintenance', auth, requireRole('directeur', 'chef'), (req, res) => {
+  const { id } = req.params;
+  const m = queryOne('SELECT * FROM machines WHERE id = ?', [id]);
+  if (!m) return res.status(404).json({ error: 'Machine introuvable' });
+
+  const { description, type = 'Préventive' } = req.body || {};
+  const desc = (description || '').trim() || 'Entretien préventif (graissage, contrôle géométrie, niveaux)';
+  const today = new Date().toISOString().slice(0, 10);
+  const logId = 'mnt_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+
+  transaction(() => {
+    runSql(
+      'UPDATE machines SET dernierEntretienH = ?, dernierEntretienDate = ? WHERE id = ?',
+      [m.heuresCompteur || 0, today, id]
+    );
+    runSql(
+      'INSERT INTO maintenance_logs (id, machineId, type, description, heuresAuCompteur, effectuePar, createdAt) VALUES (?,?,?,?,?,?,?)',
+      [logId, id, type, desc, m.heuresCompteur || 0, req.user.nom, new Date().toLocaleString('fr-FR')]
+    );
+  });
+
+  logAudit(req.user, 'ENTRETIEN MACHINE', `${m.nom} (${Math.round(m.heuresCompteur || 0)}h) — ${desc}`);
+  res.json({ ok: true, id: logId });
 });
 
 router.delete('/machines/:id', auth, requireRole('directeur'), (req, res) => {
@@ -146,8 +189,15 @@ router.post('/pannes/:id/resolve', auth, requireRole('directeur', 'chef'), (req,
   const panne = queryOne('SELECT * FROM pannes WHERE id = ?', [id]);
   if (!panne) return res.status(404).json({ error: 'Panne introuvable' });
 
+  const dureeArretMin = panne.createdAtMs > 0
+    ? Math.max(1, Math.round((Date.now() - panne.createdAtMs) / 60000))
+    : 30;
+
   transaction(() => {
-    runSql("UPDATE pannes SET statut = 'Résolue', resolvedAt = ? WHERE id = ?", [new Date().toLocaleString('fr-FR'), id]);
+    runSql(
+      "UPDATE pannes SET statut = 'Résolue', dureeArretMin = ?, resolvedAt = ? WHERE id = ?",
+      [dureeArretMin, new Date().toLocaleString('fr-FR'), id]
+    );
 
     if (panne.machineId) {
       const remaining = queryOne(
@@ -174,8 +224,8 @@ router.post('/pannes/:id/resolve', auth, requireRole('directeur', 'chef'), (req,
     }
   });
 
-  logAudit(req.user, 'PANNE RÉSOLUE', `Ticket ${id} résolu${panne.pieceId ? ` (${panne.pieceId})` : ''}`);
-  res.json({ ok: true });
+  logAudit(req.user, 'PANNE RÉSOLUE', `Ticket ${id} résolu (${dureeArretMin} min d'arrêt)`);
+  res.json({ ok: true, dureeArretMin });
 });
 
 router.post('/admin/backup', auth, requireRole('directeur'), async (req, res) => {

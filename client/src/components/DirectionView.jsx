@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   Bot, CheckCircle, Plus, FolderCheck, UserPlus, ShoppingCart,
   FileText, FileSpreadsheet, Archive, Download, X, Database, Edit3, Check,
-  AlertTriangle, Layers, Image
+  AlertTriangle, Layers, Image, Activity, Wrench, Filter, ShieldAlert, ArchiveRestore
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -39,10 +39,17 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
     urgence: 'Urgent',
     machineId: '',
     operateurId: '',
-    tempsPrevuMin: 120,
+    tempsReglageMin: 20,
+    tempsUnitaireMin: 6,
     matiere: '',
     chuteDispo: true
   });
+
+  // Filters & archiving
+  const [filterStatut, setFilterStatut] = useState('all');
+  const [filterMachine, setFilterMachine] = useState('all');
+  const [filterUrgence, setFilterUrgence] = useState('all');
+  const [showArchived, setShowArchived] = useState(false);
 
   const [newUser, setNewUser] = useState({ nom: '', username: '', password: '', role: 'operateur' });
   const [editingUserId, setEditingUserId] = useState(null);
@@ -55,7 +62,8 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
     machineId: '',
     matiereDispo: true,
     delaiFournisseurJours: 0,
-    tempsParPieceMin: 15
+    tempsReglageMin: 20,
+    tempsParPieceMin: 10
   });
   const [simResult, setSimResult] = useState(null);
   const [prices, setPrices] = useState({});
@@ -71,24 +79,42 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
     setTimeout(() => setToast({ type: 'ok', text: '' }), 4000);
   }
 
-  const filteredPieces = state.pieces.filter(p =>
-    !search ||
-    p.id.toLowerCase().includes(search.toLowerCase()) ||
-    p.nom.toLowerCase().includes(search.toLowerCase()) ||
-    (p.client || '').toLowerCase().includes(search.toLowerCase())
-  );
+  const filteredPieces = state.pieces.filter(p => {
+    if (!showArchived && p.archived) return false;
+    if (filterStatut !== 'all' && p.statut !== filterStatut) return false;
+    if (filterMachine !== 'all' && p.machineId !== filterMachine) return false;
+    if (filterUrgence !== 'all' && p.urgence !== filterUrgence) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      return (
+        p.id.toLowerCase().includes(q) ||
+        p.nom.toLowerCase().includes(q) ||
+        (p.client || '').toLowerCase().includes(q) ||
+        (p.operateur || '').toLowerCase().includes(q)
+      );
+    }
+    return true;
+  });
 
-  const enCours = state.pieces.filter(p => p.statut === 'En cours').length;
-  const aAcheter = state.pieces.filter(p => p.statut === 'À acheter').length;
+  const nonArchivedPieces = state.pieces.filter(p => !p.archived);
+  const enCours = nonArchivedPieces.filter(p => p.statut === 'En cours').length;
+  const aAcheter = nonArchivedPieces.filter(p => p.statut === 'À acheter').length;
   const clotures = state.pieces.filter(p => p.statut === 'Clôturé').length;
-  const critiques = state.pieces.filter(p => p.urgence === 'Critique' && p.statut !== 'Clôturé').length;
   const openPannes = (state.pannes || []).filter(p => p.statut === 'Ouverte');
+  const analytics = state.analytics || {
+    trsPct: 100, disponibilitePct: 100, performancePct: 100, qualitePct: 100,
+    tauxRebutPct: 0, totalBonnes: 0, totalRebuts: 0, totalPrevuMin: 0, totalReelMin: 0,
+    totalReglageMin: 0, totalUsinageMin: 0, setupRatioPct: 0, totalArretPanneMin: 0,
+    machineStats: [], operatorStats: [], aiInsights: []
+  };
+  const aiRecs = state.aiRecommendations || [];
 
   function proposePriceAI(p) {
     const ops = p.operations || [];
     let machineCost = 0;
     if (ops.length > 0) {
       machineCost = ops.reduce((sum, o) => {
+        if (o.estSousTraitance) return sum + 4000;
         const hrs = (o.tempsReelMin || o.tempsPrevuMin || 60) / 60;
         const rate = o.machineTauxHoraire || 2500;
         return sum + hrs * rate;
@@ -100,6 +126,38 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
     const matCost = p.chuteDispo ? 1500 : 6000;
     const estimated = Math.round((machineCost + matCost) * 1.3);
     setPrices(prev => ({ ...prev, [p.id]: estimated }));
+  }
+
+  async function applyAiRec(rec) {
+    try {
+      await api('/api/planning/ai-apply', 'POST', { actionType: rec.actionType, payload: rec.payload });
+      showToast(`Action IA exécutée : ${rec.title}`);
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  async function validateMaintenance(m) {
+    const desc = window.prompt(`Description de l'entretien préventif sur ${m.nom} :`, 'Graissage, contrôle niveaux et géométrie');
+    if (desc === null) return;
+    try {
+      await api(`/api/machines/${m.id}/maintenance`, 'POST', { description: desc });
+      showToast(`Entretien validé sur ${m.nom}.`);
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  async function toggleArchive(p) {
+    try {
+      const res = await api(`/api/pieces/${p.id}/archive`, 'POST', { archived: !p.archived });
+      showToast(res.archived ? `OF ${p.id} archivé.` : `OF ${p.id} restauré des archives.`);
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
   }
 
   async function runSimulation() {
@@ -121,7 +179,9 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
         delai: sim.delai,
         urgence: 'Urgent',
         machineId: sim.machineId,
-        tempsPrevuMin: simResult?.newLoadMin || (sim.quantite * (sim.tempsParPieceMin || 15)),
+        tempsReglageMin: sim.tempsReglageMin,
+        tempsUnitaireMin: sim.tempsParPieceMin,
+        tempsPrevuMin: simResult?.newLoadMin || (Number(sim.tempsReglageMin || 0) + sim.quantite * (sim.tempsParPieceMin || 10)),
         matiereDispo: sim.matiereDispo,
         chuteDispo: sim.matiereDispo
       });
@@ -143,7 +203,8 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
       urgence: 'Urgent',
       machineId: activeMachines[0]?.id || '',
       operateurId: operators[0]?.id || '',
-      tempsPrevuMin: 120,
+      tempsReglageMin: 20,
+      tempsUnitaireMin: 6,
       matiere: '',
       chuteDispo: true
     });
@@ -249,17 +310,9 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
     autoTable(doc, {
       startY: 24,
       head: [['Ordre', 'OF', 'Piece', 'Client', 'Machine', 'Operateur', 'Ops', 'Delai', 'Urgence', 'Statut', 'Qte / Rebuts']],
-      body: state.pieces.map((p, i) => [
-        `#${p.ordrePlanning || i + 1}`,
-        p.id,
-        p.nom,
-        p.client,
-        p.machine,
-        p.operateur,
-        `${p.opsTerminees}/${p.opsTotal}`,
-        p.delai,
-        p.urgence,
-        p.statut,
+      body: filteredPieces.map((p, i) => [
+        `#${p.ordrePlanning || i + 1}`, p.id, p.nom, p.client, p.machine, p.operateur,
+        `${p.opsTerminees}/${p.opsTotal}`, p.delai, p.urgence, p.statut,
         `${p.quantiteRealisee}/${p.quantitePrevue}${p.quantiteRebut > 0 ? ` (${p.quantiteRebut} NC)` : ''}`
       ]),
       styles: { fontSize: 8 },
@@ -269,12 +322,12 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
   }
 
   function exportExcel() {
-    const headers = ['Ordre', 'OF', 'Piece', 'Client', 'Machine', 'Operateur', 'Operations', 'Delai', 'Urgence', 'Statut', 'Qte Bonne', 'Qte Prevue', 'Qte Rebut', 'Temps Reel (min)', 'Temps Prevu (min)', 'Prix Final (DZD)'];
-    const rows = state.pieces.map((p, i) => [
+    const headers = ['Ordre', 'OF', 'Piece', 'Client', 'Machine', 'Operateur', 'Operations', 'Delai', 'Urgence', 'Statut', 'Qte Bonne', 'Qte Prevue', 'Qte Rebut', 'Reglage (min)', 'Temps Reel (min)', 'Temps Prevu (min)', 'Prix Final (DZD)'];
+    const rows = filteredPieces.map((p, i) => [
       p.ordrePlanning || i + 1, p.id, p.nom, p.client, p.machine, p.operateur,
       `${p.opsTerminees}/${p.opsTotal}`, p.delai, p.urgence, p.statut,
       p.quantiteRealisee, p.quantitePrevue, p.quantiteRebut || 0,
-      p.tempsReelMin, p.tempsPrevuMin, p.prixFinal || 0
+      p.totalReglageMin || 0, p.tempsReelMin, p.tempsPrevuMin, p.prixFinal || 0
     ]);
     const csv = '\uFEFF' + [headers, ...rows].map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\n');
     const a = document.createElement('a');
@@ -296,11 +349,11 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
         ['Urgence / Delai', `${p.urgence} — ${p.delai}`],
         ['Machine / Operateur', `${p.machine} — ${p.operateur}`],
         ['Quantite (Bonne / Prevue / Rebuts)', `${p.quantiteRealisee} / ${p.quantitePrevue} (Rebuts: ${p.quantiteRebut || 0})`],
-        ['Temps (Reel / Prevu)', `${p.tempsReelMin} min / ${p.tempsPrevuMin} min`],
+        ['Temps (Reglage / Reel / Prevu)', `${p.totalReglageMin || 0} min / ${p.tempsReelMin} min / ${p.tempsPrevuMin} min`],
         ['Matiere / Fournisseur', `${p.matiere} (${p.fournisseur || '—'})`],
         ['Outillage', p.outils || '—'],
         ['Prix final', p.prixFinal > 0 ? `${p.prixFinal.toLocaleString('fr-FR')} DZD` : '—'],
-        ['BE (Fichier / Prog / 3D)', `${p.be.nomFichier || '—'} / ${p.be.programme || '—'} / ${p.be.dessin3d || '—'}`]
+        ['BE (Plan / Prog / 3D)', `${p.be.nomFichier || '—'} / ${p.be.programme || '—'} / ${p.be.dessin3d || '—'}`]
       ],
       headStyles: { fillColor: [34, 211, 238], textColor: [11, 15, 20] }
     });
@@ -308,15 +361,11 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
     if ((p.operations || []).length > 0) {
       autoTable(doc, {
         startY: doc.lastAutoTable.finalY + 8,
-        head: [['Op', 'Libelle', 'Machine', 'Operateur', 'Temps', 'Qte / NC', 'Statut']],
+        head: [['Op', 'Libelle', 'Machine', 'Operateur', 'Regl./Prevu/Reel', 'Qte / NC', 'Statut']],
         body: p.operations.map((o, idx) => [
-          `Op ${(idx + 1) * 10}`,
-          o.libelle,
-          o.machine,
-          o.operateur,
-          `${o.tempsReelMin}/${o.tempsPrevuMin}m`,
-          `${o.quantiteBonne} ok / ${o.quantiteRebut} NC`,
-          o.statut
+          `Op ${(idx + 1) * 10}`, o.libelle, o.machine, o.operateur,
+          `${o.tempsReglageMin || 0}m / ${o.tempsPrevuMin}m / ${o.tempsReelMin}m`,
+          `${o.quantiteBonne} ok / ${o.quantiteRebut} NC`, o.statut
         ]),
         styles: { fontSize: 8 },
         headStyles: { fillColor: [17, 24, 33], textColor: [248, 250, 252] }
@@ -326,6 +375,18 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
     const zip = new JSZip();
     zip.file(`Fiche_${p.id}.pdf`, doc.output('blob'));
     zip.file(`BE_${p.id}_infos.txt`, `Fichier: ${p.be.nomFichier}\nProgramme: ${p.be.programme}\nDessin 3D: ${p.be.dessin3d}\nNotes qualite: ${p.notesQualite || '—'}\n`);
+
+    // Bundle actual active uploaded BE files inside the ZIP!
+    const activeFiles = (p.beFiles || []).filter(f => f.isActive);
+    for (const f of activeFiles) {
+      try {
+        const resp = await fetch(f.url);
+        if (resp.ok) {
+          zip.file(`BE/${f.categorie}_${f.revision.replace(/\s+/g, '')}_${f.filename}`, await resp.blob());
+        }
+      } catch {}
+    }
+
     const a = document.createElement('a');
     a.href = URL.createObjectURL(await zip.generateAsync({ type: 'blob' }));
     a.download = `${p.id}_Dossier_Complet.zip`;
@@ -334,6 +395,38 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
 
   const hoursAxis = ['08h', '09h', '10h', '11h', '12h', '13h', '14h', '15h', '16h', '17h'];
   const nowPct = nowLinePercent();
+  const computedModalMin = Math.round((Number(newPieceForm.tempsReglageMin) || 0) + (Number(newPieceForm.tempsUnitaireMin) || 0) * (Number(newPieceForm.quantitePrevue) || 1));
+
+  const filterBar = (
+    <div className="cyber-card p-3 flex flex-wrap items-center gap-2 text-xs">
+      <span className="text-slate-400 flex items-center gap-1 mr-1"><Filter className="w-3.5 h-3.5 text-[#22D3EE]" /> Filtres :</span>
+      <select value={filterStatut} onChange={e => setFilterStatut(e.target.value)} className="p-1.5 rounded bg-[#0B0F14] border border-[#1E2A38]">
+        <option value="all">Tous les statuts</option>
+        <option value="À planifier">À planifier</option>
+        <option value="À acheter">À acheter</option>
+        <option value="Prêt atelier">Prêt atelier</option>
+        <option value="En cours">En cours</option>
+        <option value="En pause">En pause</option>
+        <option value="Panne machine">Panne machine</option>
+        <option value="À clôturer">À clôturer</option>
+        <option value="Clôturé">Clôturé</option>
+      </select>
+      <select value={filterMachine} onChange={e => setFilterMachine(e.target.value)} className="p-1.5 rounded bg-[#0B0F14] border border-[#1E2A38]">
+        <option value="all">Toutes machines</option>
+        {state.machines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
+      </select>
+      <select value={filterUrgence} onChange={e => setFilterUrgence(e.target.value)} className="p-1.5 rounded bg-[#0B0F14] border border-[#1E2A38]">
+        <option value="all">Toutes urgences</option>
+        <option value="Critique">Critique</option>
+        <option value="Urgent">Urgent</option>
+        <option value="Normal">Normal</option>
+      </select>
+      <label className="flex items-center gap-1.5 text-slate-300 ml-auto cursor-pointer">
+        <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} className="accent-[#22D3EE]" />
+        Afficher archivés ({state.pieces.filter(p => p.archived).length})
+      </label>
+    </div>
+  );
 
   return (
     <div className="space-y-5">
@@ -393,17 +486,24 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                 </select>
               </div>
               <div>
-                <label className="text-[11px] text-slate-400">Temps prévu (min)</label>
-                <input type="number" min="5" value={newPieceForm.tempsPrevuMin} onChange={e => setNewPieceForm({ ...newPieceForm, tempsPrevuMin: Number(e.target.value) })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-white" />
+                <label className="text-[11px] text-slate-400">Temps réglage / Setup (min)</label>
+                <input type="number" min="0" value={newPieceForm.tempsReglageMin} onChange={e => setNewPieceForm({ ...newPieceForm, tempsReglageMin: Number(e.target.value) })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-white" />
               </div>
               <div>
+                <label className="text-[11px] text-slate-400">Temps unitaire (min/pièce)</label>
+                <input type="number" min="0" step="0.5" value={newPieceForm.tempsUnitaireMin} onChange={e => setNewPieceForm({ ...newPieceForm, tempsUnitaireMin: Number(e.target.value) })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-white" />
+              </div>
+              <div className="sm:col-span-2">
                 <label className="text-[11px] text-slate-400">Matière</label>
                 <input value={newPieceForm.matiere} onChange={e => setNewPieceForm({ ...newPieceForm, matiere: e.target.value })} placeholder="Ex: Acier 42CrMo4 Ø65" className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white" />
               </div>
-              <label className="sm:col-span-2 flex items-center gap-2 cursor-pointer text-slate-300 pt-1">
-                <input type="checkbox" checked={newPieceForm.chuteDispo} onChange={e => setNewPieceForm({ ...newPieceForm, chuteDispo: e.target.checked })} className="accent-[#22D3EE]" />
-                Matière / chute déjà disponible en stock
-              </label>
+              <div className="sm:col-span-2 flex items-center justify-between pt-1">
+                <label className="flex items-center gap-2 cursor-pointer text-slate-300">
+                  <input type="checkbox" checked={newPieceForm.chuteDispo} onChange={e => setNewPieceForm({ ...newPieceForm, chuteDispo: e.target.checked })} className="accent-[#22D3EE]" />
+                  Matière / chute disponible
+                </label>
+                <span className="font-mono-num text-[#22D3EE]">Total prévu : {computedModalMin} min ({(computedModalMin / 60).toFixed(1)}h)</span>
+              </div>
             </div>
             <div className="flex justify-end gap-2 pt-2 border-t border-[#1E2A38]">
               <button type="button" onClick={() => setShowNewModal(false)} className="px-3 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-slate-300 cursor-pointer">Annuler</button>
@@ -413,13 +513,14 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
         </div>
       )}
 
+      {/* PANEL 1: OVERVIEW */}
       {activePanel === 'overview' && (
         <>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h1 className="text-lg font-semibold text-white">Vue d'ensemble de l'atelier</h1>
               <p className="text-xs text-slate-400">
-                {new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })} · {activeMachines.length} machine(s) active(s)
+                {new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })} · {activeMachines.length} machine(s) active(s) · TRS estimé <strong className="text-[#22D3EE] font-mono-num">{analytics.trsPct}%</strong>
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -435,10 +536,10 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
           {/* 4 KPI CARDS */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             {[
-              ['TOTAL DOSSIERS', state.pieces.length, '#F8FAFC', `${state.pieces.filter(p => p.statut !== 'Clôturé').length} ouverts`],
+              ['TRS GLOBAL', `${analytics.trsPct}%`, '#22D3EE', `Disp. ${analytics.disponibilitePct}% · Qual. ${analytics.qualitePct}%`],
               ['EN FABRICATION', enCours, '#22D3EE', `${openPannes.length} panne(s) active(s)`],
-              ['ACHATS EN ATTENTE', aAcheter, '#F59E0B', `${critiques} critique(s)`],
-              ['CLÔTURÉS', clotures, '#10B981', `${state.pieces.reduce((s, p) => s + (p.quantiteRebut || 0), 0)} rebut(s)`]
+              ['ACHATS EN ATTENTE', aAcheter, '#F59E0B', `${(state.conflicts || []).length} conflit(s) planning`],
+              ['CLÔTURÉS', clotures, '#10B981', `Rebuts : ${analytics.tauxRebutPct}% (${analytics.totalRebuts} pcs)`]
             ].map(([lbl, val, col, sub]) => (
               <div key={lbl} className="cyber-card cyber-corners p-4 flex flex-col justify-between">
                 <div className="text-[10px] font-semibold tracking-wider text-slate-400">{lbl}</div>
@@ -448,7 +549,7 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
             ))}
           </div>
 
-          {/* GANTT + AI SYNTHESIS */}
+          {/* GANTT + IA SYNTHESIS */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2 min-w-0 cyber-card p-4 overflow-hidden">
               <div className="flex items-center justify-between mb-3">
@@ -471,8 +572,8 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                     )}
                     {activeMachines.map(m => {
                       const machineOps = state.pieces
-                        .filter(p => p.statut !== 'Clôturé')
-                        .flatMap(p => (p.operations || []).filter(o => o.machineId === m.id && o.statut !== 'Terminée').map(o => ({ ...o, piece: p })));
+                        .filter(p => p.statut !== 'Clôturé' && !p.archived)
+                        .flatMap(p => (p.operations || []).filter(o => !o.estSousTraitance && o.machineId === m.id && o.statut !== 'Terminée').map(o => ({ ...o, piece: p })));
                       return (
                         <div key={m.id} className="flex items-center gap-3 text-xs">
                           <div className="w-28 shrink-0">
@@ -489,7 +590,7 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                               <div
                                 key={op.id}
                                 title={`${op.piece.id} · ${op.libelle} (${op.operateur})`}
-                                className={`px-2 py-0.5 rounded-[4px] border text-[10px] font-mono-num truncate max-w-[200px] ${statusBadge(op.statut === 'Panne machine' ? 'Panne machine' : op.piece.statut, op.piece.urgence)}`}
+                                className={`px-2 py-0.5 rounded-[4px] border text-[10px] font-mono-num truncate max-w-[210px] ${statusBadge(op.statut === 'Panne machine' ? 'Panne machine' : op.piece.statut, op.piece.urgence)}`}
                               >
                                 {op.piece.id} · {op.libelle} ({(op.tempsPrevuMin / 60).toFixed(1)}h)
                               </div>
@@ -504,27 +605,25 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
             </div>
 
             <div className="min-w-0 cyber-card cyber-corners p-4 flex flex-col justify-between space-y-3">
-              <div className="space-y-2.5">
+              <div className="space-y-2">
                 <h2 className="text-sm font-semibold text-white flex items-center gap-2">
                   <Bot className="w-4 h-4 text-[#22D3EE]" /> Synthèse IA Direction
                 </h2>
-                <span className="inline-block px-2 py-0.5 rounded bg-[#22D3EE]/10 border border-[#22D3EE]/30 text-[#22D3EE] text-[10px] font-mono-num">
-                  {enCours} en fabrication
-                </span>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  {aAcheter} ordre(s) bloqué(s) en attente d'approvisionnement matière. {clotures} dossier(s) clôturé(s).
-                </p>
-                {openPannes.length > 0 && (
-                  <div className="p-2 rounded bg-red-500/15 border border-red-500/40 text-[11px] text-red-300 flex items-start gap-1.5">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                    <span>{openPannes.length} panne(s) machine ouverte(s) : {openPannes.map(x => x.machineNom).join(', ')}.</span>
-                  </div>
-                )}
-                {critiques > 0 && (
-                  <div className="p-2 rounded bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300">
-                    {critiques} pièce(s) critique(s) : suivi prioritaire requis.
-                  </div>
-                )}
+                <div className="space-y-1.5">
+                  {(analytics.aiInsights || []).map((ins, i) => (
+                    <div
+                      key={i}
+                      className={`p-2 rounded border text-[11px] leading-snug ${
+                        ins.level === 'danger' ? 'bg-red-500/15 border-red-500/40 text-red-300' :
+                        ins.level === 'warn' ? 'bg-amber-500/10 border-amber-500/30 text-amber-300' :
+                        ins.level === 'info' ? 'bg-[#22D3EE]/10 border-[#22D3EE]/30 text-cyan-200' :
+                        'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                      }`}
+                    >
+                      {ins.text}
+                    </div>
+                  ))}
+                </div>
               </div>
               <button onClick={validateAll} className="w-full py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-xs font-medium text-slate-200 cursor-pointer">
                 Valider & Publier Planning
@@ -532,25 +631,30 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
             </div>
           </div>
 
+          {filterBar}
+
           {/* ORDERS TABLE */}
           <div className="cyber-card p-4">
-            <h2 className="text-sm font-semibold text-white mb-3">Ordres de fabrication</h2>
+            <h2 className="text-sm font-semibold text-white mb-3">Ordres de fabrication ({filteredPieces.length})</h2>
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs min-w-[740px]">
+              <table className="w-full text-left text-xs min-w-[760px]">
                 <thead className="text-[10px] text-slate-500 uppercase border-b border-[#1E2A38]">
                   <tr>
                     <th className="py-2 pr-3">OF</th>
                     <th className="py-2 pr-3">Pièce / Client</th>
                     <th className="py-2 pr-3">Machine / Opérateur</th>
                     <th className="py-2 pr-3">Gamme & Avancement</th>
-                    <th className="py-2 pr-3">Temps</th>
+                    <th className="py-2 pr-3">Régl. / Temps</th>
                     <th className="py-2">Statut</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#1E2A38]">
                   {filteredPieces.map(p => (
                     <tr key={p.id} className="hover:bg-white/[0.02]">
-                      <td className="py-2.5 pr-3 font-mono-num text-slate-200">{p.id}</td>
+                      <td className="py-2.5 pr-3 font-mono-num text-slate-200">
+                        {p.id}
+                        {p.archived && <span className="ml-1 text-[9px] text-slate-500">(arch.)</span>}
+                      </td>
                       <td className="py-2.5 pr-3">
                         <div className="text-slate-200">{p.nom}</div>
                         <div className="text-[10px] text-slate-500">{p.client}</div>
@@ -569,7 +673,9 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                           {p.quantiteRebut > 0 && <span className="text-[10px] font-mono-num text-red-400">{p.quantiteRebut} NC</span>}
                         </div>
                       </td>
-                      <td className="py-2.5 pr-3 font-mono-num text-slate-400">{p.tempsReelMin} / {p.tempsPrevuMin} min</td>
+                      <td className="py-2.5 pr-3 font-mono-num text-slate-400">
+                        <span className="text-[#22D3EE]">{p.totalReglageMin || 0}m</span> · {p.tempsReelMin}/{p.tempsPrevuMin}m
+                      </td>
                       <td className="py-2.5">
                         <span className={`px-2 py-0.5 rounded-[4px] border text-[11px] font-medium ${statusBadge(p.statut, p.urgence)}`}>
                           {p.urgence} · {p.statut}
@@ -584,52 +690,221 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
         </>
       )}
 
-      {activePanel === 'planning' && (
-        <div className="cyber-card p-4 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold text-white">Tableau de Planning Général</h2>
-            <div className="flex flex-wrap gap-2">
-              <button onClick={exportPDF} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-xs flex items-center gap-1.5 cursor-pointer"><FileText className="w-3.5 h-3.5" /> PDF</button>
-              <button onClick={exportExcel} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-xs flex items-center gap-1.5 cursor-pointer"><FileSpreadsheet className="w-3.5 h-3.5" /> Excel</button>
-              <button onClick={validateAll} className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] text-[#0B0F14] font-semibold text-xs flex items-center gap-1.5 cursor-pointer"><CheckCircle className="w-3.5 h-3.5" /> Valider TV</button>
+      {/* PANEL 2: PILOTAGE ATELIER, TRS & MAINTENANCE PREVENTIVE */}
+      {activePanel === 'pilotage' && (
+        <div className="space-y-5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h1 className="text-lg font-semibold text-white flex items-center gap-2">
+                <Activity className="w-5 h-5 text-[#22D3EE]" /> Pilotage Atelier — TRS, Qualité & Maintenance Préventive
+              </h1>
+              <p className="text-xs text-slate-400">Indicateurs temps réel calculés à partir des gammes, pointages opérateurs, pannes et compteurs machines.</p>
             </div>
           </div>
-          <div className="md:hidden space-y-2.5">
-            {filteredPieces.map((p, i) => (
-              <div key={p.id} className="bg-[#0B0F14] border border-[#1E2A38] rounded-[6px] p-3 text-xs space-y-1.5">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono-num font-semibold text-white">#{p.ordrePlanning || i + 1} · {p.id}</span>
-                  <span className={`px-2 py-0.5 rounded-[4px] border text-[11px] whitespace-nowrap ${statusBadge(p.statut, p.urgence)}`}>{p.statut}</span>
-                </div>
-                <div className="text-slate-200 font-medium">{p.nom}</div>
-                <div className="text-slate-400">{p.machine} · {p.operateur} · {p.delai}</div>
+
+          {/* 5 TRS & SETUP KPIS */}
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+            {[
+              ['TRS GLOBAL', `${analytics.trsPct}%`, '#22D3EE', 'Disp × Perf × Qualité'],
+              ['DISPONIBILITÉ', `${analytics.disponibilitePct}%`, '#10B981', `${analytics.totalArretPanneMin} min d'arrêt panne`],
+              ['PERFORMANCE', `${analytics.performancePct}%`, '#38BDF8', `${analytics.totalReelMin}/${analytics.totalPrevuMin} min`],
+              ['QUALITÉ', `${analytics.qualitePct}%`, analytics.tauxRebutPct > 3 ? '#F59E0B' : '#10B981', `${analytics.totalBonnes} ok · ${analytics.totalRebuts} NC (${analytics.tauxRebutPct}%)`],
+              ['PART RÉGLAGE', `${analytics.setupRatioPct}%`, '#A78BFA', `${analytics.totalReglageMin}m régl. / ${analytics.totalUsinageMin}m usin.`]
+            ].map(([lbl, val, col, sub]) => (
+              <div key={lbl} className="cyber-card cyber-corners p-4">
+                <div className="text-[10px] font-semibold tracking-wider text-slate-400">{lbl}</div>
+                <div className="text-2xl font-bold font-mono-num mt-1" style={{ color: col }}>{val}</div>
+                <div className="text-[10px] text-slate-500 mt-1">{sub}</div>
               </div>
             ))}
           </div>
-          <div className="hidden md:block overflow-x-auto">
-            <table className="w-full text-left text-xs min-w-[760px]">
-              <thead className="text-[10px] text-slate-500 uppercase border-b border-[#1E2A38]">
-                <tr><th className="py-2">Ordre</th><th className="py-2">OF</th><th className="py-2">Pièce</th><th className="py-2">Machine</th><th className="py-2">Opérateur</th><th className="py-2">Ops</th><th className="py-2">Délai</th><th className="py-2">Statut</th></tr>
-              </thead>
-              <tbody className="divide-y divide-[#1E2A38]">
-                {filteredPieces.map((p, i) => (
-                  <tr key={p.id}>
-                    <td className="py-2.5 font-mono-num">#{p.ordrePlanning || i + 1}</td>
-                    <td className="py-2.5 font-mono-num">{p.id}</td>
-                    <td className="py-2.5">{p.nom}</td>
-                    <td className="py-2.5 text-slate-400">{p.machine}</td>
-                    <td className="py-2.5 text-slate-400">{p.operateur}</td>
-                    <td className="py-2.5 font-mono-num text-[#22D3EE]">{p.opsTerminees}/{p.opsTotal}</td>
-                    <td className="py-2.5 font-mono-num">{p.delai}</td>
-                    <td className="py-2.5"><span className={`px-2 py-0.5 rounded-[4px] border text-[11px] ${statusBadge(p.statut, p.urgence)}`}>{p.statut}</span></td>
-                  </tr>
+
+          {/* IA DIRECTION RECOMMENDATIONS */}
+          {aiRecs.length > 0 && (
+            <div className="cyber-card cyber-corners p-4 space-y-2.5 text-xs">
+              <div className="font-semibold text-sm text-[#22D3EE] flex items-center gap-2">
+                <Bot className="w-4 h-4" /> Actions recommandées par l'IA
+              </div>
+              <div className="grid md:grid-cols-2 gap-2.5">
+                {aiRecs.map(rec => (
+                  <div key={rec.id} className="p-3 rounded bg-[#0B0F14] border border-[#1E2A38] flex items-center justify-between gap-3">
+                    <div>
+                      <div className="font-semibold text-white">{rec.title}</div>
+                      <div className="text-[11px] text-slate-400 mt-0.5">{rec.reason}</div>
+                    </div>
+                    <button onClick={() => applyAiRec(rec)} className="px-2.5 py-1.5 rounded bg-[#22D3EE]/15 border border-[#22D3EE]/40 text-[#22D3EE] hover:bg-[#22D3EE] hover:text-[#0B0F14] font-semibold shrink-0 cursor-pointer">
+                      Appliquer
+                    </button>
+                  </div>
                 ))}
-              </tbody>
-            </table>
+              </div>
+            </div>
+          )}
+
+          {/* MACHINE PERFORMANCE + PREVENTIVE MAINTENANCE */}
+          <div className="cyber-card p-4 space-y-3">
+            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+              <Wrench className="w-4 h-4 text-[#22D3EE]" /> Performance & Maintenance Préventive par Machine
+            </h2>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs min-w-[860px]">
+                <thead className="text-[10px] text-slate-500 uppercase border-b border-[#1E2A38]">
+                  <tr>
+                    <th className="py-2 pr-2">Machine</th>
+                    <th className="py-2 pr-2">Charge / Cap.</th>
+                    <th className="py-2 pr-2">Réel / Prévu (Écart)</th>
+                    <th className="py-2 pr-2">Pannes / Arrêt</th>
+                    <th className="py-2 pr-2">Qualité (Rebuts)</th>
+                    <th className="py-2 pr-2">Compteur Entretien</th>
+                    <th className="py-2">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#1E2A38]">
+                  {(analytics.machineStats || []).map(ms => (
+                    <tr key={ms.id}>
+                      <td className="py-2.5 pr-2">
+                        <div className="font-semibold text-white flex items-center gap-1.5">
+                          {ms.nom}
+                          {ms.enPanne && <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 text-[9px]">PANNE</span>}
+                        </div>
+                        <div className="text-[10px] text-slate-500">{ms.type}</div>
+                      </td>
+                      <td className="py-2.5 pr-2 font-mono-num">
+                        <div className="flex items-center gap-2">
+                          <div className="w-16 h-1.5 bg-[#0B0F14] rounded-full overflow-hidden">
+                            <div className={`h-full ${ms.utilisationPct > 100 ? 'bg-red-500' : 'bg-[#22D3EE]'}`} style={{ width: `${Math.min(100, ms.utilisationPct)}%` }}></div>
+                          </div>
+                          <span className={ms.utilisationPct > 100 ? 'text-red-400' : 'text-slate-200'}>{ms.utilisationPct}%</span>
+                        </div>
+                      </td>
+                      <td className="py-2.5 pr-2 font-mono-num">
+                        {ms.reelMin}/{ms.prevuMin}m{' '}
+                        <span className={ms.ecartMin > 0 ? 'text-red-400' : 'text-emerald-400'}>
+                          ({ms.ecartMin > 0 ? `+${ms.ecartMin}m` : `${ms.ecartMin}m`})
+                        </span>
+                      </td>
+                      <td className="py-2.5 pr-2 font-mono-num text-slate-300">
+                        {ms.nbPannes} ({ms.arretMin}m)
+                      </td>
+                      <td className="py-2.5 pr-2 font-mono-num">
+                        <span className={ms.tauxRebutPct > 3 ? 'text-red-400' : 'text-emerald-400'}>{ms.tauxRebutPct}%</span>
+                        <span className="text-slate-500 ml-1">({ms.rebuts} NC)</span>
+                      </td>
+                      <td className="py-2.5 pr-2 font-mono-num">
+                        <div className="flex items-center gap-1.5">
+                          {ms.maintenanceStatut !== 'ok' && <ShieldAlert className={`w-3.5 h-3.5 ${ms.maintenanceStatut === 'du' ? 'text-red-400' : 'text-amber-400'}`} />}
+                          <span className={ms.maintenanceStatut === 'du' ? 'text-red-400 font-semibold' : ms.maintenanceStatut === 'proche' ? 'text-amber-300' : 'text-slate-300'}>
+                            {ms.heuresDepuisEntretien}h / {ms.intervalleEntretienH}h
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-slate-500">Dernier : {ms.dernierEntretienDate}</div>
+                      </td>
+                      <td className="py-2.5">
+                        <button
+                          type="button"
+                          onClick={() => validateMaintenance(ms)}
+                          className="px-2.5 py-1 rounded border border-amber-500/40 text-amber-300 hover:bg-amber-500/15 text-[11px] cursor-pointer"
+                        >
+                          Valider entretien
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* OPERATOR STATS + MAINTENANCE HISTORY */}
+          <div className="grid md:grid-cols-2 gap-4">
+            <div className="cyber-card p-4 space-y-3">
+              <h3 className="text-sm font-semibold text-white">Qualité & Temps par Opérateur</h3>
+              <table className="w-full text-left text-xs">
+                <thead className="text-[10px] text-slate-500 uppercase border-b border-[#1E2A38]">
+                  <tr>
+                    <th className="py-1.5">Opérateur</th>
+                    <th className="py-1.5">Ops actives</th>
+                    <th className="py-1.5">Bonnes / NC</th>
+                    <th className="py-1.5">Temps réel</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#1E2A38]">
+                  {(analytics.operatorStats || []).map(os => (
+                    <tr key={os.id}>
+                      <td className="py-2 font-medium text-white">{os.nom}</td>
+                      <td className="py-2 font-mono-num text-[#22D3EE]">{os.activeOps}</td>
+                      <td className="py-2 font-mono-num">
+                        {os.bonnes} ok · <span className={os.rebuts > 0 ? 'text-red-400' : 'text-emerald-400'}>{os.rebuts} NC ({os.tauxRebutPct}%)</span>
+                      </td>
+                      <td className="py-2 font-mono-num text-slate-300">{os.reelMin} / {os.prevuMin}m</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="cyber-card p-4 space-y-3">
+              <h3 className="text-sm font-semibold text-white">Historique Maintenance Préventive</h3>
+              {(state.maintenanceLogs || []).length === 0 ? (
+                <div className="text-xs text-slate-500">Aucun entretien préventif enregistré pour l'instant.</div>
+              ) : (
+                <div className="space-y-1.5 text-xs max-h-56 overflow-y-auto">
+                  {(state.maintenanceLogs || []).map(ml => (
+                    <div key={ml.id} className="p-2 rounded bg-[#0B0F14] border border-[#1E2A38] flex justify-between gap-2">
+                      <div>
+                        <span className="font-semibold text-[#22D3EE]">{ml.machineNom}</span>
+                        <span className="text-slate-300 ml-1.5">— {ml.description}</span>
+                        <div className="text-[10px] text-slate-500">Par {ml.effectuePar} à {Math.round(ml.heuresAuCompteur || 0)}h</div>
+                      </div>
+                      <span className="font-mono-num text-[10px] text-slate-500 shrink-0">{ml.createdAt}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
 
+      {/* PANEL 3: PLANNING */}
+      {activePanel === 'planning' && (
+        <div className="space-y-4">
+          {filterBar}
+          <div className="cyber-card p-4 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold text-white">Tableau de Planning Général ({filteredPieces.length})</h2>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={exportPDF} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-xs flex items-center gap-1.5 cursor-pointer"><FileText className="w-3.5 h-3.5" /> PDF</button>
+                <button onClick={exportExcel} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-xs flex items-center gap-1.5 cursor-pointer"><FileSpreadsheet className="w-3.5 h-3.5" /> Excel</button>
+                <button onClick={validateAll} className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] text-[#0B0F14] font-semibold text-xs flex items-center gap-1.5 cursor-pointer"><CheckCircle className="w-3.5 h-3.5" /> Valider TV</button>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs min-w-[780px]">
+                <thead className="text-[10px] text-slate-500 uppercase border-b border-[#1E2A38]">
+                  <tr><th className="py-2">Ordre</th><th className="py-2">OF</th><th className="py-2">Pièce</th><th className="py-2">Machine</th><th className="py-2">Opérateur</th><th className="py-2">Ops</th><th className="py-2">Délai</th><th className="py-2">Statut</th></tr>
+                </thead>
+                <tbody className="divide-y divide-[#1E2A38]">
+                  {filteredPieces.map((p, i) => (
+                    <tr key={p.id}>
+                      <td className="py-2.5 font-mono-num">#{p.ordrePlanning || i + 1}</td>
+                      <td className="py-2.5 font-mono-num">{p.id}</td>
+                      <td className="py-2.5">{p.nom}</td>
+                      <td className="py-2.5 text-slate-400">{p.machine}</td>
+                      <td className="py-2.5 text-slate-400">{p.operateur}</td>
+                      <td className="py-2.5 font-mono-num text-[#22D3EE]">{p.opsTerminees}/{p.opsTotal}</td>
+                      <td className="py-2.5 font-mono-num">{p.delai}</td>
+                      <td className="py-2.5"><span className={`px-2 py-0.5 rounded-[4px] border text-[11px] ${statusBadge(p.statut, p.urgence)}`}>{p.statut}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PANEL 4: SIMULATOR */}
       {activePanel === 'simulator' && (
         <div className="cyber-card p-5 space-y-4">
           <h2 className="text-sm font-semibold text-white">Simulateur de Décision (What-If)</h2>
@@ -639,6 +914,7 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
             <select value={sim.machineId} onChange={e => setSim({ ...sim, machineId: e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]">
               {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}{m.enPanne ? ' (PANNE)' : ''}</option>)}
             </select>
+            <input type="number" min="0" placeholder="Temps réglage (min)" value={sim.tempsReglageMin} onChange={e => setSim({ ...sim, tempsReglageMin: +e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
             <input type="number" min="1" placeholder="Minutes / pièce" value={sim.tempsParPieceMin || ''} onChange={e => setSim({ ...sim, tempsParPieceMin: +e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
             <input type="date" value={sim.delai} onChange={e => setSim({ ...sim, delai: e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" />
             <label className="flex items-center gap-2 px-2 cursor-pointer"><input type="checkbox" checked={sim.matiereDispo} onChange={e => setSim({ ...sim, matiereDispo: e.target.checked })} /> Matière dispo DZ</label>
@@ -651,15 +927,17 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
           {simResult && (
             <div className="bg-[#0B0F14] border border-[#1E2A38] rounded-[6px] p-3 text-xs space-y-1">
               {simResult.missing.length > 0 && <div className="text-amber-400">Infos manquantes : {simResult.missing.join(' | ')}</div>}
-              <div>Charge {simResult.machineNom} : {simResult.currentLoadHours}h + {simResult.newLoadHours}h = <strong className="font-mono-num">{simResult.totalHours}h</strong></div>
+              <div>Charge {simResult.machineNom} : {simResult.currentLoadHours}h + {simResult.newLoadHours}h (dont {simResult.setupMin}m réglage) = <strong className="font-mono-num">{simResult.totalHours}h</strong></div>
               <div className="font-semibold text-[#22D3EE]">{simResult.verdict}</div>
             </div>
           )}
         </div>
       )}
 
+      {/* PANEL 5: DOSSIERS & CLOTURE */}
       {activePanel === 'dossiers' && (
         <div className="space-y-3">
+          {filterBar}
           {filteredPieces.map(p => {
             const realPhotos = [
               ...(p.photoDebut && p.photoDebut.startsWith('/uploads/') ? [{ lbl: 'Photo début', url: p.photoDebut }] : []),
@@ -669,6 +947,7 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                 ...(o.photoFin && o.photoFin.startsWith('/uploads/') ? [{ lbl: `${o.libelle} (fin)`, url: o.photoFin }] : [])
               ])
             ];
+            const activeBeFiles = (p.beFiles || []).filter(f => f.isActive);
 
             return (
               <div key={p.id} className="cyber-card p-4 text-xs space-y-2.5">
@@ -687,10 +966,19 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                 <div className="text-slate-400 flex flex-wrap gap-x-4 gap-y-1">
                   <span>BE: {p.be.nomFichier || '—'} | Prog: {p.be.programme || '—'} | 3D: {p.be.dessin3d || '—'}</span>
                   <span className="font-mono-num text-slate-300">Qté: {p.quantiteRealisee}/{p.quantitePrevue}{p.quantiteRebut > 0 ? ` (${p.quantiteRebut} rebuts)` : ''}</span>
-                  <span className="font-mono-num text-slate-300">Temps: {p.tempsReelMin}/{p.tempsPrevuMin} min</span>
+                  <span className="font-mono-num text-slate-300">Temps: {p.tempsReelMin}/{p.tempsPrevuMin}m (régl. {p.totalReglageMin || 0}m)</span>
                 </div>
 
-                {/* GAMME SUMMARY */}
+                {activeBeFiles.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {activeBeFiles.map(f => (
+                      <a key={f.id} href={f.url} target="_blank" rel="noreferrer" className="px-2 py-0.5 rounded bg-[#22D3EE]/10 border border-[#22D3EE]/30 text-[#22D3EE] text-[10px] font-mono-num">
+                        {f.categorie.toUpperCase()} {f.revision} · {f.filename}
+                      </a>
+                    ))}
+                  </div>
+                )}
+
                 {(p.operations || []).length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
                     {p.operations.map((o, idx) => (
@@ -719,7 +1007,7 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                 )}
 
                 <div className="flex flex-wrap gap-2 pt-1">
-                  <button onClick={() => downloadPieceZip(p)} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] flex items-center gap-1.5 cursor-pointer"><Archive className="w-3.5 h-3.5" /> Dossier .ZIP</button>
+                  <button onClick={() => downloadPieceZip(p)} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] flex items-center gap-1.5 cursor-pointer"><Archive className="w-3.5 h-3.5" /> Dossier .ZIP (+ fichiers BE)</button>
                   {p.statut === 'À acheter' && (
                     <button onClick={() => validateBuy(p.id)} className="px-3 py-1.5 rounded-[6px] bg-amber-600 hover:bg-amber-500 text-white flex items-center gap-1.5 cursor-pointer">
                       <ShoppingCart className="w-3.5 h-3.5" /> Valider Achat
@@ -732,6 +1020,11 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                       <button onClick={() => closePiece(p)} className="px-3 py-1.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1.5 cursor-pointer"><FolderCheck className="w-3.5 h-3.5" /> Clôturer</button>
                     </div>
                   )}
+                  {p.statut === 'Clôturé' && (
+                    <button onClick={() => toggleArchive(p)} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-slate-500 text-slate-300 flex items-center gap-1.5 cursor-pointer">
+                      {p.archived ? <><ArchiveRestore className="w-3.5 h-3.5" /> Désarchiver</> : <><Archive className="w-3.5 h-3.5" /> Archiver</>}
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -739,6 +1032,7 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
         </div>
       )}
 
+      {/* PANEL 6: ADMIN */}
       {activePanel === 'admin' && (
         <div className="grid md:grid-cols-2 gap-4">
           <div className="cyber-card p-4">
@@ -759,26 +1053,11 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                   {editingUserId === u.id ? (
                     <div className="space-y-2 bg-[#0B0F14] p-2.5 rounded border border-[#22D3EE]/30">
                       <div className="grid grid-cols-2 gap-2">
-                        <input
-                          value={editUserForm.nom}
-                          onChange={e => setEditUserForm({ ...editUserForm, nom: e.target.value })}
-                          placeholder="Nom complet"
-                          className="p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
-                        />
-                        <select
-                          value={editUserForm.role}
-                          onChange={e => setEditUserForm({ ...editUserForm, role: e.target.value })}
-                          className="p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
-                        >
+                        <input value={editUserForm.nom} onChange={e => setEditUserForm({ ...editUserForm, nom: e.target.value })} placeholder="Nom complet" className="p-1.5 rounded bg-[#111821] border border-[#1E2A38]" />
+                        <select value={editUserForm.role} onChange={e => setEditUserForm({ ...editUserForm, role: e.target.value })} className="p-1.5 rounded bg-[#111821] border border-[#1E2A38]">
                           <option value="operateur">Opérateur</option><option value="chef">Chef d'Atelier</option><option value="be">Bureau d'Études</option><option value="directeur">Directeur</option><option value="tv">Écran TV</option>
                         </select>
-                        <input
-                          type="password"
-                          value={editUserForm.password}
-                          onChange={e => setEditUserForm({ ...editUserForm, password: e.target.value })}
-                          placeholder="Nouveau MDP (laisser vide si inchangé)"
-                          className="col-span-2 p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
-                        />
+                        <input type="password" value={editUserForm.password} onChange={e => setEditUserForm({ ...editUserForm, password: e.target.value })} placeholder="Nouveau MDP (laisser vide si inchangé)" className="col-span-2 p-1.5 rounded bg-[#111821] border border-[#1E2A38]" />
                       </div>
                       <div className="flex items-center justify-between gap-2">
                         <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer">
@@ -800,11 +1079,7 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                       <div className="flex items-center gap-2">
                         <span className="text-[#22D3EE] uppercase text-[10px] font-semibold">{u.role}</span>
                         {u.actif === 0 && <span className="text-[10px] text-red-400">Désactivé</span>}
-                        <button
-                          type="button"
-                          onClick={() => startEditUser(u)}
-                          className="px-2 py-1 rounded border border-[#1E2A38] text-slate-300 hover:border-[#22D3EE] text-[10px] flex items-center gap-1 cursor-pointer"
-                        >
+                        <button type="button" onClick={() => startEditUser(u)} className="px-2 py-1 rounded border border-[#1E2A38] text-slate-300 hover:border-[#22D3EE] text-[10px] flex items-center gap-1 cursor-pointer">
                           <Edit3 className="w-3 h-3" /> Modifier
                         </button>
                       </div>
@@ -818,11 +1093,7 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
           <div className="cyber-card p-4 flex flex-col">
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-semibold text-sm">Journal d'Audit & Base de données</h3>
-              <button
-                type="button"
-                onClick={triggerBackup}
-                className="px-2.5 py-1 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-xs text-[#22D3EE] flex items-center gap-1.5 cursor-pointer"
-              >
+              <button type="button" onClick={triggerBackup} className="px-2.5 py-1 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-xs text-[#22D3EE] flex items-center gap-1.5 cursor-pointer">
                 <Database className="w-3.5 h-3.5" /> Sauvegarder DB
               </button>
             </div>

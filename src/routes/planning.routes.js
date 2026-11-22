@@ -5,9 +5,12 @@ const {
   runSql,
   transaction,
   logAudit,
+  getSettings,
   syncPieceFromOperations,
-  getEnrichedPieces
+  getEnrichedPieces,
+  getEnrichedPannes
 } = require('../db/database');
+const { PRIO_RANK, analyzeScheduleAndAI } = require('../services/scheduler');
 const { auth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -21,6 +24,54 @@ function parseMinutesDiff(debutStr, finStr) {
   return diff > 0 ? diff : 0;
 }
 
+function runAutoOptimize(reqUser) {
+  const pieces = getEnrichedPieces("WHERE p.statut != 'Clôturé'");
+  const machines = queryAll('SELECT * FROM machines');
+  const users = queryAll('SELECT id, nom, username, role, actif FROM users');
+  const pannes = getEnrichedPannes();
+  const settings = getSettings();
+
+  // Sort: ready first, then urgency, then deadline
+  pieces.sort((a, b) => {
+    const aBlocked = (!a.chuteDispo && !a.achatFait) ? 1 : 0;
+    const bBlocked = (!b.chuteDispo && !b.achatFait) ? 1 : 0;
+    if (aBlocked !== bBlocked) return aBlocked - bBlocked;
+    return (PRIO_RANK[a.urgence] || 9) - (PRIO_RANK[b.urgence] || 9) || (a.delai || '').localeCompare(b.delai || '');
+  });
+
+  // Update order first, then run full constraint-aware multi-op calendar scheduler
+  const orderedPieces = pieces.map((p, i) => ({ ...p, ordrePlanning: i + 1 }));
+  const analysis = analyzeScheduleAndAI(orderedPieces, machines, users, pannes, settings);
+
+  transaction(() => {
+    orderedPieces.forEach(p => {
+      runSql('UPDATE pieces SET ordrePlanning = ?, planningValide = 0 WHERE id = ?', [p.ordrePlanning, p.id]);
+    });
+    // Persist calculated precedence-safe dates & time slots on operations
+    for (const s of analysis.scheduledOps) {
+      runSql(
+        'UPDATE operations SET datePlanifiee = ?, debutStr = ?, finStr = ? WHERE id = ?',
+        [s.datePlanifiee || '', s.debutStr || '', s.finStr || '', s.opId]
+      );
+    }
+    orderedPieces.forEach(p => syncPieceFromOperations(p.id));
+  });
+
+  logAudit(
+    reqUser,
+    'PLANNING OPTIMISÉ IA',
+    `${orderedPieces.length} OF ordonnancés (gammes + calendrier) · ${analysis.conflicts.length} alerte(s)`
+  );
+
+  return {
+    ok: true,
+    alerts: analysis.conflicts.map(c => c.text),
+    conflicts: analysis.conflicts,
+    recommendations: analysis.aiRecommendations,
+    machineLoads: analysis.machineLoads
+  };
+}
+
 router.get('/tv', (req, res) => {
   const pieces = getEnrichedPieces("WHERE p.planningValide = 1 AND p.statut != 'Clôturé'");
   const machines = queryAll('SELECT * FROM machines WHERE actif = 1 ORDER BY nom');
@@ -28,56 +79,47 @@ router.get('/tv', (req, res) => {
 });
 
 router.post('/planning/optimize', auth, requireRole('directeur', 'chef'), (req, res) => {
-  const order = { Critique: 1, Urgent: 2, Normal: 3 };
-  const pieces = getEnrichedPieces("WHERE p.statut != 'Clôturé'");
-  const machines = queryAll('SELECT * FROM machines WHERE actif = 1');
+  const result = runAutoOptimize(req.user);
+  res.json(result);
+});
 
-  const alerts = [];
-  const machineLoads = {};
-  const machineById = new Map();
-  machines.forEach(m => {
-    machineLoads[m.nom] = 0;
-    machineById.set(m.id, m);
-    if (m.enPanne) {
-      alerts.push(`🔧 Machine en panne : ${m.nom} — Réaffectation recommandée`);
-    }
-  });
+router.post('/planning/ai-apply', auth, requireRole('directeur', 'chef'), (req, res) => {
+  const { actionType, payload = {} } = req.body || {};
 
-  pieces.forEach(p => {
-    if (!p.chuteDispo && !p.achatFait) {
-      alerts.push(`🔴 Blocage Matière : ${p.id} (${p.nom}) — Achat requis chez ${p.fournisseur || 'fournisseur'}`);
-    }
-    if (!p.outils || p.outils === 'À définir') {
-      alerts.push(`🟠 Blocage Outils : ${p.id} (${p.nom}) — Outillage non défini`);
-    }
-    const pendingOps = (p.operations || []).filter(o => o.statut !== 'Terminée');
-    if (pendingOps.length > 0) {
-      pendingOps.forEach(op => {
-        const m = machineById.get(op.machineId);
-        const key = m ? m.nom : (op.machine || 'Non affectée');
-        machineLoads[key] = (machineLoads[key] || 0) + (op.tempsPrevuMin || 60);
-      });
-    } else {
-      machineLoads[p.machine] = (machineLoads[p.machine] || 0) + (p.tempsPrevuMin || 120);
-    }
-  });
+  if (actionType === 'auto_optimize') {
+    const result = runAutoOptimize(req.user);
+    return res.json(result);
+  }
 
-  // Sort: ready pieces first, then urgency, then deadline
-  pieces.sort((a, b) => {
-    const aBlocked = (!a.chuteDispo && !a.achatFait) ? 1 : 0;
-    const bBlocked = (!b.chuteDispo && !b.achatFait) ? 1 : 0;
-    if (aBlocked !== bBlocked) return aBlocked - bBlocked;
-    return (order[a.urgence] || 9) - (order[b.urgence] || 9) || (a.delai || '').localeCompare(b.delai || '');
-  });
-
-  transaction(() => {
-    pieces.forEach((p, i) => {
-      runSql('UPDATE pieces SET ordrePlanning = ?, planningValide = 0 WHERE id = ?', [i + 1, p.id]);
+  if (actionType === 'reassign_machine') {
+    const { operationId, machineId } = payload;
+    const op = queryOne('SELECT * FROM operations WHERE id = ?', [operationId]);
+    const mach = queryOne('SELECT * FROM machines WHERE id = ? AND actif = 1', [machineId]);
+    if (!op || !mach) return res.status(400).json({ error: 'Opération ou machine introuvable' });
+    transaction(() => {
+      runSql('UPDATE operations SET machineId = ? WHERE id = ?', [mach.id, op.id]);
+      runSql('UPDATE pieces SET planningValide = 0 WHERE id = ?', [op.pieceId]);
+      syncPieceFromOperations(op.pieceId);
     });
-  });
+    logAudit(req.user, 'IA APPLIQUÉE', `${op.pieceId} · ${op.libelle} → ${mach.nom}`);
+    return res.json({ ok: true });
+  }
 
-  logAudit(req.user, 'PLANNING OPTIMISÉ IA', `${pieces.length} OF réordonnés (${alerts.length} alertes)`);
-  res.json({ ok: true, alerts, machineLoads });
+  if (actionType === 'reassign_operator') {
+    const { operationId, operateurId } = payload;
+    const op = queryOne('SELECT * FROM operations WHERE id = ?', [operationId]);
+    const user = queryOne('SELECT * FROM users WHERE id = ? AND actif = 1', [operateurId]);
+    if (!op || !user) return res.status(400).json({ error: 'Opération ou opérateur introuvable' });
+    transaction(() => {
+      runSql('UPDATE operations SET operateurId = ? WHERE id = ?', [user.id, op.id]);
+      runSql('UPDATE pieces SET planningValide = 0 WHERE id = ?', [op.pieceId]);
+      syncPieceFromOperations(op.pieceId);
+    });
+    logAudit(req.user, 'IA APPLIQUÉE', `${op.pieceId} · ${op.libelle} → opérateur ${user.nom}`);
+    return res.json({ ok: true });
+  }
+
+  return res.status(400).json({ error: 'Type de recommandation IA inconnu' });
 });
 
 router.post('/planning/save-batch', auth, requireRole('directeur', 'chef'), (req, res) => {
@@ -134,9 +176,9 @@ router.post('/planning/save-batch', auth, requireRole('directeur', 'chef'), (req
       );
 
       const ops = queryAll('SELECT * FROM operations WHERE pieceId = ? ORDER BY ordre ASC, rowid ASC', [p.id]);
-      const targetOp = ops.find(o => o.statut !== 'Terminée') || ops[0];
+      const targetOp = ops.find(o => o.statut !== 'Terminée' && !o.estSousTraitance) || ops[0];
       if (targetOp) {
-        const nextOpTime = ops.length === 1 && diffMin > 0 ? diffMin : targetOp.tempsPrevuMin;
+        const nextOpTime = ops.length === 1 && diffMin > 0 && !(targetOp.tempsUnitaireMin > 0) ? diffMin : targetOp.tempsPrevuMin;
         runSql(
           'UPDATE operations SET machineId = ?, operateurId = ?, debutStr = ?, finStr = ?, tempsPrevuMin = ? WHERE id = ?',
           [machineId, operateurId, debutStr, finStr, nextOpTime, targetOp.id]
@@ -164,6 +206,7 @@ router.post('/planning/simulate', auth, requireRole('directeur', 'chef'), (req, 
     machine,
     matiereDispo = true,
     delaiFournisseurJours = 0,
+    tempsReglageMin = 15,
     tempsParPieceMin = 0
   } = req.body || {};
 
@@ -189,7 +232,8 @@ router.post('/planning/simulate', auth, requireRole('directeur', 'chef'), (req, 
     : [];
 
   const currentLoadMin = activeOps.reduce((s, o) => s + Math.max(0, (o.tempsPrevuMin || 60) - (o.tempsReelMin || 0)), 0);
-  const newLoadMin = (Number(quantite) || 1) * (Number(tempsParPieceMin) || 15);
+  const setupMin = Math.max(0, Number(tempsReglageMin) || 0);
+  const newLoadMin = setupMin + (Number(quantite) || 1) * (Number(tempsParPieceMin) || 15);
   const totalHours = ((currentLoadMin + newLoadMin) / 60).toFixed(1);
 
   let verdict = '✅ Faisable sans retard';
@@ -209,6 +253,7 @@ router.post('/planning/simulate', auth, requireRole('directeur', 'chef'), (req, 
     machineNom: m?.nom || machine || 'Non définie',
     currentLoadHours: (currentLoadMin / 60).toFixed(1),
     newLoadHours: (newLoadMin / 60).toFixed(1),
+    setupMin,
     newLoadMin,
     totalHours,
     verdict,

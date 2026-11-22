@@ -1,20 +1,21 @@
 import React, { useState } from 'react';
 import {
   Bot, CheckCircle, Cpu, Plus, AlertTriangle, ChevronDown, ChevronUp,
-  Power, Trash2, Wrench, Layers, Edit3, Check, X
+  Power, Trash2, Wrench, Layers, Edit3, Check, X, Truck, ShieldAlert
 } from 'lucide-react';
 import { api } from '../api';
 import MaterialCalculator from './MaterialCalculator';
 import ChefPlanningTab from './ChefPlanningTab';
 
 export default function ChefView({ state, user, reload, search = '' }) {
-  const [tab, setTab] = useState('dashboard'); // dashboard | planning | ordres | machines | matiere
+  const [tab, setTab] = useState('dashboard');
   const [expanded, setExpanded] = useState({});
   const [mNom, setMNom] = useState('');
   const [mType, setMType] = useState('');
   const [mTaux, setMTaux] = useState(2500);
+  const [mInter, setMInter] = useState(200);
   const [editingMachineId, setEditingMachineId] = useState(null);
-  const [editMachineForm, setEditMachineForm] = useState({ nom: '', type: '', tauxHoraire: 2500, capaciteJourMin: 480 });
+  const [editMachineForm, setEditMachineForm] = useState({ nom: '', type: '', tauxHoraire: 2500, capaciteJourMin: 480, intervalleEntretienH: 200 });
   const [newOpByPiece, setNewOpByPiece] = useState({});
   const [aiAlerts, setAiAlerts] = useState([]);
   const [toast, setToast] = useState({ type: 'ok', text: '' });
@@ -28,7 +29,17 @@ export default function ChefView({ state, user, reload, search = '' }) {
     try {
       const res = await api('/api/planning/optimize', 'POST');
       setAiAlerts(res.alerts || []);
-      showToast('Proposition IA générée. Vérifiez et cliquez sur Valider et envoyer à la TV.');
+      showToast('Ordonnancement IA généré (gammes + calendrier Dim–Jeu). Vérifiez et publiez vers la TV.');
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  async function applyAiRec(rec) {
+    try {
+      await api('/api/planning/ai-apply', 'POST', { actionType: rec.actionType, payload: rec.payload });
+      showToast(`Recommandation IA appliquée : ${rec.title}`);
       reload();
     } catch (e) {
       showToast(e.message, 'err');
@@ -55,13 +66,31 @@ export default function ChefView({ state, user, reload, search = '' }) {
     }
   }
 
+  async function validateMaintenance(m) {
+    const desc = window.prompt(`Description de l'entretien préventif sur ${m.nom} :`, 'Graissage, niveaux, contrôle géométrie');
+    if (desc === null) return;
+    try {
+      await api(`/api/machines/${m.id}/maintenance`, 'POST', { description: desc });
+      showToast(`Entretien préventif validé sur ${m.nom} (compteur remis à jour).`);
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
   async function addMachine() {
     if (!mNom.trim()) return showToast('Entrez le nom de la machine.', 'err');
     try {
-      await api('/api/machines', 'POST', { nom: mNom.trim(), type: mType.trim() || 'Usinage', tauxHoraire: Number(mTaux) || 2500 });
+      await api('/api/machines', 'POST', {
+        nom: mNom.trim(),
+        type: mType.trim() || 'Usinage',
+        tauxHoraire: Number(mTaux) || 2500,
+        intervalleEntretienH: Number(mInter) || 200
+      });
       setMNom('');
       setMType('');
       setMTaux(2500);
+      setMInter(200);
       showToast('Machine ajoutée.');
       reload();
     } catch (e) {
@@ -85,7 +114,8 @@ export default function ChefView({ state, user, reload, search = '' }) {
       nom: m.nom,
       type: m.type || 'Usinage',
       tauxHoraire: m.tauxHoraire || 2500,
-      capaciteJourMin: m.capaciteJourMin || 480
+      capaciteJourMin: m.capaciteJourMin || 480,
+      intervalleEntretienH: m.intervalleEntretienH || 200
     });
   }
 
@@ -116,6 +146,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
     const f = e.target;
     try {
       await api(`/api/pieces/${id}/chef`, 'POST', {
+        quantitePrevue: Number(f.quantitePrevue.value) || 1,
         machineId: f.machineId.value,
         operateurId: f.operateurId.value,
         matiere: f.matiere.value,
@@ -123,7 +154,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
         outils: f.outils.value,
         chuteDispo: f.chuteDispo.checked
       });
-      showToast(`Ordre ${id} enregistré. Cliquez sur "Valider et envoyer à la TV" pour publier.`);
+      showToast(`Ordre ${id} enregistré (temps gamme recalculés si la quantité a changé).`);
       reload();
     } catch (err) {
       showToast(err.message, 'err');
@@ -136,11 +167,17 @@ export default function ChefView({ state, user, reload, search = '' }) {
     try {
       await api(`/api/pieces/${pieceId}/operations`, 'POST', {
         libelle: form.libelle.trim(),
+        estSousTraitance: !!form.estSousTraitance,
+        sousTraitant: form.sousTraitant || '',
+        dateEnvoi: form.dateEnvoi || '',
+        dateRetourPrevue: form.dateRetourPrevue || '',
         machineId: form.machineId || piece.machineId || activeMachines[0]?.id,
         operateurId: form.operateurId || piece.operateurId || operators[0]?.id,
-        tempsPrevuMin: Number(form.tempsPrevuMin) || 60
+        tempsReglageMin: Number(form.tempsReglageMin ?? 15),
+        tempsUnitaireMin: Number(form.tempsUnitaireMin ?? 0),
+        tempsPrevuMin: Number(form.tempsPrevuMin ?? 60)
       });
-      setNewOpByPiece(prev => ({ ...prev, [pieceId]: { libelle: '', tempsPrevuMin: 60 } }));
+      setNewOpByPiece(prev => ({ ...prev, [pieceId]: { libelle: '', tempsReglageMin: 15, tempsUnitaireMin: 0, tempsPrevuMin: 60, estSousTraitance: false } }));
       showToast(`Opération ajoutée à la gamme de ${pieceId}.`);
       reload();
     } catch (e) {
@@ -170,15 +207,19 @@ export default function ChefView({ state, user, reload, search = '' }) {
 
   const orderRank = { Critique: 1, Urgent: 2, Normal: 3 };
   const filteredPieces = state.pieces.filter(p =>
-    !search ||
-    p.id.toLowerCase().includes(search.toLowerCase()) ||
-    p.nom.toLowerCase().includes(search.toLowerCase()) ||
-    (p.client || '').toLowerCase().includes(search.toLowerCase())
+    !p.archived && (
+      !search ||
+      p.id.toLowerCase().includes(search.toLowerCase()) ||
+      p.nom.toLowerCase().includes(search.toLowerCase()) ||
+      (p.client || '').toLowerCase().includes(search.toLowerCase())
+    )
   );
   const sortedPieces = [...filteredPieces].sort((a, b) => (orderRank[a.urgence] || 9) - (orderRank[b.urgence] || 9));
   const activeMachines = state.machines.filter(m => m.actif);
   const operators = state.users.filter(u => u.role === 'operateur' && u.actif !== 0);
   const openPannes = (state.pannes || []).filter(p => p.statut === 'Ouverte');
+  const aiRecs = state.aiRecommendations || [];
+  const machineStatsById = new Map((state.analytics?.machineStats || []).map(ms => [ms.id, ms]));
   const isDir = user?.role === 'directeur';
 
   return (
@@ -197,7 +238,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
       <div className="grid grid-cols-5 gap-1 bg-[#111821] border border-[#1E2A38] rounded-[6px] p-1 text-[11px] font-medium">
         {[
           ['dashboard', 'Dashboard'],
-          ['planning', 'Planning'],
+          ['planning', 'Planning & IA'],
           ['ordres', `Ordres & Gammes (${sortedPieces.length})`],
           ['machines', `Machines${openPannes.length ? ` (${openPannes.length}!)` : ''}`],
           ['matiere', 'Matière']
@@ -216,22 +257,46 @@ export default function ChefView({ state, user, reload, search = '' }) {
 
       {/* TAB 1: DASHBOARD */}
       <div className={tab === 'dashboard' ? 'block space-y-4' : 'hidden'}>
-        <div className="cyber-card cyber-corners p-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <Bot className="w-5 h-5 text-[#22D3EE] shrink-0 mt-0.5" />
-            <div>
-              <h2 className="text-sm font-semibold text-white">Assistant IA chef d'atelier</h2>
-              <p className="text-xs text-slate-400">L'IA propose un tri par urgence et délai ; vous validez ou modifiez avant envoi à la TV.</p>
+        <div className="cyber-card cyber-corners p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <Bot className="w-5 h-5 text-[#22D3EE] shrink-0 mt-0.5" />
+              <div>
+                <h2 className="text-sm font-semibold text-white">Assistant IA chef d'atelier</h2>
+                <p className="text-xs text-slate-400">Analyse les gammes (Op 10 → Op 20), conflits opérateurs, pannes et calendrier ouvré avant publication TV.</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={optimizeAI} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-xs font-medium text-slate-200 cursor-pointer">
+                Ordonnancer par IA
+              </button>
+              <button onClick={validatePlanning} className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] hover:bg-cyan-300 text-[#0B0F14] text-xs font-semibold flex items-center gap-1.5 cursor-pointer">
+                <CheckCircle className="w-3.5 h-3.5" /> Valider et envoyer à la TV
+              </button>
             </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <button onClick={optimizeAI} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-xs font-medium text-slate-200 cursor-pointer">
-              Proposer un planning
-            </button>
-            <button onClick={validatePlanning} className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] hover:bg-cyan-300 text-[#0B0F14] text-xs font-semibold flex items-center gap-1.5 cursor-pointer">
-              <CheckCircle className="w-3.5 h-3.5" /> Valider et envoyer à la TV
-            </button>
-          </div>
+
+          {aiRecs.length > 0 && (
+            <div className="space-y-1.5 pt-2 border-t border-[#1E2A38]">
+              {aiRecs.slice(0, 3).map(rec => (
+                <div key={rec.id} className="flex flex-wrap items-center justify-between gap-2 p-2 rounded bg-[#0B0F14] border border-[#1E2A38] text-xs">
+                  <div>
+                    <span className={`font-semibold ${rec.severity === 'high' ? 'text-red-300' : rec.severity === 'medium' ? 'text-amber-300' : 'text-[#22D3EE]'}`}>
+                      {rec.title}
+                    </span>
+                    <span className="text-slate-400 ml-2">{rec.reason}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => applyAiRec(rec)}
+                    className="px-2.5 py-1 rounded bg-[#22D3EE]/15 border border-[#22D3EE]/40 text-[#22D3EE] hover:bg-[#22D3EE] hover:text-[#0B0F14] text-[11px] font-semibold cursor-pointer"
+                  >
+                    Appliquer IA
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* ACTIVE BREAKDOWNS PANEL */}
@@ -248,10 +313,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
                   {pa.operationLibelle && <span className="text-slate-400 ml-1">({pa.operationLibelle})</span>}
                   <div className="text-red-300 mt-0.5">Motif : {pa.motif} · Déclarée par {pa.declarePar} ({pa.createdAt})</div>
                 </div>
-                <button
-                  onClick={() => resolvePanne(pa.id)}
-                  className="px-3 py-1.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer"
-                >
+                <button onClick={() => resolvePanne(pa.id)} className="px-3 py-1.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer">
                   Résoudre la panne
                 </button>
               </div>
@@ -261,22 +323,24 @@ export default function ChefView({ state, user, reload, search = '' }) {
 
         {aiAlerts.length > 0 && (
           <div className="bg-amber-500/10 border border-amber-500/30 rounded-[6px] p-3 text-xs space-y-1">
-            <div className="font-semibold text-amber-400 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" /> Alertes de blocage</div>
+            <div className="font-semibold text-amber-400 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" /> Alertes détectées</div>
             {aiAlerts.map((a, i) => <div key={i} className="text-slate-300">{a}</div>)}
           </div>
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {activeMachines.map(m => {
+            const ms = machineStatsById.get(m.id);
             const machineOps = state.pieces
               .filter(p => p.statut !== 'Clôturé')
-              .flatMap(p => (p.operations || []).filter(o => o.machineId === m.id && o.statut !== 'Terminée').map(o => ({ ...o, piece: p })));
+              .flatMap(p => (p.operations || []).filter(o => !o.estSousTraitance && o.machineId === m.id && o.statut !== 'Terminée').map(o => ({ ...o, piece: p })));
             const hours = machineOps.reduce((s, o) => s + (o.tempsPrevuMin || 60), 0) / 60;
             const capHours = (m.capaciteJourMin || 480) / 60;
             const pct = Math.min(100, Math.round((hours / capHours) * 100));
             const activeOp = machineOps.find(o => o.statut === 'En cours') || machineOps[0];
             const waitingMat = activeOp && activeOp.piece.statut === 'À acheter';
             const statusText = m.enPanne ? 'En panne' : waitingMat ? 'En attente matière' : activeOp ? activeOp.statut : 'Disponible';
+
             return (
               <div key={m.id} className={`cyber-card p-4 space-y-2.5 ${m.enPanne ? 'border-red-500/50' : ''}`}>
                 <div className="flex items-center justify-between gap-2">
@@ -297,27 +361,44 @@ export default function ChefView({ state, user, reload, search = '' }) {
                   <span>{hours.toFixed(1)} h / {capHours.toFixed(0)} h</span>
                   <span>{machineOps.length} op.</span>
                 </div>
+                {ms && ms.maintenanceStatut !== 'ok' && (
+                  <div className={`text-[10px] px-2 py-1 rounded border flex items-center gap-1 ${
+                    ms.maintenanceStatut === 'du' ? 'bg-red-500/15 border-red-500/30 text-red-300' : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                  }`}>
+                    <ShieldAlert className="w-3 h-3 shrink-0" />
+                    Entretien {ms.maintenanceStatut === 'du' ? 'DÉPASSÉ' : 'proche'} ({ms.heuresDepuisEntretien}h/{ms.intervalleEntretienH}h)
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
       </div>
 
-      {/* TAB 2: PLANNING MODIFIABLE */}
+      {/* TAB 2: PLANNING & IA */}
       <div className={tab === 'planning' ? 'block' : 'hidden'}>
         <ChefPlanningTab state={state} reload={reload} showToast={showToast} />
       </div>
 
-      {/* TAB 3: ORDRES & GAMMES MULTI-OPERATIONS */}
+      {/* TAB 3: ORDRES & GAMMES MULTI-OPERATIONS (REGLAGE vs USINAGE + SOUS-TRAITANCE) */}
       <div className={tab === 'ordres' ? 'block space-y-3' : 'hidden'}>
         {sortedPieces.map(p => {
           const isOpen = !!expanded[p.id];
           const newOp = newOpByPiece[p.id] || {
             libelle: '',
+            estSousTraitance: false,
+            sousTraitant: '',
+            dateEnvoi: '',
+            dateRetourPrevue: '',
             machineId: p.machineId || activeMachines[0]?.id || '',
             operateurId: p.operateurId || operators[0]?.id || '',
+            tempsReglageMin: 15,
+            tempsUnitaireMin: 0,
             tempsPrevuMin: 60
           };
+          const previewMin = Number(newOp.tempsUnitaireMin) > 0
+            ? Math.round((Number(newOp.tempsReglageMin) || 0) + Number(newOp.tempsUnitaireMin) * (p.quantitePrevue || 1))
+            : Number(newOp.tempsPrevuMin || 60);
 
           return (
             <div key={p.id} className="cyber-card p-4 text-xs space-y-3">
@@ -328,14 +409,14 @@ export default function ChefView({ state, user, reload, search = '' }) {
               >
                 <div className="min-w-0">
                   <div className="font-semibold text-sm text-white font-mono-num truncate">
-                    {p.id} · <span className="font-sans">{p.nom}</span>
+                    {p.id} · <span className="font-sans">{p.nom}</span> <span className="text-xs font-normal text-slate-400">({p.quantitePrevue} pcs)</span>
                   </div>
                   <div className="text-[11px] text-slate-400 mt-0.5 flex flex-wrap items-center gap-2">
                     <span>{p.machine} · {p.operateur}</span>
                     <span className="px-1.5 py-0.5 rounded bg-[#0B0F14] border border-[#1E2A38] text-[#22D3EE] font-mono-num text-[10px]">
                       {p.opsTerminees}/{p.opsTotal} op.
                     </span>
-                    <span className="font-mono-num">{p.tempsReelMin}/{p.tempsPrevuMin} min</span>
+                    <span className="font-mono-num">Régl. {p.totalReglageMin || 0}m · Total {p.tempsReelMin}/{p.tempsPrevuMin}m</span>
                     {p.quantiteRebut > 0 && <span className="text-red-400 font-mono-num">{p.quantiteRebut} rebut(s)</span>}
                   </div>
                 </div>
@@ -351,9 +432,12 @@ export default function ChefView({ state, user, reload, search = '' }) {
 
               {isOpen && (
                 <div className="space-y-4 pt-3 border-t border-[#1E2A38]">
-                  {/* PIECE GENERAL AFFECTATION */}
-                  <form key={`${p.id}-${p.machineId}-${p.operateurId}`} onSubmit={e => savePiece(p.id, e)} className="space-y-3">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                  <form key={`${p.id}-${p.machineId}-${p.operateurId}-${p.quantitePrevue}`} onSubmit={e => savePiece(p.id, e)} className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2">
+                      <div>
+                        <label className="text-[10px] text-slate-500">Quantité prévue (recalcule la gamme)</label>
+                        <input name="quantitePrevue" type="number" min="1" defaultValue={p.quantitePrevue} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" />
+                      </div>
                       <div>
                         <label className="text-[10px] text-slate-500">Machine principale</label>
                         <select name="machineId" defaultValue={p.machineId || ''} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]">
@@ -370,13 +454,13 @@ export default function ChefView({ state, user, reload, search = '' }) {
                         <label className="text-[10px] text-slate-500">Fournisseur matière</label>
                         <input name="fournisseur" defaultValue={p.fournisseur} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
                       </div>
-                      <div className="sm:col-span-2 md:col-span-3">
+                      <div className="sm:col-span-2">
                         <label className="text-[10px] text-slate-500">Matière</label>
                         <input name="matiere" defaultValue={p.matiere} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
                       </div>
-                      <div className="sm:col-span-2 md:col-span-3">
+                      <div className="sm:col-span-2">
                         <label className="text-[10px] text-slate-500">Outillage</label>
-                        <textarea name="outils" rows={2} defaultValue={p.outils} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
+                        <input name="outils" defaultValue={p.outils} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
                       </div>
                     </div>
                     <div className="flex flex-wrap justify-between items-center gap-2 pt-1">
@@ -389,46 +473,84 @@ export default function ChefView({ state, user, reload, search = '' }) {
                     </div>
                   </form>
 
-                  {/* GAMME MULTI-OPERATIONS */}
+                  {/* GAMME MULTI-OPERATIONS WITH SETUP + UNIT TIME + SUBCONTRACTING */}
                   <div className="bg-[#0B0F14] border border-[#1E2A38] rounded-[6px] p-3 space-y-2.5">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="font-semibold text-white flex items-center gap-1.5">
                         <Layers className="w-3.5 h-3.5 text-[#22D3EE]" /> Gamme de fabrication ({(p.operations || []).length} opération(s))
                       </span>
-                      <span className="text-[10px] text-slate-400">Chaque opération a sa propre machine et son opérateur</span>
+                      <span className="text-[10px] text-slate-400">Temps = Réglage (setup) + Quantité × Temps unitaire</span>
                     </div>
 
                     <div className="space-y-1.5">
                       {(p.operations || []).map((op, idx) => (
                         <div key={op.id} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-center p-2 rounded bg-[#111821] border border-[#1E2A38]">
                           <div className="md:col-span-3">
-                            <span className="font-mono-num text-[#22D3EE] mr-1.5">Op {(idx + 1) * 10}</span>
-                            <span className="font-medium text-white">{op.libelle}</span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono-num text-[#22D3EE]">Op {(idx + 1) * 10}</span>
+                              {op.estSousTraitance && <Truck className="w-3.5 h-3.5 text-purple-400" title="Sous-traitance" />}
+                              <span className="font-medium text-white truncate">{op.libelle}</span>
+                            </div>
+                            <div className="text-[10px] text-slate-400 font-mono-num mt-0.5">
+                              {op.estSousTraitance
+                                ? `Sous-traitant : ${op.sousTraitant || 'Externe'} (${op.dateEnvoi || '—'} → ${op.dateRetourPrevue || '—'})`
+                                : `Régl. ${op.tempsReglageMin || 0}m + ${op.tempsUnitaireMin > 0 ? `${p.quantitePrevue}×${op.tempsUnitaireMin}m` : 'fixe'} = ${op.tempsPrevuMin}m`}
+                            </div>
                           </div>
-                          <div className="md:col-span-3">
-                            <select
-                              value={op.machineId || ''}
-                              onChange={e => updateOperationField(op.id, { machineId: e.target.value })}
-                              disabled={p.statut === 'Clôturé' || op.statut === 'Terminée'}
-                              className="w-full p-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-[11px]"
-                            >
-                              {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
-                            </select>
-                          </div>
-                          <div className="md:col-span-2">
-                            <select
-                              value={op.operateurId || ''}
-                              onChange={e => updateOperationField(op.id, { operateurId: e.target.value })}
-                              disabled={p.statut === 'Clôturé' || op.statut === 'Terminée'}
-                              className="w-full p-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-[11px]"
-                            >
-                              {operators.map(o => <option key={o.id} value={o.id}>{o.nom}</option>)}
-                            </select>
-                          </div>
-                          <div className="md:col-span-2 font-mono-num text-[11px] text-slate-300">
-                            {op.tempsReelMin}/{op.tempsPrevuMin}m · {op.quantiteBonne} ok
-                            {op.quantiteRebut > 0 && <span className="text-red-400"> ({op.quantiteRebut} NC)</span>}
-                          </div>
+
+                          {!op.estSousTraitance ? (
+                            <>
+                              <div className="md:col-span-2">
+                                <select
+                                  value={op.machineId || ''}
+                                  onChange={e => updateOperationField(op.id, { machineId: e.target.value })}
+                                  disabled={p.statut === 'Clôturé' || op.statut === 'Terminée'}
+                                  className="w-full p-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-[11px]"
+                                >
+                                  {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
+                                </select>
+                              </div>
+                              <div className="md:col-span-2">
+                                <select
+                                  value={op.operateurId || ''}
+                                  onChange={e => updateOperationField(op.id, { operateurId: e.target.value })}
+                                  disabled={p.statut === 'Clôturé' || op.statut === 'Terminée'}
+                                  className="w-full p-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-[11px]"
+                                >
+                                  {operators.map(o => <option key={o.id} value={o.id}>{o.nom}</option>)}
+                                </select>
+                              </div>
+                              <div className="md:col-span-3 flex items-center gap-1 text-[10px]">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  defaultValue={op.tempsReglageMin || 0}
+                                  onBlur={e => updateOperationField(op.id, { tempsReglageMin: Number(e.target.value) })}
+                                  disabled={p.statut === 'Clôturé' || op.statut === 'Terminée'}
+                                  className="w-12 p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-center"
+                                  title="Temps réglage (min)"
+                                />
+                                <span className="text-slate-500">m +</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.5"
+                                  defaultValue={op.tempsUnitaireMin || 0}
+                                  onBlur={e => updateOperationField(op.id, { tempsUnitaireMin: Number(e.target.value) })}
+                                  disabled={p.statut === 'Clôturé' || op.statut === 'Terminée'}
+                                  className="w-12 p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-center"
+                                  title="Temps unitaire (min/pièce)"
+                                />
+                                <span className="text-slate-500">m/pc</span>
+                                <span className="font-mono-num text-slate-300 ml-1">({op.tempsReelMin}/{op.tempsPrevuMin}m)</span>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="md:col-span-7 text-[11px] text-purple-300">
+                              Étape externe (ne consomme pas de capacité machine interne)
+                            </div>
+                          )}
+
                           <div className="md:col-span-2 flex items-center justify-end gap-1.5">
                             <span className={`px-1.5 py-0.5 rounded border text-[10px] ${
                               op.statut === 'Terminée' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' :
@@ -437,12 +559,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
                               'bg-slate-800 text-slate-300 border-slate-700'
                             }`}>{op.statut}</span>
                             {p.statut !== 'Clôturé' && op.statut !== 'En cours' && (p.operations || []).length > 1 && (
-                              <button
-                                type="button"
-                                onClick={() => deleteOperation(op.id)}
-                                className="p-1 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 cursor-pointer"
-                                title="Supprimer cette opération"
-                              >
+                              <button type="button" onClick={() => deleteOperation(op.id)} className="p-1 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 cursor-pointer" title="Supprimer">
                                 <Trash2 className="w-3 h-3" />
                               </button>
                             )}
@@ -451,43 +568,99 @@ export default function ChefView({ state, user, reload, search = '' }) {
                       ))}
                     </div>
 
+                    {/* ADD OPERATION FORM */}
                     {p.statut !== 'Clôturé' && (
-                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 pt-2 border-t border-[#1E2A38]">
-                        <input
-                          placeholder="Nouvelle opération (ex: Fraisage rainure, Contrôle...)"
-                          value={newOp.libelle || ''}
-                          onChange={e => setNewOpByPiece(prev => ({ ...prev, [p.id]: { ...newOp, libelle: e.target.value } }))}
-                          className="sm:col-span-4 p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
-                        />
-                        <select
-                          value={newOp.machineId || activeMachines[0]?.id || ''}
-                          onChange={e => setNewOpByPiece(prev => ({ ...prev, [p.id]: { ...newOp, machineId: e.target.value } }))}
-                          className="sm:col-span-3 p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
-                        >
-                          {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
-                        </select>
-                        <select
-                          value={newOp.operateurId || operators[0]?.id || ''}
-                          onChange={e => setNewOpByPiece(prev => ({ ...prev, [p.id]: { ...newOp, operateurId: e.target.value } }))}
-                          className="sm:col-span-2 p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
-                        >
-                          {operators.map(o => <option key={o.id} value={o.id}>{o.nom}</option>)}
-                        </select>
-                        <input
-                          type="number"
-                          min="5"
-                          placeholder="Min"
-                          value={newOp.tempsPrevuMin || 60}
-                          onChange={e => setNewOpByPiece(prev => ({ ...prev, [p.id]: { ...newOp, tempsPrevuMin: e.target.value } }))}
-                          className="sm:col-span-1 p-1.5 rounded bg-[#111821] border border-[#1E2A38] font-mono-num"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => addOperation(p.id, p)}
-                          className="sm:col-span-2 py-1.5 px-2 rounded bg-[#22D3EE]/15 border border-[#22D3EE]/40 text-[#22D3EE] hover:bg-[#22D3EE] hover:text-[#0B0F14] font-semibold flex items-center justify-center gap-1 cursor-pointer"
-                        >
-                          <Plus className="w-3.5 h-3.5" /> Ajouter Op
-                        </button>
+                      <div className="space-y-2 pt-2 border-t border-[#1E2A38]">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[11px] font-medium text-slate-300">Ajouter une étape à la gamme</span>
+                          <label className="flex items-center gap-1.5 text-[11px] text-purple-300 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={!!newOp.estSousTraitance}
+                              onChange={e => setNewOpByPiece(prev => ({ ...prev, [p.id]: { ...newOp, estSousTraitance: e.target.checked } }))}
+                              className="accent-purple-400"
+                            />
+                            <Truck className="w-3.5 h-3.5" /> Étape de sous-traitance (traitement, rectification...)
+                          </label>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                          <input
+                            placeholder={newOp.estSousTraitance ? 'Ex: Traitement thermique / Zingage' : 'Ex: Fraisage rainure, Contrôle...'}
+                            value={newOp.libelle || ''}
+                            onChange={e => setNewOpByPiece(prev => ({ ...prev, [p.id]: { ...newOp, libelle: e.target.value } }))}
+                            className="sm:col-span-3 p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
+                          />
+
+                          {!newOp.estSousTraitance ? (
+                            <>
+                              <select
+                                value={newOp.machineId || activeMachines[0]?.id || ''}
+                                onChange={e => setNewOpByPiece(prev => ({ ...prev, [p.id]: { ...newOp, machineId: e.target.value } }))}
+                                className="sm:col-span-2 p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
+                              >
+                                {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
+                              </select>
+                              <select
+                                value={newOp.operateurId || operators[0]?.id || ''}
+                                onChange={e => setNewOpByPiece(prev => ({ ...prev, [p.id]: { ...newOp, operateurId: e.target.value } }))}
+                                className="sm:col-span-2 p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
+                              >
+                                {operators.map(o => <option key={o.id} value={o.id}>{o.nom}</option>)}
+                              </select>
+                              <input
+                                type="number"
+                                min="0"
+                                placeholder="Régl. (m)"
+                                title="Temps réglage (min)"
+                                value={newOp.tempsReglageMin ?? 15}
+                                onChange={e => setNewOpByPiece(prev => ({ ...prev, [p.id]: { ...newOp, tempsReglageMin: e.target.value } }))}
+                                className="sm:col-span-1 p-1.5 rounded bg-[#111821] border border-[#1E2A38] font-mono-num"
+                              />
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.5"
+                                placeholder="m/pc"
+                                title="Temps unitaire par pièce (min)"
+                                value={newOp.tempsUnitaireMin ?? 0}
+                                onChange={e => setNewOpByPiece(prev => ({ ...prev, [p.id]: { ...newOp, tempsUnitaireMin: e.target.value } }))}
+                                className="sm:col-span-2 p-1.5 rounded bg-[#111821] border border-[#1E2A38] font-mono-num"
+                              />
+                            </>
+                          ) : (
+                            <>
+                              <input
+                                placeholder="Sous-traitant (ex: ThermiDZ)"
+                                value={newOp.sousTraitant || ''}
+                                onChange={e => setNewOpByPiece(prev => ({ ...prev, [p.id]: { ...newOp, sousTraitant: e.target.value } }))}
+                                className="sm:col-span-3 p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
+                              />
+                              <input
+                                type="date"
+                                title="Date envoi"
+                                value={newOp.dateEnvoi || ''}
+                                onChange={e => setNewOpByPiece(prev => ({ ...prev, [p.id]: { ...newOp, dateEnvoi: e.target.value } }))}
+                                className="sm:col-span-2 p-1.5 rounded bg-[#111821] border border-[#1E2A38] font-mono-num"
+                              />
+                              <input
+                                type="date"
+                                title="Date retour prévue"
+                                value={newOp.dateRetourPrevue || ''}
+                                onChange={e => setNewOpByPiece(prev => ({ ...prev, [p.id]: { ...newOp, dateRetourPrevue: e.target.value } }))}
+                                className="sm:col-span-2 p-1.5 rounded bg-[#111821] border border-[#1E2A38] font-mono-num"
+                              />
+                            </>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => addOperation(p.id, p)}
+                            className="sm:col-span-2 py-1.5 px-2 rounded bg-[#22D3EE]/15 border border-[#22D3EE]/40 text-[#22D3EE] hover:bg-[#22D3EE] hover:text-[#0B0F14] font-semibold flex items-center justify-center gap-1 cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" /> {newOp.estSousTraitance ? 'Ajouter ST' : `Ajouter (${previewMin}m)`}
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -498,16 +671,17 @@ export default function ChefView({ state, user, reload, search = '' }) {
         })}
       </div>
 
-      {/* TAB 4: MACHINES */}
+      {/* TAB 4: MACHINES + MAINTENANCE PREVENTIVE */}
       <div className={tab === 'machines' ? 'block space-y-4' : 'hidden'}>
         <div className="cyber-card p-4 space-y-3">
           <div className="flex items-center gap-2 text-sm font-semibold text-white">
             <Cpu className="w-4 h-4 text-[#22D3EE]" /> Ajouter une machine
           </div>
-          <div className="grid sm:grid-cols-4 gap-2 text-xs">
+          <div className="grid sm:grid-cols-5 gap-2 text-xs">
             <input placeholder="Nom machine (ex: Tour CNC 3)" value={mNom} onChange={e => setMNom(e.target.value)} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
             <input placeholder="Type (ex: Tournage CNC)" value={mType} onChange={e => setMType(e.target.value)} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
-            <input type="number" placeholder="Taux horaire (DZD/h)" value={mTaux} onChange={e => setMTaux(e.target.value)} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" />
+            <input type="number" placeholder="Taux (DZD/h)" value={mTaux} onChange={e => setMTaux(e.target.value)} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" />
+            <input type="number" placeholder="Entretien (toutes les X h)" value={mInter} onChange={e => setMInter(e.target.value)} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" />
             <button onClick={addMachine} className="py-2 rounded-[6px] bg-[#22D3EE] text-[#0B0F14] font-semibold flex items-center justify-center gap-1.5 cursor-pointer">
               <Plus className="w-3.5 h-3.5" /> Ajouter
             </button>
@@ -515,71 +689,68 @@ export default function ChefView({ state, user, reload, search = '' }) {
         </div>
 
         <div className="cyber-card p-4 space-y-2.5 text-xs">
-          <div className="font-semibold text-sm text-white mb-2">Parc Machines</div>
-          {state.machines.map(m => (
-            <div key={m.id} className="p-2.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] space-y-2">
-              {editingMachineId === m.id ? (
-                <div className="grid sm:grid-cols-5 gap-2 items-center">
-                  <input
-                    value={editMachineForm.nom}
-                    onChange={e => setEditMachineForm({ ...editMachineForm, nom: e.target.value })}
-                    className="p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
-                    placeholder="Nom"
-                  />
-                  <input
-                    value={editMachineForm.type}
-                    onChange={e => setEditMachineForm({ ...editMachineForm, type: e.target.value })}
-                    className="p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
-                    placeholder="Type"
-                  />
-                  <input
-                    type="number"
-                    value={editMachineForm.tauxHoraire}
-                    onChange={e => setEditMachineForm({ ...editMachineForm, tauxHoraire: Number(e.target.value) })}
-                    className="p-1.5 rounded bg-[#111821] border border-[#1E2A38] font-mono-num"
-                    placeholder="DZD/h"
-                  />
-                  <input
-                    type="number"
-                    value={editMachineForm.capaciteJourMin}
-                    onChange={e => setEditMachineForm({ ...editMachineForm, capaciteJourMin: Number(e.target.value) })}
-                    className="p-1.5 rounded bg-[#111821] border border-[#1E2A38] font-mono-num"
-                    placeholder="Min/jour"
-                  />
-                  <div className="flex gap-1.5 justify-end">
-                    <button onClick={() => saveEditMachine(m.id)} className="px-2.5 py-1.5 rounded bg-emerald-600 text-white flex items-center gap-1 cursor-pointer">
-                      <Check className="w-3.5 h-3.5" /> OK
-                    </button>
-                    <button onClick={() => setEditingMachineId(null)} className="px-2.5 py-1.5 rounded bg-slate-800 text-slate-300 flex items-center gap-1 cursor-pointer">
-                      <X className="w-3.5 h-3.5" />
-                    </button>
+          <div className="font-semibold text-sm text-white mb-2">Parc Machines & Maintenance Préventive</div>
+          {state.machines.map(m => {
+            const ms = machineStatsById.get(m.id);
+            const hSince = ms?.heuresDepuisEntretien ?? 0;
+            const hInter = ms?.intervalleEntretienH ?? (m.intervalleEntretienH || 200);
+            const maintPct = Math.min(100, Math.round((hSince / hInter) * 100));
+
+            return (
+              <div key={m.id} className="p-3 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] space-y-2">
+                {editingMachineId === m.id ? (
+                  <div className="grid sm:grid-cols-6 gap-2 items-center">
+                    <input value={editMachineForm.nom} onChange={e => setEditMachineForm({ ...editMachineForm, nom: e.target.value })} className="p-1.5 rounded bg-[#111821] border border-[#1E2A38]" placeholder="Nom" />
+                    <input value={editMachineForm.type} onChange={e => setEditMachineForm({ ...editMachineForm, type: e.target.value })} className="p-1.5 rounded bg-[#111821] border border-[#1E2A38]" placeholder="Type" />
+                    <input type="number" value={editMachineForm.tauxHoraire} onChange={e => setEditMachineForm({ ...editMachineForm, tauxHoraire: Number(e.target.value) })} className="p-1.5 rounded bg-[#111821] border border-[#1E2A38] font-mono-num" placeholder="DZD/h" />
+                    <input type="number" value={editMachineForm.capaciteJourMin} onChange={e => setEditMachineForm({ ...editMachineForm, capaciteJourMin: Number(e.target.value) })} className="p-1.5 rounded bg-[#111821] border border-[#1E2A38] font-mono-num" placeholder="Min/jour" />
+                    <input type="number" value={editMachineForm.intervalleEntretienH} onChange={e => setEditMachineForm({ ...editMachineForm, intervalleEntretienH: Number(e.target.value) })} className="p-1.5 rounded bg-[#111821] border border-[#1E2A38] font-mono-num" placeholder="Entretien (h)" />
+                    <div className="flex gap-1.5 justify-end">
+                      <button onClick={() => saveEditMachine(m.id)} className="px-2.5 py-1.5 rounded bg-emerald-600 text-white flex items-center gap-1 cursor-pointer"><Check className="w-3.5 h-3.5" /> OK</button>
+                      <button onClick={() => setEditingMachineId(null)} className="px-2.5 py-1.5 rounded bg-slate-800 text-slate-300 cursor-pointer"><X className="w-3.5 h-3.5" /></button>
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <span className="font-semibold text-white">{m.nom}</span>
-                    <span className="text-slate-400 ml-2">({m.type})</span>
-                    <span className="text-slate-500 ml-2 font-mono-num">· {m.tauxHoraire || 2500} DZD/h · {((m.capaciteJourMin || 480) / 60).toFixed(0)}h/j</span>
-                    {m.enPanne ? <span className="ml-2 px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 text-[10px]">EN PANNE</span> : null}
+                ) : (
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <span className="font-semibold text-white">{m.nom}</span>
+                        <span className="text-slate-400 ml-2">({m.type})</span>
+                        <span className="text-slate-500 ml-2 font-mono-num">· {m.tauxHoraire || 2500} DZD/h · {((m.capaciteJourMin || 480) / 60).toFixed(0)}h/j</span>
+                        {m.enPanne ? <span className="ml-2 px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 text-[10px]">EN PANNE</span> : null}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button onClick={() => validateMaintenance(m)} className="px-2.5 py-1 rounded border border-amber-500/40 text-amber-300 hover:bg-amber-500/15 flex items-center gap-1 cursor-pointer">
+                          <Wrench className="w-3 h-3" /> Valider entretien
+                        </button>
+                        <button onClick={() => startEditMachine(m)} className="px-2.5 py-1 rounded border border-[#1E2A38] text-slate-300 hover:border-[#22D3EE] flex items-center gap-1 cursor-pointer">
+                          <Edit3 className="w-3 h-3" /> Modifier
+                        </button>
+                        <button onClick={() => toggleMachine(m)} className={`px-2.5 py-1 rounded border flex items-center gap-1 cursor-pointer ${m.actif ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+                          <Power className="w-3 h-3" /> {m.actif ? 'Active' : 'Désactivée'}
+                        </button>
+                        {isDir && (
+                          <button onClick={() => deleteMachine(m)} className="px-2 py-1 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 cursor-pointer" title="Supprimer (Directeur)">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3 text-[11px]">
+                      <span className="text-slate-400 shrink-0">Compteur entretien :</span>
+                      <div className="flex-1 h-1.5 bg-[#111821] rounded-full overflow-hidden">
+                        <div className={`h-full ${ms?.maintenanceStatut === 'du' ? 'bg-red-500' : ms?.maintenanceStatut === 'proche' ? 'bg-amber-400' : 'bg-emerald-400'}`} style={{ width: `${maintPct}%` }}></div>
+                      </div>
+                      <span className={`font-mono-num shrink-0 ${ms?.maintenanceStatut === 'du' ? 'text-red-400 font-semibold' : ms?.maintenanceStatut === 'proche' ? 'text-amber-300' : 'text-slate-300'}`}>
+                        {hSince}h / {hInter}h (dernier : {m.dernierEntretienDate || '—'})
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => startEditMachine(m)} className="px-2.5 py-1 rounded border border-[#1E2A38] text-slate-300 hover:border-[#22D3EE] flex items-center gap-1 cursor-pointer">
-                      <Edit3 className="w-3 h-3" /> Modifier
-                    </button>
-                    <button onClick={() => toggleMachine(m)} className={`px-2.5 py-1 rounded border flex items-center gap-1 cursor-pointer ${m.actif ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
-                      <Power className="w-3 h-3" /> {m.actif ? 'Active' : 'Désactivée'}
-                    </button>
-                    {isDir && (
-                      <button onClick={() => deleteMachine(m)} className="px-2 py-1 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 cursor-pointer" title="Supprimer (Directeur)">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 

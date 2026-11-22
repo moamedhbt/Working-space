@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   LogOut, Cpu, BarChart3, Calendar, Sliders, FolderOpen,
-  Wrench, Box, Tv, Shield, Search, ChevronLeft, ChevronRight, Smartphone, AlertTriangle
+  Wrench, Box, Tv, Shield, Search, ChevronLeft, ChevronRight, Smartphone, AlertTriangle, Activity
 } from 'lucide-react';
 import { api } from './api';
 import Login from './components/Login';
@@ -119,6 +119,7 @@ export default function App() {
       title: 'PILOTAGE',
       items: [
         ['overview', "Vue d'ensemble", BarChart3],
+        ['pilotage', 'Pilotage & TRS', Activity],
         ['planning', 'Planning & Gantt', Calendar],
         ['simulator', 'Simulateur What-If', Sliders],
         ['dossiers', 'Dossiers & Clôture', FolderOpen]
@@ -253,7 +254,7 @@ export default function App() {
 
         {/* CONTENT */}
         <main className="flex-1 p-4 md:p-6 max-w-[1440px] w-full mx-auto">
-          {['overview', 'planning', 'simulator', 'dossiers', 'admin'].includes(tab) && (
+          {['overview', 'pilotage', 'planning', 'simulator', 'dossiers', 'admin'].includes(tab) && (
             <DirectionView state={state} user={user} reload={reload} activePanel={tab} search={search} />
           )}
           {tab === 'chef' && <ChefView state={state} user={user} reload={reload} search={search} />}
