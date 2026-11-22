@@ -128,7 +128,9 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
         operateur: p.operateur,
         urgence: p.urgence,
         delai: p.delai,
-        ordrePlanning: p.ordrePlanning
+        ordrePlanning: p.ordrePlanning,
+        debutStr: p.debutStr,
+        finStr: p.finStr
       });
     }
     setDirtyCount(0);

@@ -61,8 +61,15 @@ router.post('/pieces/:id/:action', auth, (req, res) => {
     let statut = p.statut;
     if (!chute && !p.achatFait) statut = 'À acheter';
     else if (p.statut === 'À planifier' || p.statut === 'À acheter') statut = 'Prêt atelier';
+    let tempsPrevuMin = p.tempsPrevuMin;
+    if (b.debutStr && b.finStr) {
+      const [h1, m1] = b.debutStr.split(':').map(Number);
+      const [h2, m2] = b.finStr.split(':').map(Number);
+      const diff = (h2 * 60 + m2) - (h1 * 60 + m1);
+      if (diff > 0) tempsPrevuMin = diff;
+    }
     runSql(
-      'UPDATE pieces SET machine = ?, operateur = ?, matiere = ?, outils = ?, chuteDispo = ?, statut = ?, urgence = ?, delai = ?, ordrePlanning = ?, planningValide = 0 WHERE id = ?',
+      'UPDATE pieces SET machine = ?, operateur = ?, matiere = ?, outils = ?, chuteDispo = ?, statut = ?, urgence = ?, delai = ?, ordrePlanning = ?, tempsPrevuMin = ?, planningValide = 0 WHERE id = ?',
       [
         b.machine || p.machine,
         b.operateur || p.operateur,
@@ -73,6 +80,7 @@ router.post('/pieces/:id/:action', auth, (req, res) => {
         b.urgence || p.urgence,
         b.delai || p.delai,
         b.ordrePlanning !== undefined ? parseInt(b.ordrePlanning, 10) : p.ordrePlanning,
+        tempsPrevuMin,
         id
       ]
     );
