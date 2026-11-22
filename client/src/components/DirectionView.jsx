@@ -404,7 +404,38 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
             </div>
             <button onClick={createUser} className="mt-2 px-3 py-2 rounded-[6px] bg-[#22D3EE] text-[#0B0F14] text-xs font-semibold cursor-pointer">Créer le compte</button>
             <div className="mt-4 divide-y divide-[#1E2A38] text-xs">
-              {state.users.map(u => <div key={u.id} className="py-2 flex justify-between"><span><strong>{u.nom}</strong> ({u.username})</span><span className="text-[#22D3EE] uppercase">{u.role}</span></div>)}
+              {state.users.map(u => (
+                <div key={u.id} className="py-2 flex flex-wrap items-center justify-between gap-2">
+                  <span><strong>{u.nom}</strong> ({u.username})</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[#22D3EE] uppercase">{u.role}</span>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const newRole = window.prompt('Nouveau rôle (directeur, chef, be, operateur, tv) :', u.role);
+                        if (!newRole) return;
+                        await api(`/api/users/${u.id}`, 'PUT', { role: newRole });
+                        reload();
+                      }}
+                      className="px-2 py-0.5 rounded border border-[#1E2A38] text-slate-300 hover:border-[#22D3EE] text-[10px] cursor-pointer"
+                    >
+                      Rôle
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const pwd = window.prompt(`Nouveau mot de passe pour ${u.nom} :`);
+                        if (!pwd) return;
+                        await api(`/api/users/${u.id}`, 'PUT', { password: pwd });
+                        alert('Mot de passe réinitialisé.');
+                      }}
+                      className="px-2 py-0.5 rounded border border-[#1E2A38] text-amber-300 hover:border-amber-400 text-[10px] cursor-pointer"
+                    >
+                      Réinit. MDP
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
           <div className="cyber-card p-4">
