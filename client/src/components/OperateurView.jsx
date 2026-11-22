@@ -120,6 +120,17 @@ export default function OperateurView({ state, user, reload }) {
             )}
 
             {p.statut === 'En cours' && (
+              <div className="flex gap-2">
+                <button type="button" onClick={() => handlePause(p.id)} className="flex-1 py-2 rounded-[6px] bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer">
+                  <Pause className="w-3.5 h-3.5" /> Pause
+                </button>
+                <button type="button" onClick={() => handlePanne(p.id)} className="flex-1 py-2 rounded-[6px] bg-red-500/15 border border-red-500/40 text-red-300 text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer">
+                  <AlertTriangle className="w-3.5 h-3.5" /> Panne
+                </button>
+              </div>
+            )}
+
+            {p.statut === 'En cours' && (
               <form onSubmit={e => handleFinish(p.id, e)} className="space-y-2.5 pt-1">
                 <div className="flex items-center justify-between gap-2 text-xs">
                   <span className="text-slate-400">Quantité réalisée :</span>

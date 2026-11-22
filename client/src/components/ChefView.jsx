@@ -45,6 +45,15 @@ export default function ChefView({ state, reload }) {
     reload();
   }
 
+  async function editMachine(m) {
+    const newNom = window.prompt('Nouveau nom de la machine :', m.nom);
+    if (!newNom) return;
+    const newType = window.prompt('Type de machine :', m.type) || m.type;
+    await api(`/api/machines/${m.id}`, 'PUT', { nom: newNom, type: newType });
+    showToast(`Machine ${newNom} modifiée.`);
+    reload();
+  }
+
   async function deleteMachine(m) {
     if (!window.confirm(`Supprimer définitivement la machine "${m.nom}" ?`)) return;
     try {
@@ -253,6 +262,9 @@ export default function ChefView({ state, reload }) {
                 <span className="text-slate-400 ml-2">({m.type})</span>
               </div>
               <div className="flex items-center gap-2">
+                <button onClick={() => editMachine(m)} className="px-2.5 py-1 rounded border border-[#1E2A38] text-slate-300 hover:border-[#22D3EE] cursor-pointer">
+                  Modifier
+                </button>
                 <button onClick={() => toggleMachine(m)} className={`px-2.5 py-1 rounded border flex items-center gap-1 cursor-pointer ${m.actif ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
                   <Power className="w-3 h-3" /> {m.actif ? 'Active' : 'Désactivée'}
                 </button>
