@@ -34,13 +34,15 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
   const [newPieceForm, setNewPieceForm] = useState({
     nom: '',
     client: '',
-    quantitePrevue: 10,
+    quantitePrevue: '10',
     delai: new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10),
-    urgence: 'Urgent',
+    urgence: 'Normal',
     machineId: '',
     operateurId: '',
-    tempsReglageMin: 20,
-    tempsUnitaireMin: 6,
+    timeMode: 'detail',
+    tempsReglageMin: '20',
+    tempsUnitaireMin: '6',
+    tempsTotalMin: '80',
     matiere: '',
     chuteDispo: true
   });
@@ -57,13 +59,13 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
 
   const [sim, setSim] = useState({
     nom: '',
-    quantite: 20,
+    quantite: '20',
     delai: new Date(Date.now() + 4 * 86400000).toISOString().slice(0, 10),
     machineId: '',
     matiereDispo: true,
-    delaiFournisseurJours: 0,
-    tempsReglageMin: 20,
-    tempsParPieceMin: 10
+    delaiFournisseurJours: '',
+    tempsReglageMin: '20',
+    tempsParPieceMin: '10'
   });
   const [simResult, setSimResult] = useState(null);
   const [prices, setPrices] = useState({});
@@ -162,7 +164,14 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
 
   async function runSimulation() {
     try {
-      const res = await api('/api/planning/simulate', 'POST', sim);
+      const payload = {
+        ...sim,
+        quantite: Math.max(1, Number(sim.quantite) || 1),
+        tempsReglageMin: Math.max(0, Number(sim.tempsReglageMin) || 0),
+        tempsParPieceMin: Math.max(0, Number(sim.tempsParPieceMin) || 0),
+        delaiFournisseurJours: Math.max(0, Number(sim.delaiFournisseurJours) || 0)
+      };
+      const res = await api('/api/planning/simulate', 'POST', payload);
       setSimResult(res);
     } catch (e) {
       showToast(e.message, 'err');
@@ -171,22 +180,25 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
 
   async function validateSimulation() {
     if (!sim.nom.trim()) return showToast('Entrez le nom de la pièce.', 'err');
+    const q = Math.max(1, Number(sim.quantite) || 1);
+    const reg = Math.max(0, Number(sim.tempsReglageMin) || 0);
+    const unit = Math.max(0, Number(sim.tempsParPieceMin) || 0);
     try {
       const res = await api('/api/pieces', 'POST', {
         nom: sim.nom.trim(),
         client: 'Commande Simulée',
-        quantitePrevue: sim.quantite,
+        quantitePrevue: q,
         delai: sim.delai,
         urgence: 'Urgent',
         machineId: sim.machineId,
-        tempsReglageMin: sim.tempsReglageMin,
-        tempsUnitaireMin: sim.tempsParPieceMin,
-        tempsPrevuMin: simResult?.newLoadMin || (Number(sim.tempsReglageMin || 0) + sim.quantite * (sim.tempsParPieceMin || 10)),
+        tempsReglageMin: reg,
+        tempsUnitaireMin: unit,
+        tempsPrevuMin: simResult?.newLoadMin || (reg + q * (unit || 10)),
         matiereDispo: sim.matiereDispo,
         chuteDispo: sim.matiereDispo
       });
       setSimResult(null);
-      setSim(prev => ({ ...prev, nom: '', quantite: 20, matiereDispo: true, delaiFournisseurJours: 0 }));
+      setSim(prev => ({ ...prev, nom: '', quantite: '20', matiereDispo: true, delaiFournisseurJours: '' }));
       showToast(`OF ${res.id} créé depuis le simulateur.`);
       reload();
     } catch (e) {
@@ -198,13 +210,15 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
     setNewPieceForm({
       nom: '',
       client: '',
-      quantitePrevue: 10,
+      quantitePrevue: '10',
       delai: new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10),
-      urgence: 'Urgent',
+      urgence: 'Normal',
       machineId: activeMachines[0]?.id || '',
       operateurId: operators[0]?.id || '',
-      tempsReglageMin: 20,
-      tempsUnitaireMin: 6,
+      timeMode: 'detail',
+      tempsReglageMin: '20',
+      tempsUnitaireMin: '6',
+      tempsTotalMin: '80',
       matiere: '',
       chuteDispo: true
     });
@@ -214,12 +228,27 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
   async function submitNewPiece(e) {
     e.preventDefault();
     if (!newPieceForm.nom.trim()) return showToast('Le nom de la pièce est requis.', 'err');
+    const quantitePrevue = Math.max(1, parseInt(newPieceForm.quantitePrevue, 10) || 1);
+    const isTotalMode = newPieceForm.timeMode === 'total';
+    const tempsReglageMin = isTotalMode ? 0 : Math.max(0, parseInt(newPieceForm.tempsReglageMin, 10) || 0);
+    const tempsUnitaireMin = isTotalMode ? 0 : Math.max(0, parseFloat(newPieceForm.tempsUnitaireMin) || 0);
+    const tempsPrevuMin = isTotalMode
+      ? Math.max(1, parseInt(newPieceForm.tempsTotalMin, 10) || 60)
+      : Math.max(1, Math.round(tempsReglageMin + tempsUnitaireMin * quantitePrevue));
     try {
       const res = await api('/api/pieces', 'POST', {
-        ...newPieceForm,
         nom: newPieceForm.nom.trim(),
         client: newPieceForm.client.trim() || 'Client Standard',
+        quantitePrevue,
+        delai: newPieceForm.delai,
+        urgence: newPieceForm.urgence,
+        machineId: newPieceForm.machineId,
+        operateurId: newPieceForm.operateurId,
+        tempsReglageMin,
+        tempsUnitaireMin,
+        tempsPrevuMin,
         matiere: newPieceForm.matiere.trim() || 'À définir',
+        chuteDispo: newPieceForm.chuteDispo,
         matiereDispo: newPieceForm.chuteDispo
       });
       setShowNewModal(false);
@@ -395,7 +424,12 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
 
   const hoursAxis = ['08h', '09h', '10h', '11h', '12h', '13h', '14h', '15h', '16h', '17h'];
   const nowPct = nowLinePercent();
-  const computedModalMin = Math.round((Number(newPieceForm.tempsReglageMin) || 0) + (Number(newPieceForm.tempsUnitaireMin) || 0) * (Number(newPieceForm.quantitePrevue) || 1));
+  const modalQty = Math.max(1, parseInt(newPieceForm.quantitePrevue, 10) || 1);
+  const modalReg = Math.max(0, parseInt(newPieceForm.tempsReglageMin, 10) || 0);
+  const modalUnit = Math.max(0, parseFloat(newPieceForm.tempsUnitaireMin) || 0);
+  const computedModalMin = newPieceForm.timeMode === 'total'
+    ? Math.max(1, parseInt(newPieceForm.tempsTotalMin, 10) || 0)
+    : Math.round(modalReg + modalUnit * modalQty);
 
   const filterBar = (
     <div className="cyber-card p-3 flex flex-wrap items-center gap-2 text-xs">
@@ -442,71 +476,223 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
 
       {/* CREATE OF MODAL */}
       {showNewModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <form onSubmit={submitNewPiece} className="w-full max-w-lg cyber-card cyber-corners p-5 space-y-4 text-xs">
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
+          onClick={e => { if (e.target === e.currentTarget) setShowNewModal(false); }}
+        >
+          <form onSubmit={submitNewPiece} className="w-full max-w-xl max-h-[90vh] overflow-y-auto cyber-card cyber-corners p-5 space-y-4 text-xs my-auto">
             <div className="flex items-center justify-between border-b border-[#1E2A38] pb-3">
-              <h3 className="text-sm font-semibold text-white">Nouvel Ordre de Fabrication (OF)</h3>
-              <button type="button" onClick={() => setShowNewModal(false)} className="text-slate-400 hover:text-white cursor-pointer">
+              <div>
+                <h3 className="text-sm font-semibold text-white">Nouvel Ordre de Fabrication (OF)</h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">Renseignez la pièce et le délai — la gamme pourra être complétée côté Chef d'atelier.</p>
+              </div>
+              <button type="button" onClick={() => setShowNewModal(false)} className="p-1 text-slate-400 hover:text-white cursor-pointer">
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="sm:col-span-2">
-                <label className="text-[11px] text-slate-400">Nom de la pièce *</label>
-                <input required value={newPieceForm.nom} onChange={e => setNewPieceForm({ ...newPieceForm, nom: e.target.value })} placeholder="Ex: Axe d'entraînement Ø60" className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white" />
-              </div>
-              <div>
-                <label className="text-[11px] text-slate-400">Client</label>
-                <input value={newPieceForm.client} onChange={e => setNewPieceForm({ ...newPieceForm, client: e.target.value })} placeholder="Ex: SARL MécaSud" className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white" />
-              </div>
-              <div>
-                <label className="text-[11px] text-slate-400">Quantité prévue</label>
-                <input type="number" min="1" value={newPieceForm.quantitePrevue} onChange={e => setNewPieceForm({ ...newPieceForm, quantitePrevue: Number(e.target.value) })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-white" />
-              </div>
-              <div>
-                <label className="text-[11px] text-slate-400">Délai souhaité</label>
-                <input type="date" value={newPieceForm.delai} onChange={e => setNewPieceForm({ ...newPieceForm, delai: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-white" />
-              </div>
-              <div>
-                <label className="text-[11px] text-slate-400">Urgence</label>
-                <select value={newPieceForm.urgence} onChange={e => setNewPieceForm({ ...newPieceForm, urgence: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white">
-                  <option>Critique</option><option>Urgent</option><option>Normal</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-[11px] text-slate-400">Machine principale</label>
-                <select value={newPieceForm.machineId} onChange={e => setNewPieceForm({ ...newPieceForm, machineId: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white">
-                  {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="text-[11px] text-slate-400">Opérateur</label>
-                <select value={newPieceForm.operateurId} onChange={e => setNewPieceForm({ ...newPieceForm, operateurId: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white">
-                  {operators.map(o => <option key={o.id} value={o.id}>{o.nom}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="text-[11px] text-slate-400">Temps réglage / Setup (min)</label>
-                <input type="number" min="0" value={newPieceForm.tempsReglageMin} onChange={e => setNewPieceForm({ ...newPieceForm, tempsReglageMin: Number(e.target.value) })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-white" />
-              </div>
-              <div>
-                <label className="text-[11px] text-slate-400">Temps unitaire (min/pièce)</label>
-                <input type="number" min="0" step="0.5" value={newPieceForm.tempsUnitaireMin} onChange={e => setNewPieceForm({ ...newPieceForm, tempsUnitaireMin: Number(e.target.value) })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-white" />
-              </div>
-              <div className="sm:col-span-2">
-                <label className="text-[11px] text-slate-400">Matière</label>
-                <input value={newPieceForm.matiere} onChange={e => setNewPieceForm({ ...newPieceForm, matiere: e.target.value })} placeholder="Ex: Acier 42CrMo4 Ø65" className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white" />
-              </div>
-              <div className="sm:col-span-2 flex items-center justify-between pt-1">
-                <label className="flex items-center gap-2 cursor-pointer text-slate-300">
-                  <input type="checkbox" checked={newPieceForm.chuteDispo} onChange={e => setNewPieceForm({ ...newPieceForm, chuteDispo: e.target.checked })} className="accent-[#22D3EE]" />
-                  Matière / chute disponible
-                </label>
-                <span className="font-mono-num text-[#22D3EE]">Total prévu : {computedModalMin} min ({(computedModalMin / 60).toFixed(1)}h)</span>
+
+            {/* 1. COMMANDE */}
+            <div className="space-y-3">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-[#22D3EE]">1. Commande & Délai</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="text-[11px] text-slate-300 font-medium">Nom de la pièce *</label>
+                  <input
+                    required
+                    autoFocus
+                    value={newPieceForm.nom}
+                    onChange={e => setNewPieceForm({ ...newPieceForm, nom: e.target.value })}
+                    placeholder="Ex: Axe d'entraînement Ø60"
+                    className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-300 font-medium">Client</label>
+                  <input
+                    value={newPieceForm.client}
+                    onChange={e => setNewPieceForm({ ...newPieceForm, client: e.target.value })}
+                    placeholder="Ex: SARL MécaSud"
+                    className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-300 font-medium">Quantité à fabriquer *</label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={newPieceForm.quantitePrevue}
+                    onChange={e => setNewPieceForm({ ...newPieceForm, quantitePrevue: e.target.value })}
+                    placeholder="Ex: 10"
+                    className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-300 font-medium">Délai souhaité</label>
+                  <input
+                    type="date"
+                    value={newPieceForm.delai}
+                    onChange={e => setNewPieceForm({ ...newPieceForm, delai: e.target.value })}
+                    className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-300 font-medium">Niveau d'urgence</label>
+                  <div className="grid grid-cols-3 gap-1.5 mt-1">
+                    {[
+                      ['Normal', 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'],
+                      ['Urgent', 'border-amber-500/40 bg-amber-500/15 text-amber-300'],
+                      ['Critique', 'border-red-500/40 bg-red-500/15 text-red-300']
+                    ].map(([u, activeCls]) => (
+                      <button
+                        key={u}
+                        type="button"
+                        onClick={() => setNewPieceForm({ ...newPieceForm, urgence: u })}
+                        className={`py-2 rounded-[6px] border text-[11px] font-medium transition cursor-pointer ${
+                          newPieceForm.urgence === u
+                            ? activeCls
+                            : 'border-[#1E2A38] bg-[#0B0F14] text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {u}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
-            <div className="flex justify-end gap-2 pt-2 border-t border-[#1E2A38]">
-              <button type="button" onClick={() => setShowNewModal(false)} className="px-3 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-slate-300 cursor-pointer">Annuler</button>
+
+            {/* 2. MATIÈRE */}
+            <div className="space-y-2.5 pt-2 border-t border-[#1E2A38]">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-[#22D3EE]">2. Matière première</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+                <div>
+                  <label className="text-[11px] text-slate-300 font-medium">Nuance & dimensions</label>
+                  <input
+                    value={newPieceForm.matiere}
+                    onChange={e => setNewPieceForm({ ...newPieceForm, matiere: e.target.value })}
+                    placeholder="Ex: Acier 42CrMo4 Ø65"
+                    className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none text-white"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setNewPieceForm({ ...newPieceForm, chuteDispo: true })}
+                    className={`py-2 px-2 rounded-[6px] border text-[11px] font-medium cursor-pointer ${
+                      newPieceForm.chuteDispo
+                        ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                        : 'border-[#1E2A38] bg-[#0B0F14] text-slate-400'
+                    }`}
+                  >
+                    En stock / Chute
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewPieceForm({ ...newPieceForm, chuteDispo: false })}
+                    className={`py-2 px-2 rounded-[6px] border text-[11px] font-medium cursor-pointer ${
+                      !newPieceForm.chuteDispo
+                        ? 'border-amber-500/40 bg-amber-500/15 text-amber-300'
+                        : 'border-[#1E2A38] bg-[#0B0F14] text-slate-400'
+                    }`}
+                  >
+                    À acheter
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* 3. AFFECTATION & TEMPS */}
+            <div className="space-y-3 pt-2 border-t border-[#1E2A38]">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-[#22D3EE]">3. Machine, Opérateur & Temps estimé</span>
+                <div className="inline-flex rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] p-0.5 text-[10px]">
+                  <button
+                    type="button"
+                    onClick={() => setNewPieceForm({ ...newPieceForm, timeMode: 'detail' })}
+                    className={`px-2 py-0.5 rounded cursor-pointer ${newPieceForm.timeMode === 'detail' ? 'bg-[#22D3EE] text-[#0B0F14] font-semibold' : 'text-slate-400'}`}
+                  >
+                    Réglage + Unitaire
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewPieceForm({ ...newPieceForm, timeMode: 'total', tempsTotalMin: String(computedModalMin || 60) })}
+                    className={`px-2 py-0.5 rounded cursor-pointer ${newPieceForm.timeMode === 'total' ? 'bg-[#22D3EE] text-[#0B0F14] font-semibold' : 'text-slate-400'}`}
+                  >
+                    Temps global
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] text-slate-300 font-medium">Machine principale</label>
+                  <select value={newPieceForm.machineId} onChange={e => setNewPieceForm({ ...newPieceForm, machineId: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white">
+                    {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-300 font-medium">Opérateur</label>
+                  <select value={newPieceForm.operateurId} onChange={e => setNewPieceForm({ ...newPieceForm, operateurId: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white">
+                    {operators.map(o => <option key={o.id} value={o.id}>{o.nom}</option>)}
+                  </select>
+                </div>
+
+                {newPieceForm.timeMode === 'detail' ? (
+                  <>
+                    <div>
+                      <label className="text-[11px] text-slate-300 font-medium">Temps de réglage (min)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={newPieceForm.tempsReglageMin}
+                        onChange={e => setNewPieceForm({ ...newPieceForm, tempsReglageMin: e.target.value })}
+                        placeholder="Ex: 20"
+                        className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] text-slate-300 font-medium">Temps par pièce (min)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.5"
+                        value={newPieceForm.tempsUnitaireMin}
+                        onChange={e => setNewPieceForm({ ...newPieceForm, tempsUnitaireMin: e.target.value })}
+                        placeholder="Ex: 6"
+                        className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-white"
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <div className="sm:col-span-2">
+                    <label className="text-[11px] text-slate-300 font-medium">Temps total prévu pour toute la série (min)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={newPieceForm.tempsTotalMin}
+                      onChange={e => setNewPieceForm({ ...newPieceForm, tempsTotalMin: e.target.value })}
+                      placeholder="Ex: 120"
+                      className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-white"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="p-2.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                <span className="text-slate-400">
+                  {newPieceForm.timeMode === 'detail'
+                    ? `Calcul : ${modalReg} min réglage + (${modalQty} pcs × ${modalUnit} min)`
+                    : `Temps fixe saisi pour ${modalQty} pièce(s)`}
+                </span>
+                <span className="font-mono-num font-semibold text-[#22D3EE]">
+                  Total : {computedModalMin} min ({(computedModalMin / 60).toFixed(1)} h)
+                </span>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-[#1E2A38]">
+              <button type="button" onClick={() => setShowNewModal(false)} className="px-3.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-slate-300 hover:text-white cursor-pointer">Annuler</button>
               <button type="submit" className="px-4 py-2 rounded-[6px] bg-[#22D3EE] hover:bg-cyan-300 text-[#0B0F14] font-semibold cursor-pointer">Créer l'OF</button>
             </div>
           </form>
@@ -908,17 +1094,40 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
       {activePanel === 'simulator' && (
         <div className="cyber-card p-5 space-y-4">
           <h2 className="text-sm font-semibold text-white">Simulateur de Décision (What-If)</h2>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
-            <input placeholder="Nom pièce" value={sim.nom} onChange={e => setSim({ ...sim, nom: e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
-            <input type="number" min="1" placeholder="Quantité" value={sim.quantite} onChange={e => setSim({ ...sim, quantite: +e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
-            <select value={sim.machineId} onChange={e => setSim({ ...sim, machineId: e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]">
-              {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}{m.enPanne ? ' (PANNE)' : ''}</option>)}
-            </select>
-            <input type="number" min="0" placeholder="Temps réglage (min)" value={sim.tempsReglageMin} onChange={e => setSim({ ...sim, tempsReglageMin: +e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
-            <input type="number" min="1" placeholder="Minutes / pièce" value={sim.tempsParPieceMin || ''} onChange={e => setSim({ ...sim, tempsParPieceMin: +e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
-            <input type="date" value={sim.delai} onChange={e => setSim({ ...sim, delai: e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" />
-            <label className="flex items-center gap-2 px-2 cursor-pointer"><input type="checkbox" checked={sim.matiereDispo} onChange={e => setSim({ ...sim, matiereDispo: e.target.checked })} /> Matière dispo DZ</label>
-            {!sim.matiereDispo && <input type="number" placeholder="Délai fournisseur (j)" value={sim.delaiFournisseurJours || ''} onChange={e => setSim({ ...sim, delaiFournisseurJours: +e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+            <div>
+              <label className="text-[10px] text-slate-400">Nom de la pièce</label>
+              <input placeholder="Ex: Bride DN80" value={sim.nom} onChange={e => setSim({ ...sim, nom: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white" />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400">Quantité</label>
+              <input type="number" min="1" placeholder="20" value={sim.quantite} onChange={e => setSim({ ...sim, quantite: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-white" />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400">Machine</label>
+              <select value={sim.machineId} onChange={e => setSim({ ...sim, machineId: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white">
+                {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}{m.enPanne ? ' (PANNE)' : ''}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400">Temps réglage (min)</label>
+              <input type="number" min="0" placeholder="20" value={sim.tempsReglageMin} onChange={e => setSim({ ...sim, tempsReglageMin: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-white" />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400">Minutes / pièce</label>
+              <input type="number" min="0" step="0.5" placeholder="10" value={sim.tempsParPieceMin} onChange={e => setSim({ ...sim, tempsParPieceMin: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-white" />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400">Délai souhaité</label>
+              <input type="date" value={sim.delai} onChange={e => setSim({ ...sim, delai: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-white" />
+            </div>
+            <label className="flex items-center gap-2 px-1 pt-2 cursor-pointer text-slate-300"><input type="checkbox" checked={sim.matiereDispo} onChange={e => setSim({ ...sim, matiereDispo: e.target.checked })} className="accent-[#22D3EE]" /> Matière dispo DZ</label>
+            {!sim.matiereDispo && (
+              <div>
+                <label className="text-[10px] text-slate-400">Délai fournisseur (jours)</label>
+                <input type="number" min="0" placeholder="Ex: 3" value={sim.delaiFournisseurJours} onChange={e => setSim({ ...sim, delaiFournisseurJours: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-white" />
+              </div>
+            )}
           </div>
           <div className="flex gap-2">
             <button onClick={runSimulation} className="px-4 py-2 rounded-[6px] bg-[#22D3EE] text-[#0B0F14] text-xs font-semibold cursor-pointer">Simuler l'impact</button>
