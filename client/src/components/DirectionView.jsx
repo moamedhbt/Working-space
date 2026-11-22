@@ -1,100 +1,266 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Bot, CheckCircle, Plus, FolderCheck, UserPlus, ShoppingCart,
-  FileText, FileSpreadsheet, Archive, Download
+  FileText, FileSpreadsheet, Archive, Download, X, Database, Edit3, Check,
+  AlertTriangle, Layers, Image
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import JSZip from 'jszip';
 import { api } from '../api';
 
-function Sparkline({ color = '#22D3EE' }) {
-  return (
-    <svg width="64" height="22" viewBox="0 0 64 22" className="opacity-80">
-      <polyline
-        fill="none"
-        stroke={color}
-        strokeWidth="1.5"
-        points="2,18 14,14 26,16 38,9 50,11 62,4"
-      />
-    </svg>
-  );
-}
-
 function statusBadge(statut, urgence) {
+  if (statut === 'Panne machine') return 'bg-red-500/15 text-red-300 border-red-500/40';
+  if (statut === 'Clôturé') return 'bg-slate-700/40 text-slate-300 border-slate-600/50';
   if (urgence === 'Critique') return 'bg-red-500/10 text-red-400 border-red-500/30';
-  if (statut === 'À acheter' || urgence === 'Urgent') return 'bg-amber-500/10 text-amber-400 border-amber-500/30';
+  if (statut === 'À acheter' || urgence === 'Urgent' || statut === 'En pause') return 'bg-amber-500/10 text-amber-400 border-amber-500/30';
   return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30';
 }
 
+function nowLinePercent() {
+  const now = new Date();
+  const mins = now.getHours() * 60 + now.getMinutes();
+  const start = 8 * 60;
+  const end = 17 * 60;
+  return Math.max(0, Math.min(100, ((mins - start) / (end - start)) * 100));
+}
+
 export default function DirectionView({ state, reload, activePanel = 'overview', search = '' }) {
+  const activeMachines = state.machines.filter(m => m.actif);
+  const operators = state.users.filter(u => u.role === 'operateur' && u.actif !== 0);
+
+  const [toast, setToast] = useState({ type: 'ok', text: '' });
+  const [showNewModal, setShowNewModal] = useState(false);
+  const [newPieceForm, setNewPieceForm] = useState({
+    nom: '',
+    client: '',
+    quantitePrevue: 10,
+    delai: new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10),
+    urgence: 'Urgent',
+    machineId: '',
+    operateurId: '',
+    tempsPrevuMin: 120,
+    matiere: '',
+    chuteDispo: true
+  });
+
   const [newUser, setNewUser] = useState({ nom: '', username: '', password: '', role: 'operateur' });
-  const [sim, setSim] = useState({ nom: '', quantite: 20, delai: '2026-11-26', machine: 'Tour CNC 1', matiereDispo: true, delaiFournisseurJours: 0, tempsParPieceMin: 0 });
+  const [editingUserId, setEditingUserId] = useState(null);
+  const [editUserForm, setEditUserForm] = useState({ nom: '', role: 'operateur', password: '', actif: true });
+
+  const [sim, setSim] = useState({
+    nom: '',
+    quantite: 20,
+    delai: new Date(Date.now() + 4 * 86400000).toISOString().slice(0, 10),
+    machineId: '',
+    matiereDispo: true,
+    delaiFournisseurJours: 0,
+    tempsParPieceMin: 15
+  });
   const [simResult, setSimResult] = useState(null);
   const [prices, setPrices] = useState({});
 
+  useEffect(() => {
+    if (!sim.machineId && activeMachines.length > 0) {
+      setSim(prev => ({ ...prev, machineId: activeMachines[0].id }));
+    }
+  }, [activeMachines.length]);
+
+  function showToast(text, type = 'ok') {
+    setToast({ type, text });
+    setTimeout(() => setToast({ type: 'ok', text: '' }), 4000);
+  }
+
   const filteredPieces = state.pieces.filter(p =>
-    !search || p.id.toLowerCase().includes(search.toLowerCase()) || p.nom.toLowerCase().includes(search.toLowerCase())
+    !search ||
+    p.id.toLowerCase().includes(search.toLowerCase()) ||
+    p.nom.toLowerCase().includes(search.toLowerCase()) ||
+    (p.client || '').toLowerCase().includes(search.toLowerCase())
   );
 
   const enCours = state.pieces.filter(p => p.statut === 'En cours').length;
   const aAcheter = state.pieces.filter(p => p.statut === 'À acheter').length;
   const clotures = state.pieces.filter(p => p.statut === 'Clôturé').length;
-  const critiques = state.pieces.filter(p => p.urgence === 'Critique').length;
+  const critiques = state.pieces.filter(p => p.urgence === 'Critique' && p.statut !== 'Clôturé').length;
+  const openPannes = (state.pannes || []).filter(p => p.statut === 'Ouverte');
 
   function proposePriceAI(p) {
-    const hours = (p.tempsReelMin || p.tempsPrevuMin || 120) / 60;
-    const machineCost = Math.round(hours * 2500);
+    const ops = p.operations || [];
+    let machineCost = 0;
+    if (ops.length > 0) {
+      machineCost = ops.reduce((sum, o) => {
+        const hrs = (o.tempsReelMin || o.tempsPrevuMin || 60) / 60;
+        const rate = o.machineTauxHoraire || 2500;
+        return sum + hrs * rate;
+      }, 0);
+    } else {
+      const hours = (p.tempsReelMin || p.tempsPrevuMin || 120) / 60;
+      machineCost = hours * (p.machineTauxHoraire || 2500);
+    }
     const matCost = p.chuteDispo ? 1500 : 6000;
-    setPrices(prev => ({ ...prev, [p.id]: Math.round((machineCost + matCost) * 1.3) }));
+    const estimated = Math.round((machineCost + matCost) * 1.3);
+    setPrices(prev => ({ ...prev, [p.id]: estimated }));
   }
 
   async function runSimulation() {
-    setSimResult(await api('/api/planning/simulate', 'POST', sim));
+    try {
+      const res = await api('/api/planning/simulate', 'POST', sim);
+      setSimResult(res);
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
   }
 
   async function validateSimulation() {
-    if (!sim.nom.trim()) return alert('Entrez le nom de la pièce');
-    await api('/api/pieces', 'POST', { nom: sim.nom, client: 'Commande Simulée', quantitePrevue: sim.quantite, delai: sim.delai, urgence: 'Urgent' });
-    setSimResult(null);
-    setSim({ nom: '', quantite: 20, delai: '2026-11-26', machine: 'Tour CNC 1', matiereDispo: true, delaiFournisseurJours: 0, tempsParPieceMin: 0 });
-    reload();
+    if (!sim.nom.trim()) return showToast('Entrez le nom de la pièce.', 'err');
+    try {
+      const res = await api('/api/pieces', 'POST', {
+        nom: sim.nom.trim(),
+        client: 'Commande Simulée',
+        quantitePrevue: sim.quantite,
+        delai: sim.delai,
+        urgence: 'Urgent',
+        machineId: sim.machineId,
+        tempsPrevuMin: simResult?.newLoadMin || (sim.quantite * (sim.tempsParPieceMin || 15)),
+        matiereDispo: sim.matiereDispo,
+        chuteDispo: sim.matiereDispo
+      });
+      setSimResult(null);
+      setSim(prev => ({ ...prev, nom: '', quantite: 20, matiereDispo: true, delaiFournisseurJours: 0 }));
+      showToast(`OF ${res.id} créé depuis le simulateur.`);
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
   }
 
-  async function addPiece() {
-    const nom = prompt('Nom de la pièce :');
-    if (!nom) return;
-    const client = prompt('Client :', 'Client Standard');
-    const quantitePrevue = prompt('Quantité :', '10');
-    const urgence = prompt('Urgence (Critique / Urgent / Normal) :', 'Urgent');
-    await api('/api/pieces', 'POST', { nom, client, quantitePrevue, urgence });
-    reload();
+  function openCreateModal() {
+    setNewPieceForm({
+      nom: '',
+      client: '',
+      quantitePrevue: 10,
+      delai: new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10),
+      urgence: 'Urgent',
+      machineId: activeMachines[0]?.id || '',
+      operateurId: operators[0]?.id || '',
+      tempsPrevuMin: 120,
+      matiere: '',
+      chuteDispo: true
+    });
+    setShowNewModal(true);
+  }
+
+  async function submitNewPiece(e) {
+    e.preventDefault();
+    if (!newPieceForm.nom.trim()) return showToast('Le nom de la pièce est requis.', 'err');
+    try {
+      const res = await api('/api/pieces', 'POST', {
+        ...newPieceForm,
+        nom: newPieceForm.nom.trim(),
+        client: newPieceForm.client.trim() || 'Client Standard',
+        matiere: newPieceForm.matiere.trim() || 'À définir',
+        matiereDispo: newPieceForm.chuteDispo
+      });
+      setShowNewModal(false);
+      showToast(`Ordre de fabrication ${res.id} créé.`);
+      reload();
+    } catch (err) {
+      showToast(err.message, 'err');
+    }
   }
 
   async function validateAll() {
-    await api('/api/planning/validate', 'POST');
-    reload();
+    try {
+      await api('/api/planning/validate', 'POST');
+      showToast('Planning validé et publié sur les postes & TV.');
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
   }
 
   async function createUser() {
     try {
       await api('/api/users', 'POST', newUser);
       setNewUser({ nom: '', username: '', password: '', role: 'operateur' });
+      showToast('Compte utilisateur créé.');
       reload();
     } catch (e) {
-      alert(e.message);
+      showToast(e.message, 'err');
+    }
+  }
+
+  function startEditUser(u) {
+    setEditingUserId(u.id);
+    setEditUserForm({ nom: u.nom, role: u.role, password: '', actif: u.actif !== 0 });
+  }
+
+  async function saveEditUser(id) {
+    try {
+      await api(`/api/users/${id}`, 'PUT', {
+        nom: editUserForm.nom,
+        role: editUserForm.role,
+        actif: editUserForm.actif,
+        ...(editUserForm.password.trim() ? { password: editUserForm.password.trim() } : {})
+      });
+      setEditingUserId(null);
+      showToast('Utilisateur mis à jour (tous les OF/opérations liés restent synchronisés).');
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  async function triggerBackup() {
+    try {
+      const res = await api('/api/admin/backup', 'POST');
+      showToast(`Sauvegarde créée : ${res.file}`);
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  async function validateBuy(pieceId) {
+    try {
+      await api(`/api/pieces/${pieceId}/buy`, 'POST');
+      showToast(`Achat matière validé pour ${pieceId}.`);
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  async function closePiece(p) {
+    try {
+      const prixFinal = Number(prices[p.id] ?? p.prixFinal ?? 0);
+      await api(`/api/pieces/${p.id}/close`, 'POST', { prixFinal });
+      showToast(`Dossier ${p.id} clôturé${prixFinal > 0 ? ` (${prixFinal.toLocaleString('fr-FR')} DZD)` : ''}.`);
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
     }
   }
 
   function exportPDF() {
     const doc = new jsPDF('landscape');
     doc.setFontSize(14);
-    doc.text('ATELIER MANAGER — PLANNING & RAPPORT', 14, 16);
+    doc.text('ATELIER MANAGER — PLANNING & RAPPORT PRODUCTION', 14, 16);
     autoTable(doc, {
       startY: 24,
-      head: [['Ordre', 'OF', 'Piece', 'Client', 'Machine', 'Operateur', 'Delai', 'Urgence', 'Statut', 'Qte']],
+      head: [['Ordre', 'OF', 'Piece', 'Client', 'Machine', 'Operateur', 'Ops', 'Delai', 'Urgence', 'Statut', 'Qte / Rebuts']],
       body: state.pieces.map((p, i) => [
-        `#${p.ordrePlanning || i + 1}`, p.id, p.nom, p.client, p.machine, p.operateur, p.delai, p.urgence, p.statut, `${p.quantiteRealisee}/${p.quantitePrevue}`
+        `#${p.ordrePlanning || i + 1}`,
+        p.id,
+        p.nom,
+        p.client,
+        p.machine,
+        p.operateur,
+        `${p.opsTerminees}/${p.opsTotal}`,
+        p.delai,
+        p.urgence,
+        p.statut,
+        `${p.quantiteRealisee}/${p.quantitePrevue}${p.quantiteRebut > 0 ? ` (${p.quantiteRebut} NC)` : ''}`
       ]),
       styles: { fontSize: 8 },
       headStyles: { fillColor: [34, 211, 238], textColor: [11, 15, 20] }
@@ -103,11 +269,14 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
   }
 
   function exportExcel() {
-    const headers = ['Ordre', 'OF', 'Piece', 'Client', 'Machine', 'Operateur', 'Delai', 'Urgence', 'Statut', 'Qte Realisee', 'Qte Prevue'];
+    const headers = ['Ordre', 'OF', 'Piece', 'Client', 'Machine', 'Operateur', 'Operations', 'Delai', 'Urgence', 'Statut', 'Qte Bonne', 'Qte Prevue', 'Qte Rebut', 'Temps Reel (min)', 'Temps Prevu (min)', 'Prix Final (DZD)'];
     const rows = state.pieces.map((p, i) => [
-      p.ordrePlanning || i + 1, p.id, p.nom, p.client, p.machine, p.operateur, p.delai, p.urgence, p.statut, p.quantiteRealisee, p.quantitePrevue
+      p.ordrePlanning || i + 1, p.id, p.nom, p.client, p.machine, p.operateur,
+      `${p.opsTerminees}/${p.opsTotal}`, p.delai, p.urgence, p.statut,
+      p.quantiteRealisee, p.quantitePrevue, p.quantiteRebut || 0,
+      p.tempsReelMin, p.tempsPrevuMin, p.prixFinal || 0
     ]);
-    const csv = '\uFEFF' + [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(';')).join('\n');
+    const csv = '\uFEFF' + [headers, ...rows].map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\n');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
     a.download = `Planning_Atelier_${new Date().toISOString().slice(0, 10)}.csv`;
@@ -117,7 +286,7 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
   async function downloadPieceZip(p) {
     const doc = new jsPDF();
     doc.setFontSize(14);
-    doc.text(`DOSSIER PIECE : ${p.id}`, 14, 18);
+    doc.text(`DOSSIER DE FABRICATION : ${p.id}`, 14, 18);
     autoTable(doc, {
       startY: 26,
       head: [['Champ', 'Detail']],
@@ -126,17 +295,37 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
         ['Statut', p.statut],
         ['Urgence / Delai', `${p.urgence} — ${p.delai}`],
         ['Machine / Operateur', `${p.machine} — ${p.operateur}`],
-        ['Quantite', `${p.quantiteRealisee} / ${p.quantitePrevue}`],
+        ['Quantite (Bonne / Prevue / Rebuts)', `${p.quantiteRealisee} / ${p.quantitePrevue} (Rebuts: ${p.quantiteRebut || 0})`],
         ['Temps (Reel / Prevu)', `${p.tempsReelMin} min / ${p.tempsPrevuMin} min`],
-        ['Matiere', p.matiere],
+        ['Matiere / Fournisseur', `${p.matiere} (${p.fournisseur || '—'})`],
         ['Outillage', p.outils || '—'],
+        ['Prix final', p.prixFinal > 0 ? `${p.prixFinal.toLocaleString('fr-FR')} DZD` : '—'],
         ['BE (Fichier / Prog / 3D)', `${p.be.nomFichier || '—'} / ${p.be.programme || '—'} / ${p.be.dessin3d || '—'}`]
       ],
       headStyles: { fillColor: [34, 211, 238], textColor: [11, 15, 20] }
     });
+
+    if ((p.operations || []).length > 0) {
+      autoTable(doc, {
+        startY: doc.lastAutoTable.finalY + 8,
+        head: [['Op', 'Libelle', 'Machine', 'Operateur', 'Temps', 'Qte / NC', 'Statut']],
+        body: p.operations.map((o, idx) => [
+          `Op ${(idx + 1) * 10}`,
+          o.libelle,
+          o.machine,
+          o.operateur,
+          `${o.tempsReelMin}/${o.tempsPrevuMin}m`,
+          `${o.quantiteBonne} ok / ${o.quantiteRebut} NC`,
+          o.statut
+        ]),
+        styles: { fontSize: 8 },
+        headStyles: { fillColor: [17, 24, 33], textColor: [248, 250, 252] }
+      });
+    }
+
     const zip = new JSZip();
     zip.file(`Fiche_${p.id}.pdf`, doc.output('blob'));
-    zip.file(`BE_${p.id}_infos.txt`, `Fichier: ${p.be.nomFichier}\nProgramme: ${p.be.programme}\nDessin 3D: ${p.be.dessin3d}\n`);
+    zip.file(`BE_${p.id}_infos.txt`, `Fichier: ${p.be.nomFichier}\nProgramme: ${p.be.programme}\nDessin 3D: ${p.be.dessin3d}\nNotes qualite: ${p.notesQualite || '—'}\n`);
     const a = document.createElement('a');
     a.href = URL.createObjectURL(await zip.generateAsync({ type: 'blob' }));
     a.download = `${p.id}_Dossier_Complet.zip`;
@@ -144,21 +333,100 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
   }
 
   const hoursAxis = ['08h', '09h', '10h', '11h', '12h', '13h', '14h', '15h', '16h', '17h'];
+  const nowPct = nowLinePercent();
 
   return (
     <div className="space-y-5">
+      {toast.text && (
+        <div className={`p-3 rounded-[6px] border text-xs font-medium ${
+          toast.type === 'err'
+            ? 'bg-red-500/15 border-red-500/40 text-red-300'
+            : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+        }`}>
+          {toast.text}
+        </div>
+      )}
+
+      {/* CREATE OF MODAL */}
+      {showNewModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <form onSubmit={submitNewPiece} className="w-full max-w-lg cyber-card cyber-corners p-5 space-y-4 text-xs">
+            <div className="flex items-center justify-between border-b border-[#1E2A38] pb-3">
+              <h3 className="text-sm font-semibold text-white">Nouvel Ordre de Fabrication (OF)</h3>
+              <button type="button" onClick={() => setShowNewModal(false)} className="text-slate-400 hover:text-white cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="sm:col-span-2">
+                <label className="text-[11px] text-slate-400">Nom de la pièce *</label>
+                <input required value={newPieceForm.nom} onChange={e => setNewPieceForm({ ...newPieceForm, nom: e.target.value })} placeholder="Ex: Axe d'entraînement Ø60" className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white" />
+              </div>
+              <div>
+                <label className="text-[11px] text-slate-400">Client</label>
+                <input value={newPieceForm.client} onChange={e => setNewPieceForm({ ...newPieceForm, client: e.target.value })} placeholder="Ex: SARL MécaSud" className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white" />
+              </div>
+              <div>
+                <label className="text-[11px] text-slate-400">Quantité prévue</label>
+                <input type="number" min="1" value={newPieceForm.quantitePrevue} onChange={e => setNewPieceForm({ ...newPieceForm, quantitePrevue: Number(e.target.value) })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-white" />
+              </div>
+              <div>
+                <label className="text-[11px] text-slate-400">Délai souhaité</label>
+                <input type="date" value={newPieceForm.delai} onChange={e => setNewPieceForm({ ...newPieceForm, delai: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-white" />
+              </div>
+              <div>
+                <label className="text-[11px] text-slate-400">Urgence</label>
+                <select value={newPieceForm.urgence} onChange={e => setNewPieceForm({ ...newPieceForm, urgence: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white">
+                  <option>Critique</option><option>Urgent</option><option>Normal</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] text-slate-400">Machine principale</label>
+                <select value={newPieceForm.machineId} onChange={e => setNewPieceForm({ ...newPieceForm, machineId: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white">
+                  {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] text-slate-400">Opérateur</label>
+                <select value={newPieceForm.operateurId} onChange={e => setNewPieceForm({ ...newPieceForm, operateurId: e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white">
+                  {operators.map(o => <option key={o.id} value={o.id}>{o.nom}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] text-slate-400">Temps prévu (min)</label>
+                <input type="number" min="5" value={newPieceForm.tempsPrevuMin} onChange={e => setNewPieceForm({ ...newPieceForm, tempsPrevuMin: Number(e.target.value) })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-white" />
+              </div>
+              <div>
+                <label className="text-[11px] text-slate-400">Matière</label>
+                <input value={newPieceForm.matiere} onChange={e => setNewPieceForm({ ...newPieceForm, matiere: e.target.value })} placeholder="Ex: Acier 42CrMo4 Ø65" className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white" />
+              </div>
+              <label className="sm:col-span-2 flex items-center gap-2 cursor-pointer text-slate-300 pt-1">
+                <input type="checkbox" checked={newPieceForm.chuteDispo} onChange={e => setNewPieceForm({ ...newPieceForm, chuteDispo: e.target.checked })} className="accent-[#22D3EE]" />
+                Matière / chute déjà disponible en stock
+              </label>
+            </div>
+            <div className="flex justify-end gap-2 pt-2 border-t border-[#1E2A38]">
+              <button type="button" onClick={() => setShowNewModal(false)} className="px-3 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-slate-300 cursor-pointer">Annuler</button>
+              <button type="submit" className="px-4 py-2 rounded-[6px] bg-[#22D3EE] hover:bg-cyan-300 text-[#0B0F14] font-semibold cursor-pointer">Créer l'OF</button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {activePanel === 'overview' && (
         <>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h1 className="text-lg font-semibold text-white">Vue d'ensemble de l'atelier</h1>
-              <p className="text-xs text-slate-400">{new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })} · {state.machines.length} machines actives</p>
+              <p className="text-xs text-slate-400">
+                {new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })} · {activeMachines.length} machine(s) active(s)
+              </p>
             </div>
             <div className="flex items-center gap-2">
               <button onClick={exportPDF} className="px-3 py-1.5 rounded-[6px] bg-[#111821] border border-[#1E2A38] hover:border-slate-600 text-xs font-medium text-slate-200 flex items-center gap-1.5 cursor-pointer">
-                <Download className="w-3.5 h-3.5" /> Exporter
+                <Download className="w-3.5 h-3.5" /> Exporter PDF
               </button>
-              <button onClick={addPiece} className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] hover:bg-cyan-300 text-[#0B0F14] text-xs font-semibold flex items-center gap-1.5 cursor-pointer">
+              <button onClick={openCreateModal} className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] hover:bg-cyan-300 text-[#0B0F14] text-xs font-semibold flex items-center gap-1.5 cursor-pointer">
                 <Plus className="w-3.5 h-3.5" /> Nouvelle pièce
               </button>
             </div>
@@ -167,17 +435,15 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
           {/* 4 KPI CARDS */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             {[
-              ['TOTAL DOSSIERS', state.pieces.length, '#22D3EE'],
-              ['EN FABRICATION', enCours, '#22D3EE'],
-              ['ACHATS EN ATTENTE', aAcheter, '#F59E0B'],
-              ['CLÔTURÉS', clotures, '#10B981']
-            ].map(([lbl, val, col]) => (
-              <div key={lbl} className="cyber-card cyber-corners p-4 flex items-end justify-between">
-                <div>
-                  <div className="text-[10px] font-semibold tracking-wider text-slate-400">{lbl}</div>
-                  <div className="text-2xl font-bold font-mono-num mt-1" style={{ color: col === '#22D3EE' && lbl === 'TOTAL DOSSIERS' ? '#F8FAFC' : col }}>{val}</div>
-                </div>
-                <Sparkline color={col} />
+              ['TOTAL DOSSIERS', state.pieces.length, '#F8FAFC', `${state.pieces.filter(p => p.statut !== 'Clôturé').length} ouverts`],
+              ['EN FABRICATION', enCours, '#22D3EE', `${openPannes.length} panne(s) active(s)`],
+              ['ACHATS EN ATTENTE', aAcheter, '#F59E0B', `${critiques} critique(s)`],
+              ['CLÔTURÉS', clotures, '#10B981', `${state.pieces.reduce((s, p) => s + (p.quantiteRebut || 0), 0)} rebut(s)`]
+            ].map(([lbl, val, col, sub]) => (
+              <div key={lbl} className="cyber-card cyber-corners p-4 flex flex-col justify-between">
+                <div className="text-[10px] font-semibold tracking-wider text-slate-400">{lbl}</div>
+                <div className="text-2xl font-bold font-mono-num mt-1" style={{ color: col }}>{val}</div>
+                <div className="text-[11px] text-slate-500 mt-1">{sub}</div>
               </div>
             ))}
           </div>
@@ -186,7 +452,7 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2 min-w-0 cyber-card p-4 overflow-hidden">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="text-sm font-semibold text-white">Planning par machine</h2>
+                <h2 className="text-sm font-semibold text-white">Charge & opérations par machine</h2>
                 <span className="flex items-center gap-1.5 text-[10px] font-mono-num text-emerald-400">
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> LIVE
                 </span>
@@ -197,21 +463,37 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                     {hoursAxis.map(h => <div key={h}>{h}</div>)}
                   </div>
                   <div className="space-y-2.5 relative">
-                    <div className="absolute top-0 bottom-0 left-[72%] w-px bg-[#22D3EE]/60 shadow-[0_0_8px_#22D3EE] pointer-events-none"></div>
-                    {state.machines.map(m => {
-                      const p = state.pieces.find(x => x.machine === m.nom && x.statut !== 'Clôturé');
+                    {nowPct > 0 && nowPct < 100 && (
+                      <div
+                        className="absolute top-0 bottom-0 w-px bg-[#22D3EE]/70 shadow-[0_0_8px_#22D3EE] pointer-events-none"
+                        style={{ left: `calc(8rem + (100% - 8rem) * ${nowPct / 100})` }}
+                      ></div>
+                    )}
+                    {activeMachines.map(m => {
+                      const machineOps = state.pieces
+                        .filter(p => p.statut !== 'Clôturé')
+                        .flatMap(p => (p.operations || []).filter(o => o.machineId === m.id && o.statut !== 'Terminée').map(o => ({ ...o, piece: p })));
                       return (
                         <div key={m.id} className="flex items-center gap-3 text-xs">
                           <div className="w-28 shrink-0">
-                            <div className="font-medium text-slate-200 truncate">{m.nom}</div>
-                            <div className="text-[10px] text-slate-500 truncate">{p ? p.operateur : 'Disponible'}</div>
+                            <div className="font-medium text-slate-200 truncate flex items-center gap-1">
+                              <span className="truncate">{m.nom}</span>
+                              {m.enPanne ? <span className="text-[9px] text-red-400 font-bold">PANNE</span> : null}
+                            </div>
+                            <div className="text-[10px] text-slate-500 truncate">
+                              {machineOps[0] ? machineOps[0].operateur : 'Disponible'}
+                            </div>
                           </div>
-                          <div className="flex-1 h-7 bg-[#0B0F14] border border-[#1E2A38] rounded-[4px] relative flex items-center px-2">
-                            {p && (
-                              <div className={`px-2.5 py-0.5 rounded-[4px] border text-[11px] font-mono-num truncate ${statusBadge(p.statut, p.urgence)}`}>
-                                {p.id} · {Math.round((p.tempsPrevuMin || 120) / 60 * 10) / 10}h
+                          <div className={`flex-1 min-h-[30px] bg-[#0B0F14] border rounded-[4px] flex flex-wrap items-center gap-1 p-1 ${m.enPanne ? 'border-red-500/40' : 'border-[#1E2A38]'}`}>
+                            {machineOps.map(op => (
+                              <div
+                                key={op.id}
+                                title={`${op.piece.id} · ${op.libelle} (${op.operateur})`}
+                                className={`px-2 py-0.5 rounded-[4px] border text-[10px] font-mono-num truncate max-w-[200px] ${statusBadge(op.statut === 'Panne machine' ? 'Panne machine' : op.piece.statut, op.piece.urgence)}`}
+                              >
+                                {op.piece.id} · {op.libelle} ({(op.tempsPrevuMin / 60).toFixed(1)}h)
                               </div>
-                            )}
+                            ))}
                           </div>
                         </div>
                       );
@@ -223,19 +505,23 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
 
             <div className="min-w-0 cyber-card cyber-corners p-4 flex flex-col justify-between space-y-3">
               <div className="space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-                    <Bot className="w-4 h-4 text-[#22D3EE]" /> Synthèse IA Direction
-                  </h2>
-                </div>
+                <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                  <Bot className="w-4 h-4 text-[#22D3EE]" /> Synthèse IA Direction
+                </h2>
                 <span className="inline-block px-2 py-0.5 rounded bg-[#22D3EE]/10 border border-[#22D3EE]/30 text-[#22D3EE] text-[10px] font-mono-num">
                   {enCours} en fabrication
                 </span>
                 <p className="text-xs text-slate-300 leading-relaxed">
                   {aAcheter} ordre(s) bloqué(s) en attente d'approvisionnement matière. {clotures} dossier(s) clôturé(s).
                 </p>
+                {openPannes.length > 0 && (
+                  <div className="p-2 rounded bg-red-500/15 border border-red-500/40 text-[11px] text-red-300 flex items-start gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>{openPannes.length} panne(s) machine ouverte(s) : {openPannes.map(x => x.machineNom).join(', ')}.</span>
+                  </div>
+                )}
                 {critiques > 0 && (
-                  <div className="p-2 rounded bg-red-500/10 border border-red-500/30 text-[11px] text-red-300">
+                  <div className="p-2 rounded bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300">
                     {critiques} pièce(s) critique(s) : suivi prioritaire requis.
                   </div>
                 )}
@@ -250,42 +536,47 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
           <div className="cyber-card p-4">
             <h2 className="text-sm font-semibold text-white mb-3">Ordres de fabrication</h2>
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs min-w-[680px]">
+              <table className="w-full text-left text-xs min-w-[740px]">
                 <thead className="text-[10px] text-slate-500 uppercase border-b border-[#1E2A38]">
                   <tr>
                     <th className="py-2 pr-3">OF</th>
-                    <th className="py-2 pr-3">Pièce</th>
-                    <th className="py-2 pr-3">Machine</th>
-                    <th className="py-2 pr-3">Avancement</th>
+                    <th className="py-2 pr-3">Pièce / Client</th>
+                    <th className="py-2 pr-3">Machine / Opérateur</th>
+                    <th className="py-2 pr-3">Gamme & Avancement</th>
                     <th className="py-2 pr-3">Temps</th>
                     <th className="py-2">Statut</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#1E2A38]">
-                  {filteredPieces.map(p => {
-                    const pct = Math.min(100, Math.round(((p.quantiteRealisee || 0) / (p.quantitePrevue || 1)) * 100));
-                    return (
-                      <tr key={p.id} className="hover:bg-white/[0.02]">
-                        <td className="py-2.5 pr-3 font-mono-num text-slate-200">{p.id}</td>
-                        <td className="py-2.5 pr-3 text-slate-200">{p.nom}</td>
-                        <td className="py-2.5 pr-3 text-slate-400">{p.machine}</td>
-                        <td className="py-2.5 pr-3">
-                          <div className="flex items-center gap-2">
-                            <div className="w-24 h-1.5 bg-[#0B0F14] rounded-full overflow-hidden">
-                              <div className="h-full bg-[#22D3EE]" style={{ width: `${pct}%` }}></div>
-                            </div>
-                            <span className="font-mono-num text-[11px] text-slate-400">{p.quantiteRealisee}/{p.quantitePrevue}</span>
+                  {filteredPieces.map(p => (
+                    <tr key={p.id} className="hover:bg-white/[0.02]">
+                      <td className="py-2.5 pr-3 font-mono-num text-slate-200">{p.id}</td>
+                      <td className="py-2.5 pr-3">
+                        <div className="text-slate-200">{p.nom}</div>
+                        <div className="text-[10px] text-slate-500">{p.client}</div>
+                      </td>
+                      <td className="py-2.5 pr-3 text-slate-400">
+                        <div>{p.machine}</div>
+                        <div className="text-[10px] text-slate-500">{p.operateur}</div>
+                      </td>
+                      <td className="py-2.5 pr-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-20 h-1.5 bg-[#0B0F14] rounded-full overflow-hidden">
+                            <div className="h-full bg-[#22D3EE]" style={{ width: `${p.progressPct ?? 0}%` }}></div>
                           </div>
-                        </td>
-                        <td className="py-2.5 pr-3 font-mono-num text-slate-400">{p.tempsReelMin} / {p.tempsPrevuMin} min</td>
-                        <td className="py-2.5">
-                          <span className={`px-2 py-0.5 rounded-[4px] border text-[11px] font-medium ${statusBadge(p.statut, p.urgence)}`}>
-                            {p.urgence} · {p.statut}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                          <span className="font-mono-num text-[11px] text-slate-300">{p.quantiteRealisee}/{p.quantitePrevue}</span>
+                          <span className="text-[10px] font-mono-num text-[#22D3EE]">({p.opsTerminees}/{p.opsTotal} op.)</span>
+                          {p.quantiteRebut > 0 && <span className="text-[10px] font-mono-num text-red-400">{p.quantiteRebut} NC</span>}
+                        </div>
+                      </td>
+                      <td className="py-2.5 pr-3 font-mono-num text-slate-400">{p.tempsReelMin} / {p.tempsPrevuMin} min</td>
+                      <td className="py-2.5">
+                        <span className={`px-2 py-0.5 rounded-[4px] border text-[11px] font-medium ${statusBadge(p.statut, p.urgence)}`}>
+                          {p.urgence} · {p.statut}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -316,9 +607,9 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
             ))}
           </div>
           <div className="hidden md:block overflow-x-auto">
-            <table className="w-full text-left text-xs min-w-[700px]">
+            <table className="w-full text-left text-xs min-w-[760px]">
               <thead className="text-[10px] text-slate-500 uppercase border-b border-[#1E2A38]">
-                <tr><th className="py-2">Ordre</th><th className="py-2">OF</th><th className="py-2">Pièce</th><th className="py-2">Machine</th><th className="py-2">Opérateur</th><th className="py-2">Délai</th><th className="py-2">Statut</th></tr>
+                <tr><th className="py-2">Ordre</th><th className="py-2">OF</th><th className="py-2">Pièce</th><th className="py-2">Machine</th><th className="py-2">Opérateur</th><th className="py-2">Ops</th><th className="py-2">Délai</th><th className="py-2">Statut</th></tr>
               </thead>
               <tbody className="divide-y divide-[#1E2A38]">
                 {filteredPieces.map((p, i) => (
@@ -328,6 +619,7 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                     <td className="py-2.5">{p.nom}</td>
                     <td className="py-2.5 text-slate-400">{p.machine}</td>
                     <td className="py-2.5 text-slate-400">{p.operateur}</td>
+                    <td className="py-2.5 font-mono-num text-[#22D3EE]">{p.opsTerminees}/{p.opsTotal}</td>
                     <td className="py-2.5 font-mono-num">{p.delai}</td>
                     <td className="py-2.5"><span className={`px-2 py-0.5 rounded-[4px] border text-[11px] ${statusBadge(p.statut, p.urgence)}`}>{p.statut}</span></td>
                   </tr>
@@ -343,22 +635,23 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
           <h2 className="text-sm font-semibold text-white">Simulateur de Décision (What-If)</h2>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
             <input placeholder="Nom pièce" value={sim.nom} onChange={e => setSim({ ...sim, nom: e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
-            <input type="number" placeholder="Quantité" value={sim.quantite} onChange={e => setSim({ ...sim, quantite: +e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
-            <select value={sim.machine} onChange={e => setSim({ ...sim, machine: e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]">
-              {state.machines.map(m => <option key={m.id} value={m.nom}>{m.nom}</option>)}
+            <input type="number" min="1" placeholder="Quantité" value={sim.quantite} onChange={e => setSim({ ...sim, quantite: +e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
+            <select value={sim.machineId} onChange={e => setSim({ ...sim, machineId: e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]">
+              {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}{m.enPanne ? ' (PANNE)' : ''}</option>)}
             </select>
-            <input type="number" placeholder="Minutes / pièce" value={sim.tempsParPieceMin || ''} onChange={e => setSim({ ...sim, tempsParPieceMin: +e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
+            <input type="number" min="1" placeholder="Minutes / pièce" value={sim.tempsParPieceMin || ''} onChange={e => setSim({ ...sim, tempsParPieceMin: +e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
+            <input type="date" value={sim.delai} onChange={e => setSim({ ...sim, delai: e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" />
             <label className="flex items-center gap-2 px-2 cursor-pointer"><input type="checkbox" checked={sim.matiereDispo} onChange={e => setSim({ ...sim, matiereDispo: e.target.checked })} /> Matière dispo DZ</label>
             {!sim.matiereDispo && <input type="number" placeholder="Délai fournisseur (j)" value={sim.delaiFournisseurJours || ''} onChange={e => setSim({ ...sim, delaiFournisseurJours: +e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />}
           </div>
           <div className="flex gap-2">
             <button onClick={runSimulation} className="px-4 py-2 rounded-[6px] bg-[#22D3EE] text-[#0B0F14] text-xs font-semibold cursor-pointer">Simuler l'impact</button>
-            {simResult && <button onClick={validateSimulation} className="px-4 py-2 rounded-[6px] bg-emerald-600 text-white text-xs font-medium cursor-pointer">Valider & Créer</button>}
+            {simResult && <button onClick={validateSimulation} className="px-4 py-2 rounded-[6px] bg-emerald-600 text-white text-xs font-medium cursor-pointer">Valider & Créer OF</button>}
           </div>
           {simResult && (
             <div className="bg-[#0B0F14] border border-[#1E2A38] rounded-[6px] p-3 text-xs space-y-1">
               {simResult.missing.length > 0 && <div className="text-amber-400">Infos manquantes : {simResult.missing.join(' | ')}</div>}
-              <div>Charge {sim.machine} : {simResult.currentLoadHours}h + {simResult.newLoadHours}h = <strong className="font-mono-num">{simResult.totalHours}h</strong></div>
+              <div>Charge {simResult.machineNom} : {simResult.currentLoadHours}h + {simResult.newLoadHours}h = <strong className="font-mono-num">{simResult.totalHours}h</strong></div>
               <div className="font-semibold text-[#22D3EE]">{simResult.verdict}</div>
             </div>
           )}
@@ -367,26 +660,82 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
 
       {activePanel === 'dossiers' && (
         <div className="space-y-3">
-          {filteredPieces.map(p => (
-            <div key={p.id} className="cyber-card p-4 text-xs space-y-2">
-              <div className="flex flex-wrap items-center justify-between gap-2 font-semibold text-sm">
-                <span className="font-mono-num">{p.id} — <span className="font-sans">{p.nom}</span></span>
-                <span className={`px-2 py-0.5 rounded-[4px] border text-[11px] whitespace-nowrap ${statusBadge(p.statut, p.urgence)}`}>{p.statut}</span>
-              </div>
-              <div className="text-slate-400">BE: {p.be.nomFichier || '—'} | Prog: {p.be.programme || '—'} | 3D: {p.be.dessin3d || '—'}</div>
-              <div className="flex flex-wrap gap-2 pt-1">
-                <button onClick={() => downloadPieceZip(p)} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] flex items-center gap-1.5 cursor-pointer"><Archive className="w-3.5 h-3.5" /> Dossier .ZIP</button>
-                {p.statut === 'À acheter' && <button onClick={async () => { await api(`/api/pieces/${p.id}/buy`, 'POST'); reload(); }} className="px-3 py-1.5 rounded-[6px] bg-amber-600 text-white flex items-center gap-1.5 cursor-pointer"><ShoppingCart className="w-3.5 h-3.5" /> Valider Achat</button>}
-                {p.statut === 'À clôturer' && (
-                  <div className="flex flex-wrap gap-2 items-center">
-                    <button onClick={() => proposePriceAI(p)} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] cursor-pointer">Calculer Prix IA</button>
-                    <input type="number" placeholder="Prix final (DZD)" value={prices[p.id] || ''} onChange={e => setPrices(prev => ({ ...prev, [p.id]: e.target.value }))} className="w-32 p-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
-                    <button onClick={async () => { await api(`/api/pieces/${p.id}/close`, 'POST', { prixFinal: prices[p.id] }); reload(); }} className="px-3 py-1.5 rounded-[6px] bg-emerald-600 text-white flex items-center gap-1.5 cursor-pointer"><FolderCheck className="w-3.5 h-3.5" /> Clôturer</button>
+          {filteredPieces.map(p => {
+            const realPhotos = [
+              ...(p.photoDebut && p.photoDebut.startsWith('/uploads/') ? [{ lbl: 'Photo début', url: p.photoDebut }] : []),
+              ...(p.photoFin && p.photoFin.startsWith('/uploads/') ? [{ lbl: 'Photo fin', url: p.photoFin }] : []),
+              ...(p.operations || []).flatMap(o => [
+                ...(o.photoDebut && o.photoDebut.startsWith('/uploads/') ? [{ lbl: `${o.libelle} (début)`, url: o.photoDebut }] : []),
+                ...(o.photoFin && o.photoFin.startsWith('/uploads/') ? [{ lbl: `${o.libelle} (fin)`, url: o.photoFin }] : [])
+              ])
+            ];
+
+            return (
+              <div key={p.id} className="cyber-card p-4 text-xs space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 font-semibold text-sm">
+                  <span className="font-mono-num">{p.id} — <span className="font-sans">{p.nom}</span> <span className="text-xs font-normal text-slate-400">({p.client})</span></span>
+                  <div className="flex items-center gap-2">
+                    {p.prixFinal > 0 && (
+                      <span className="px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-mono-num text-[11px]">
+                        {Number(p.prixFinal).toLocaleString('fr-FR')} DZD
+                      </span>
+                    )}
+                    <span className={`px-2 py-0.5 rounded-[4px] border text-[11px] whitespace-nowrap ${statusBadge(p.statut, p.urgence)}`}>{p.statut}</span>
+                  </div>
+                </div>
+
+                <div className="text-slate-400 flex flex-wrap gap-x-4 gap-y-1">
+                  <span>BE: {p.be.nomFichier || '—'} | Prog: {p.be.programme || '—'} | 3D: {p.be.dessin3d || '—'}</span>
+                  <span className="font-mono-num text-slate-300">Qté: {p.quantiteRealisee}/{p.quantitePrevue}{p.quantiteRebut > 0 ? ` (${p.quantiteRebut} rebuts)` : ''}</span>
+                  <span className="font-mono-num text-slate-300">Temps: {p.tempsReelMin}/{p.tempsPrevuMin} min</span>
+                </div>
+
+                {/* GAMME SUMMARY */}
+                {(p.operations || []).length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {p.operations.map((o, idx) => (
+                      <span key={o.id} className="px-2 py-0.5 rounded bg-[#0B0F14] border border-[#1E2A38] text-[10px] text-slate-300 flex items-center gap-1">
+                        <Layers className="w-3 h-3 text-[#22D3EE]" />
+                        Op {(idx + 1) * 10}: {o.libelle} ({o.machine} · {o.operateur}) — <strong className="text-[#22D3EE]">{o.statut}</strong>
+                      </span>
+                    ))}
                   </div>
                 )}
+
+                {p.notesQualite && (
+                  <div className="p-2 rounded bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300">
+                    Qualité / Rebuts : {p.notesQualite}
+                  </div>
+                )}
+
+                {realPhotos.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {realPhotos.map((ph, idx) => (
+                      <a key={idx} href={ph.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-[#22D3EE] text-[11px]">
+                        <Image className="w-3.5 h-3.5" /> {ph.lbl}
+                      </a>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <button onClick={() => downloadPieceZip(p)} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] flex items-center gap-1.5 cursor-pointer"><Archive className="w-3.5 h-3.5" /> Dossier .ZIP</button>
+                  {p.statut === 'À acheter' && (
+                    <button onClick={() => validateBuy(p.id)} className="px-3 py-1.5 rounded-[6px] bg-amber-600 hover:bg-amber-500 text-white flex items-center gap-1.5 cursor-pointer">
+                      <ShoppingCart className="w-3.5 h-3.5" /> Valider Achat
+                    </button>
+                  )}
+                  {p.statut === 'À clôturer' && (
+                    <div className="flex flex-wrap gap-2 items-center">
+                      <button onClick={() => proposePriceAI(p)} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] cursor-pointer">Calculer Prix IA</button>
+                      <input type="number" placeholder="Prix final (DZD)" value={prices[p.id] ?? ''} onChange={e => setPrices(prev => ({ ...prev, [p.id]: e.target.value }))} className="w-36 p-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" />
+                      <button onClick={() => closePiece(p)} className="px-3 py-1.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1.5 cursor-pointer"><FolderCheck className="w-3.5 h-3.5" /> Clôturer</button>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -399,52 +748,89 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
               <input placeholder="Identifiant" value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
               <input type="password" placeholder="Mot de passe" value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
               <select value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })} className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]">
-                <option value="operateur">Opérateur</option><option value="chef">Chef d'Atelier</option><option value="be">Bureau d'Études</option><option value="directeur">Directeur</option>
+                <option value="operateur">Opérateur</option><option value="chef">Chef d'Atelier</option><option value="be">Bureau d'Études</option><option value="directeur">Directeur</option><option value="tv">Écran TV</option>
               </select>
             </div>
             <button onClick={createUser} className="mt-2 px-3 py-2 rounded-[6px] bg-[#22D3EE] text-[#0B0F14] text-xs font-semibold cursor-pointer">Créer le compte</button>
+
             <div className="mt-4 divide-y divide-[#1E2A38] text-xs">
               {state.users.map(u => (
-                <div key={u.id} className="py-2 flex flex-wrap items-center justify-between gap-2">
-                  <span><strong>{u.nom}</strong> ({u.username})</span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[#22D3EE] uppercase">{u.role}</span>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const newRole = window.prompt('Nouveau rôle (directeur, chef, be, operateur, tv) :', u.role);
-                        if (!newRole) return;
-                        await api(`/api/users/${u.id}`, 'PUT', { role: newRole });
-                        reload();
-                      }}
-                      className="px-2 py-0.5 rounded border border-[#1E2A38] text-slate-300 hover:border-[#22D3EE] text-[10px] cursor-pointer"
-                    >
-                      Rôle
-                    </button>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const pwd = window.prompt(`Nouveau mot de passe pour ${u.nom} :`);
-                        if (!pwd) return;
-                        await api(`/api/users/${u.id}`, 'PUT', { password: pwd });
-                        alert('Mot de passe réinitialisé.');
-                      }}
-                      className="px-2 py-0.5 rounded border border-[#1E2A38] text-amber-300 hover:border-amber-400 text-[10px] cursor-pointer"
-                    >
-                      Réinit. MDP
-                    </button>
-                  </div>
+                <div key={u.id} className="py-2.5">
+                  {editingUserId === u.id ? (
+                    <div className="space-y-2 bg-[#0B0F14] p-2.5 rounded border border-[#22D3EE]/30">
+                      <div className="grid grid-cols-2 gap-2">
+                        <input
+                          value={editUserForm.nom}
+                          onChange={e => setEditUserForm({ ...editUserForm, nom: e.target.value })}
+                          placeholder="Nom complet"
+                          className="p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
+                        />
+                        <select
+                          value={editUserForm.role}
+                          onChange={e => setEditUserForm({ ...editUserForm, role: e.target.value })}
+                          className="p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
+                        >
+                          <option value="operateur">Opérateur</option><option value="chef">Chef d'Atelier</option><option value="be">Bureau d'Études</option><option value="directeur">Directeur</option><option value="tv">Écran TV</option>
+                        </select>
+                        <input
+                          type="password"
+                          value={editUserForm.password}
+                          onChange={e => setEditUserForm({ ...editUserForm, password: e.target.value })}
+                          placeholder="Nouveau MDP (laisser vide si inchangé)"
+                          className="col-span-2 p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer">
+                          <input type="checkbox" checked={editUserForm.actif} onChange={e => setEditUserForm({ ...editUserForm, actif: e.target.checked })} className="accent-[#22D3EE]" />
+                          Compte actif
+                        </label>
+                        <div className="flex gap-1.5">
+                          <button type="button" onClick={() => saveEditUser(u.id)} className="px-2.5 py-1 rounded bg-emerald-600 text-white flex items-center gap-1 cursor-pointer"><Check className="w-3 h-3" /> Enregistrer</button>
+                          <button type="button" onClick={() => setEditingUserId(null)} className="px-2.5 py-1 rounded bg-slate-800 text-slate-300 cursor-pointer">Annuler</button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <strong className={u.actif === 0 ? 'line-through text-slate-500' : 'text-white'}>{u.nom}</strong>
+                        <span className="text-slate-400 ml-1.5">({u.username})</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[#22D3EE] uppercase text-[10px] font-semibold">{u.role}</span>
+                        {u.actif === 0 && <span className="text-[10px] text-red-400">Désactivé</span>}
+                        <button
+                          type="button"
+                          onClick={() => startEditUser(u)}
+                          className="px-2 py-1 rounded border border-[#1E2A38] text-slate-300 hover:border-[#22D3EE] text-[10px] flex items-center gap-1 cursor-pointer"
+                        >
+                          <Edit3 className="w-3 h-3" /> Modifier
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
           </div>
-          <div className="cyber-card p-4">
-            <h3 className="font-semibold text-sm mb-3">Journal d'Audit</h3>
-            <div className="space-y-1.5 text-xs max-h-64 overflow-y-auto">
+
+          <div className="cyber-card p-4 flex flex-col">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-sm">Journal d'Audit & Base de données</h3>
+              <button
+                type="button"
+                onClick={triggerBackup}
+                className="px-2.5 py-1 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-xs text-[#22D3EE] flex items-center gap-1.5 cursor-pointer"
+              >
+                <Database className="w-3.5 h-3.5" /> Sauvegarder DB
+              </button>
+            </div>
+            <div className="space-y-1.5 text-xs max-h-80 overflow-y-auto">
               {(state.auditLogs || []).map(l => (
-                <div key={l.id} className="flex justify-between py-1.5 border-b border-[#1E2A38]">
+                <div key={l.id} className="flex justify-between gap-2 py-1.5 border-b border-[#1E2A38]">
                   <span><strong className="text-[#22D3EE]">{l.user}</strong> ({l.action}) — {l.details}</span>
-                  <span className="text-slate-500 font-mono-num">{l.createdAt}</span>
+                  <span className="text-slate-500 font-mono-num shrink-0">{l.createdAt}</span>
                 </div>
               ))}
             </div>

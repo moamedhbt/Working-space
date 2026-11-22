@@ -18,12 +18,21 @@ app.use('/api', piecesRoutes);
 app.use('/api', planningRoutes);
 app.use('/api', adminRoutes);
 
+// Global JSON error handler for API routes
+app.use('/api', (err, req, res, next) => {
+  console.error('API Error:', err);
+  res.status(err.status || 500).json({ error: err.message || 'Erreur interne du serveur' });
+});
+
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, '../client/dist/index.html'));
 });
 
 initDB().then(() => {
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Atelier Manager Pro (Modular Express + SQLite) running on http://0.0.0.0:${PORT}`);
+    console.log(`Atelier Manager Pro (Express + better-sqlite3 WAL) running on http://0.0.0.0:${PORT}`);
   });
+}).catch(err => {
+  console.error('Échec initialisation DB:', err);
+  process.exit(1);
 });

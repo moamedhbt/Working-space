@@ -1,5 +1,9 @@
 node_modules/
 client/node_modules/
 atelier.db
+atelier.db-wal
+atelier.db-shm
+backups/
 uploads/
 .env
+.app-secret

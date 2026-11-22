@@ -35,6 +35,7 @@ export default function BeView({ state, reload }) {
   const [parts, setParts] = useState([]);
   const [explode, setExplode] = useState(0);
   const [loading3d, setLoading3d] = useState(false);
+  const [beToast, setBeToast] = useState('');
   const mountRef = useRef(null);
   const sceneRef = useRef(null);
   const cameraRef = useRef(null);
@@ -212,16 +213,27 @@ export default function BeView({ state, reload }) {
   async function saveBE(id, e) {
     e.preventDefault();
     const f = e.target;
-    await api(`/api/pieces/${id}/be`, 'POST', {
-      nomFichier: f.nomFichier.value,
-      programme: f.programme.value,
-      dessin3d: f.dessin3d.value
-    });
-    reload();
+    try {
+      await api(`/api/pieces/${id}/be`, 'POST', {
+        nomFichier: f.nomFichier.value,
+        programme: f.programme.value,
+        dessin3d: f.dessin3d.value
+      });
+      setBeToast(`Dossier BE enregistré pour ${id}.`);
+      setTimeout(() => setBeToast(''), 3500);
+      reload();
+    } catch (err) {
+      alert(err.message);
+    }
   }
 
   return (
     <div className="space-y-5">
+      {beToast && (
+        <div className="p-3 rounded-[6px] bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs font-medium">
+          {beToast}
+        </div>
+      )}
       {/* 3D VIEWER + PROPERTIES */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         <div className="lg:col-span-8 cyber-card p-3 flex flex-col">

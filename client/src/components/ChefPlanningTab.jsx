@@ -11,22 +11,42 @@ function formatHour(minsFrom8am) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+function nowLinePercent() {
+  const now = new Date();
+  const mins = now.getHours() * 60 + now.getMinutes();
+  const start = 8 * 60;
+  const end = 17 * 60;
+  return Math.max(0, Math.min(100, ((mins - start) / (end - start)) * 100));
+}
+
 function computeSchedule(pieces, machines) {
   const machineCursor = {};
-  machines.forEach(m => { machineCursor[m.nom] = 0; });
+  const machineCap = {};
+  machines.forEach(m => {
+    machineCursor[m.id] = 0;
+    machineCap[m.id] = m.capaciteJourMin || 480;
+  });
 
   const alerts = [];
+  machines.forEach(m => {
+    if (m.enPanne) {
+      alerts.push({ type: 'panne', text: `Machine en panne : ${m.nom}` });
+    }
+  });
+
   const scheduled = pieces.map(p => {
     const dur = p.tempsPrevuMin || 120;
-    const start = machineCursor[p.machine] || 0;
+    const key = p.machineId || p.machine;
+    const start = machineCursor[key] || 0;
     const end = start + dur;
-    machineCursor[p.machine] = end;
+    machineCursor[key] = end;
 
     if (!p.chuteDispo && !p.achatFait && p.statut !== 'Clôturé') {
       alerts.push({ type: 'matiere', text: `Matière manquante : ${p.id} (${p.nom})` });
     }
-    if (end > 480 && p.statut !== 'Clôturé') {
-      alerts.push({ type: 'capacite', text: `Machine saturée (>8h) : ${p.machine} sur ${p.id}` });
+    const cap = machineCap[key] || 480;
+    if (end > cap && p.statut !== 'Clôturé') {
+      alerts.push({ type: 'capacite', text: `Machine saturée (>${(cap / 60).toFixed(0)}h) : ${p.machine} sur ${p.id}` });
     }
     return {
       ...p,
@@ -36,10 +56,9 @@ function computeSchedule(pieces, machines) {
     };
   });
 
-  // Detect duplicate operator at same time or late OF
   const today = new Date().toISOString().slice(0, 10);
   scheduled.forEach(p => {
-    if (p.delai < today && p.statut !== 'Clôturé') {
+    if (p.delai && p.delai < today && p.statut !== 'Clôturé') {
       alerts.push({ type: 'retard', text: `OF en retard : ${p.id} (délai ${p.delai})` });
     }
   });
@@ -49,25 +68,45 @@ function computeSchedule(pieces, machines) {
 
 export default function ChefPlanningTab({ state, reload, showToast }) {
   const [draft, setDraft] = useState([]);
-  const [dirtyCount, setDirtyCount] = useState(0);
+  const [dirtyIds, setDirtyIds] = useState(new Set());
   const [aiSuggestions, setAiSuggestions] = useState([]);
   const [dragId, setDragId] = useState(null);
-  const [ganttMode, setGanttMode] = useState('jour'); // 'jour' | 'semaines'
+  const [ganttMode, setGanttMode] = useState('jour');
 
   useEffect(() => {
-    if (dirtyCount === 0) {
+    if (dirtyIds.size === 0) {
       setDraft(state.pieces);
     }
-  }, [state.pieces, dirtyCount]);
+  }, [state.pieces, dirtyIds.size]);
 
   const activeMachines = state.machines.filter(m => m.actif);
-  const operators = state.users.filter(u => u.role === 'operateur');
+  const operators = state.users.filter(u => u.role === 'operateur' && u.actif !== 0);
   const sortedDraft = [...draft].sort((a, b) => (a.ordrePlanning || 999) - (b.ordrePlanning || 999));
   const { scheduled, alerts } = computeSchedule(sortedDraft, activeMachines);
 
+  function markDirty(ids) {
+    setDirtyIds(prev => {
+      const next = new Set(prev);
+      ids.forEach(id => next.add(id));
+      return next;
+    });
+  }
+
   function updateField(id, field, val) {
-    setDraft(prev => prev.map(p => p.id === id ? { ...p, [field]: val, planningValide: false } : p));
-    setDirtyCount(c => c + 1);
+    setDraft(prev => prev.map(p => {
+      if (p.id !== id) return p;
+      const updated = { ...p, [field]: val, planningValide: false };
+      if (field === 'machineId') {
+        const m = activeMachines.find(x => x.id === val);
+        if (m) updated.machine = m.nom;
+      }
+      if (field === 'operateurId') {
+        const o = operators.find(x => x.id === val);
+        if (o) updated.operateur = o.nom;
+      }
+      return updated;
+    }));
+    markDirty([id]);
   }
 
   function moveOrder(index, dir) {
@@ -75,8 +114,9 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
     const target = index + dir;
     if (target < 0 || target >= arr.length) return;
     [arr[index], arr[target]] = [arr[target], arr[index]];
-    setDraft(arr.map((p, i) => ({ ...p, ordrePlanning: i + 1, planningValide: false })));
-    setDirtyCount(c => c + 1);
+    const reordered = arr.map((p, i) => ({ ...p, ordrePlanning: i + 1, planningValide: false }));
+    setDraft(reordered);
+    markDirty(reordered.map(p => p.id));
   }
 
   function recalculateEngine() {
@@ -84,11 +124,11 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
       const aBlock = (!a.chuteDispo && !a.achatFait) ? 1 : 0;
       const bBlock = (!b.chuteDispo && !b.achatFait) ? 1 : 0;
       if (aBlock !== bBlock) return aBlock - bBlock;
-      return (PRIO_RANK[a.urgence] || 9) - (PRIO_RANK[b.urgence] || 9) || a.delai.localeCompare(b.delai);
+      return (PRIO_RANK[a.urgence] || 9) - (PRIO_RANK[b.urgence] || 9) || (a.delai || '').localeCompare(b.delai || '');
     }).map((p, i) => ({ ...p, ordrePlanning: i + 1, planningValide: false }));
     setDraft(sorted);
-    setDirtyCount(c => c + 1);
-    showToast('Moteur déterministe recalculé.');
+    markDirty(sorted.map(p => p.id));
+    showToast('Moteur déterministe recalculé (cliquez sur Enregistrer ou Valider TV).');
   }
 
   function proposeAI() {
@@ -104,12 +144,15 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
           updateField(critBlocked.id, 'ordrePlanning', 2);
         }
       });
-    } else if (scheduled.length >= 2) {
-      sugs.push({
-        id: 'sug-2',
-        text: `Équilibrer ${scheduled[0].id} sur ${activeMachines[0]?.nom || 'Tour CNC 1'} pour réduire l'écart temps.`,
-        apply: () => updateField(scheduled[0].id, 'machine', activeMachines[0]?.nom || scheduled[0].machine)
-      });
+    } else if (scheduled.length >= 1) {
+      const healthyMachine = activeMachines.find(m => !m.enPanne) || activeMachines[0];
+      if (healthyMachine) {
+        sugs.push({
+          id: 'sug-2',
+          text: `Affecter ${scheduled[0].id} sur ${healthyMachine.nom} pour équilibrer la charge.`,
+          apply: () => updateField(scheduled[0].id, 'machineId', healthyMachine.id)
+        });
+      }
     }
     setAiSuggestions(sugs);
     showToast('Propositions IA prêtes (Accepter ou Refuser).');
@@ -117,36 +160,56 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
 
   function cancelEdits() {
     setDraft(state.pieces);
-    setDirtyCount(0);
+    setDirtyIds(new Set());
     setAiSuggestions([]);
     showToast('Modifications annulées.');
   }
 
   async function saveEdits() {
-    for (const p of draft) {
-      await api(`/api/pieces/${p.id}/chef`, 'POST', {
-        machine: p.machine,
-        operateur: p.operateur,
-        urgence: p.urgence,
-        delai: p.delai,
-        ordrePlanning: p.ordrePlanning,
-        debutStr: p.debutStr,
-        finStr: p.finStr
-      });
+    if (dirtyIds.size === 0) {
+      showToast('Aucune modification à enregistrer.');
+      return true;
     }
-    setDirtyCount(0);
-    showToast('Modifications enregistrées (validation TV requise).');
-    reload();
+    try {
+      const items = scheduled
+        .filter(p => dirtyIds.has(p.id))
+        .map(p => ({
+          id: p.id,
+          machineId: p.machineId,
+          operateurId: p.operateurId,
+          urgence: p.urgence,
+          delai: p.delai,
+          ordrePlanning: p.ordrePlanning,
+          debutStr: p.debutStr,
+          finStr: p.finStr
+        }));
+      await api('/api/planning/save-batch', 'POST', { items });
+      setDirtyIds(new Set());
+      showToast(`${items.length} OF enregistré(s) (validation TV requise).`);
+      reload();
+      return true;
+    } catch (e) {
+      showToast(e.message, 'err');
+      return false;
+    }
   }
 
   async function validateTV() {
-    if (dirtyCount > 0) await saveEdits();
-    await api('/api/planning/validate', 'POST');
-    showToast('Planning validé et publié sur la TV.');
-    reload();
+    try {
+      if (dirtyIds.size > 0) {
+        const ok = await saveEdits();
+        if (!ok) return;
+      }
+      await api('/api/planning/validate', 'POST');
+      showToast('Planning validé et publié sur la TV.');
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
   }
 
   const hoursAxis = ['08h', '09h', '10h', '11h', '12h', '13h', '14h', '15h', '16h', '17h'];
+  const nowPct = nowLinePercent();
 
   return (
     <div className="space-y-4">
@@ -156,9 +219,9 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
           <span className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10px] font-mono-num">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> LIVE
           </span>
-          {dirtyCount > 0 && (
+          {dirtyIds.size > 0 && (
             <span className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[10px] font-mono-num">
-              {dirtyCount} modification(s) non validée(s)
+              {dirtyIds.size} OF modifié(s) non enregistré(s)
             </span>
           )}
         </div>
@@ -181,7 +244,7 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
         </div>
       </div>
 
-      {/* AI SUGGESTIONS COMPARISON */}
+      {/* AI SUGGESTIONS */}
       {aiSuggestions.length > 0 && (
         <div className="cyber-card cyber-corners p-3 space-y-2 text-xs">
           <div className="font-semibold text-[#22D3EE] flex items-center gap-1.5"><Bot className="w-4 h-4" /> Propositions IA (à valider)</div>
@@ -207,44 +270,53 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
               <button type="button" onClick={() => setGanttMode('semaines')} className={`px-2 py-0.5 rounded cursor-pointer ${ganttMode === 'semaines' ? 'bg-[#22D3EE] text-[#0B0F14] font-semibold' : 'text-slate-400'}`}>2 Semaines</button>
             </div>
           </div>
+
           {ganttMode === 'jour' ? (
-          <div className="min-w-[540px]">
-            <div className="grid grid-cols-10 text-[10px] font-mono-num text-slate-500 border-b border-[#1E2A38] pb-1.5 mb-2 pl-32">
-              {hoursAxis.map(h => <div key={h}>{h}</div>)}
-            </div>
-            <div className="space-y-2 relative">
-              <div className="absolute top-0 bottom-0 left-[72%] w-px bg-[#22D3EE]/60 shadow-[0_0_8px_#22D3EE] pointer-events-none"></div>
-              {activeMachines.map(m => {
-                const mPieces = scheduled.filter(p => p.machine === m.nom && p.statut !== 'Clôturé');
-                return (
+            <div className="min-w-[540px]">
+              <div className="grid grid-cols-10 text-[10px] font-mono-num text-slate-500 border-b border-[#1E2A38] pb-1.5 mb-2 pl-32">
+                {hoursAxis.map(h => <div key={h}>{h}</div>)}
+              </div>
+              <div className="space-y-2 relative">
+                {nowPct > 0 && nowPct < 100 && (
                   <div
-                    key={m.id}
-                    onDragOver={e => e.preventDefault()}
-                    onDrop={() => { if (dragId) { updateField(dragId, 'machine', m.nom); setDragId(null); } }}
-                    className="flex items-center gap-3 text-xs"
-                  >
-                    <div className="w-28 shrink-0 font-medium text-slate-300 truncate">{m.nom}</div>
-                    <div className="flex-1 min-h-[28px] bg-[#0B0F14] border border-[#1E2A38] rounded-[4px] flex flex-wrap items-center gap-1 p-1">
-                      {mPieces.map(p => (
-                        <div
-                          key={p.id}
-                          draggable
-                          onDragStart={() => setDragId(p.id)}
-                          className={`px-2 py-0.5 rounded-[4px] border text-[10px] font-mono-num cursor-move ${
-                            p.urgence === 'Critique' ? 'bg-red-500/15 border-red-500/40 text-red-300' :
-                            p.urgence === 'Urgent' ? 'bg-amber-500/15 border-amber-500/40 text-amber-300' :
-                            'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
-                          }`}
-                        >
-                          {p.id} ({p.debutStr}–{p.finStr})
-                        </div>
-                      ))}
+                    className="absolute top-0 bottom-0 w-px bg-[#22D3EE]/70 shadow-[0_0_8px_#22D3EE] pointer-events-none"
+                    style={{ left: `calc(8rem + (100% - 8rem) * ${nowPct / 100})` }}
+                  ></div>
+                )}
+                {activeMachines.map(m => {
+                  const mPieces = scheduled.filter(p => p.machineId === m.id && p.statut !== 'Clôturé');
+                  return (
+                    <div
+                      key={m.id}
+                      onDragOver={e => e.preventDefault()}
+                      onDrop={() => { if (dragId) { updateField(dragId, 'machineId', m.id); setDragId(null); } }}
+                      className="flex items-center gap-3 text-xs"
+                    >
+                      <div className="w-28 shrink-0 font-medium text-slate-300 truncate flex items-center gap-1">
+                        <span className="truncate">{m.nom}</span>
+                        {m.enPanne ? <span className="text-[9px] text-red-400 font-bold">!</span> : null}
+                      </div>
+                      <div className={`flex-1 min-h-[30px] bg-[#0B0F14] border rounded-[4px] flex flex-wrap items-center gap-1 p-1 ${m.enPanne ? 'border-red-500/40' : 'border-[#1E2A38]'}`}>
+                        {mPieces.map(p => (
+                          <div
+                            key={p.id}
+                            draggable
+                            onDragStart={() => setDragId(p.id)}
+                            className={`px-2 py-0.5 rounded-[4px] border text-[10px] font-mono-num cursor-move ${
+                              p.urgence === 'Critique' ? 'bg-red-500/15 border-red-500/40 text-red-300' :
+                              p.urgence === 'Urgent' ? 'bg-amber-500/15 border-amber-500/40 text-amber-300' :
+                              'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                            }`}
+                          >
+                            {p.id} ({p.debutStr}–{p.finStr})
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
-          </div>
           ) : (
             <div className="min-w-[680px] space-y-2">
               <div className="grid grid-cols-14 gap-1 text-[9px] font-mono-num text-slate-500 border-b border-[#1E2A38] pb-1 pl-28">
@@ -254,14 +326,14 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
                 })}
               </div>
               {activeMachines.map(m => {
-                const mPieces = scheduled.filter(p => p.machine === m.nom && p.statut !== 'Clôturé');
+                const mPieces = scheduled.filter(p => p.machineId === m.id && p.statut !== 'Clôturé');
                 return (
                   <div key={m.id} className="flex items-center gap-2 text-xs">
                     <div className="w-28 shrink-0 font-medium text-slate-300 truncate">{m.nom}</div>
                     <div className="flex-1 grid grid-cols-14 gap-1">
                       {Array.from({ length: 14 }, (_, i) => {
                         const dStr = new Date(Date.now() + i * 86400000).toISOString().slice(0, 10);
-                        const dayPieces = mPieces.filter(p => p.delai === dStr || (i === 0 && p.delai < dStr));
+                        const dayPieces = mPieces.filter(p => p.delai === dStr || (i === 0 && p.delai && p.delai < dStr));
                         return (
                           <div key={i} className="min-h-[26px] bg-[#0B0F14] border border-[#1E2A38] rounded-[3px] p-0.5 flex flex-col gap-0.5">
                             {dayPieces.map(p => (
@@ -269,7 +341,7 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
                                 p.urgence === 'Critique' ? 'bg-red-500/20 text-red-300' :
                                 p.urgence === 'Urgent' ? 'bg-amber-500/20 text-amber-300' :
                                 'bg-emerald-500/20 text-emerald-300'
-                              }`}>{p.id.slice(-3)}</div>
+                              }`}>{p.id.slice(-4)}</div>
                             ))}
                           </div>
                         );
@@ -300,13 +372,13 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
 
       {/* DETAILED TABLE */}
       <div className="cyber-card p-4 overflow-x-auto">
-        <table className="w-full text-left text-[11px] min-w-[980px]">
+        <table className="w-full text-left text-[11px] min-w-[1020px]">
           <thead className="text-[10px] text-slate-500 uppercase border-b border-[#1E2A38]">
             <tr>
               <th className="py-2">Ordre</th><th className="py-2">OF / Pièce</th><th className="py-2">Client</th>
               <th className="py-2">Machine</th><th className="py-2">Opérateur</th><th className="py-2">Priorité</th>
               <th className="py-2">Début</th><th className="py-2">Fin</th><th className="py-2">Durée</th>
-              <th className="py-2">Qté</th><th className="py-2">Matière</th><th className="py-2">Écart</th><th className="py-2">TV</th>
+              <th className="py-2">Qté / Ops</th><th className="py-2">Matière</th><th className="py-2">Écart</th><th className="py-2">TV</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#1E2A38]">
@@ -322,13 +394,13 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
                 <td className="py-2 pr-2"><div className="font-mono-num text-white">{p.id}</div><div className="text-slate-400 truncate max-w-[140px]">{p.nom}</div></td>
                 <td className="py-2 pr-2 text-slate-400">{p.client}</td>
                 <td className="py-2 pr-2">
-                  <select value={p.machine} onChange={e => updateField(p.id, 'machine', e.target.value)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38]">
-                    {activeMachines.map(m => <option key={m.id} value={m.nom}>{m.nom}</option>)}
+                  <select value={p.machineId || ''} onChange={e => updateField(p.id, 'machineId', e.target.value)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38]">
+                    {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
                   </select>
                 </td>
                 <td className="py-2 pr-2">
-                  <select value={p.operateur} onChange={e => updateField(p.id, 'operateur', e.target.value)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38]">
-                    {operators.map(o => <option key={o.id} value={o.nom}>{o.nom}</option>)}
+                  <select value={p.operateurId || ''} onChange={e => updateField(p.id, 'operateurId', e.target.value)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38]">
+                    {operators.map(o => <option key={o.id} value={o.id}>{o.nom}</option>)}
                   </select>
                 </td>
                 <td className="py-2 pr-2">
@@ -341,10 +413,11 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
                 <td className="py-2 pr-2 font-mono-num text-slate-400">{p.tempsReelMin}/{p.tempsPrevuMin}m</td>
                 <td className="py-2 pr-2">
                   <div className="flex items-center gap-1.5">
-                    <div className="w-14 h-1.5 bg-[#0B0F14] rounded-full overflow-hidden">
-                      <div className="h-full bg-[#22D3EE]" style={{ width: `${Math.min(100, Math.round(((p.quantiteRealisee || 0) / (p.quantitePrevue || 1)) * 100))}%` }}></div>
+                    <div className="w-12 h-1.5 bg-[#0B0F14] rounded-full overflow-hidden">
+                      <div className="h-full bg-[#22D3EE]" style={{ width: `${p.progressPct ?? 0}%` }}></div>
                     </div>
                     <span className="font-mono-num text-slate-300">{p.quantiteRealisee}/{p.quantitePrevue}</span>
+                    <span className="text-[9px] text-[#22D3EE] font-mono-num">({p.opsTerminees}/{p.opsTotal})</span>
                   </div>
                 </td>
                 <td className="py-2 pr-2">{p.chuteDispo || p.achatFait ? <span className="text-emerald-400">Dispo</span> : <span className="text-amber-400">À acheter</span>}</td>
