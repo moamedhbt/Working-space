@@ -1,0 +1,10 @@
+node_modules
+client/node_modules
+atelier.db
+atelier.db-wal
+atelier.db-shm
+backups
+uploads
+.app-secret
+.env
+.git
