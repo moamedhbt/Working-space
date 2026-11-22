@@ -294,7 +294,14 @@ export default function ChefPlanningTab({ state, reload, showToast }) {
                 <td className="py-2 pr-2"><input type="time" value={p.debutStr} onChange={e => updateField(p.id, 'debutStr', e.target.value)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-slate-200" /></td>
                 <td className="py-2 pr-2"><input type="time" value={p.finStr} onChange={e => updateField(p.id, 'finStr', e.target.value)} className="p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-slate-200" /></td>
                 <td className="py-2 pr-2 font-mono-num text-slate-400">{p.tempsReelMin}/{p.tempsPrevuMin}m</td>
-                <td className="py-2 pr-2 font-mono-num text-slate-300">{p.quantiteRealisee}/{p.quantitePrevue}</td>
+                <td className="py-2 pr-2">
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-14 h-1.5 bg-[#0B0F14] rounded-full overflow-hidden">
+                      <div className="h-full bg-[#22D3EE]" style={{ width: `${Math.min(100, Math.round(((p.quantiteRealisee || 0) / (p.quantitePrevue || 1)) * 100))}%` }}></div>
+                    </div>
+                    <span className="font-mono-num text-slate-300">{p.quantiteRealisee}/{p.quantitePrevue}</span>
+                  </div>
+                </td>
                 <td className="py-2 pr-2">{p.chuteDispo || p.achatFait ? <span className="text-emerald-400">Dispo</span> : <span className="text-amber-400">À acheter</span>}</td>
                 <td className={`py-2 pr-2 font-mono-num ${p.ecartMin > 0 ? 'text-red-400' : 'text-emerald-400'}`}>{p.ecartMin > 0 ? `+${p.ecartMin}m` : `${p.ecartMin}m`}</td>
                 <td className="py-2"><span className={`px-1.5 py-0.5 rounded border text-[10px] ${p.planningValide ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border-amber-500/30'}`}>{p.planningValide ? 'Publié' : 'À valider'}</span></td>
