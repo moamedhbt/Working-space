@@ -22,7 +22,7 @@ const {
   getEnrichedStops,
   getMaintenanceLogs
 } = require('../db/database');
-const { testAiConnection } = require('../services/planAnalyzer');
+const { testAiConnection, listAvailableModels } = require('../services/planAnalyzer');
 const { auth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -66,6 +66,17 @@ router.post('/admin/ai-settings/test', auth, requireRole('directeur'), async (re
     res.json(result);
   } catch (err) {
     res.status(400).json({ ok: false, error: err.message || 'Échec du test IA' });
+  }
+});
+
+router.post('/admin/ai-settings/models', auth, requireRole('directeur'), async (req, res) => {
+  try {
+    const { provider, apiKey, baseUrl } = req.body || {};
+    const hasOverride = provider !== undefined || apiKey !== undefined || baseUrl !== undefined;
+    const result = await listAvailableModels(hasOverride ? { provider, apiKey, baseUrl } : null);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ ok: false, models: [], error: err.message || 'Impossible de lister les modèles' });
   }
 });
 

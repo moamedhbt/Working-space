@@ -214,10 +214,10 @@ function extractJsonFromText(txt) {
 }
 
 function defaultModelForProvider(provider) {
-  if (provider === 'gemini') return 'gemini-2.5-flash';
+  if (provider === 'gemini') return 'gemini-3.8-flash';
   if (provider === 'openai') return 'gpt-4o-mini';
   if (provider === 'anthropic') return 'claude-sonnet-4-20250514';
-  if (provider === 'openrouter') return 'google/gemini-2.5-flash';
+  if (provider === 'openrouter') return 'google/gemini-3.8-flash';
   if (provider === 'groq') return 'meta-llama/llama-4-scout-17b-16e-instruct';
   return 'gpt-4o-mini';
 }
@@ -256,16 +256,51 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
   if (provider === 'gemini') {
     const parts = [{ text: promptText }];
     if (b64) parts.push({ inline_data: { mime_type: mimeType, data: b64 } });
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts }] })
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(json?.error?.message || `Gemini HTTP ${res.status}`);
-    const txt = json?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    return { provider, model, text: txt, data: expectJson ? extractJsonFromText(txt) : null };
+
+    const callOnce = async (mdl) => {
+      const cleanMdl = String(mdl || '').replace(/^models\//, '');
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanMdl)}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts }] })
+      });
+      const json = await res.json().catch(() => ({}));
+      return { ok: res.ok, status: res.status, json, model: cleanMdl };
+    };
+
+    let attempt = await callOnce(model);
+    if (!attempt.ok) {
+      const errMsg = attempt.json?.error?.message || `Gemini HTTP ${attempt.status}`;
+      // Auto-retry if Google reports the model is deprecated / unavailable to new users
+      if (attempt.status === 404 || /no longer available|not found/i.test(errMsg)) {
+        const candidates = [];
+        const suggested = errMsg.match(/use\s+(?:models\/)?([a-z0-9._-]+)/i);
+        if (suggested?.[1]) candidates.push(suggested[1]);
+        for (const fb of ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash']) {
+          if (fb !== attempt.model && !candidates.includes(fb)) candidates.push(fb);
+        }
+        // Also try querying live available models for this key
+        try {
+          const live = await listAvailableModels(overrideConfig);
+          for (const m of (live.models || []).slice(0, 4)) {
+            if (!candidates.includes(m)) candidates.push(m);
+          }
+        } catch {}
+        for (const cand of candidates) {
+          const retry = await callOnce(cand);
+          if (retry.ok) {
+            attempt = retry;
+            break;
+          }
+        }
+      }
+      if (!attempt.ok) {
+        throw new Error(attempt.json?.error?.message || `Gemini HTTP ${attempt.status}`);
+      }
+    }
+    const txt = attempt.json?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    return { provider, model: attempt.model, text: txt, data: expectJson ? extractJsonFromText(txt) : null };
   }
 
   if (provider === 'anthropic') {
@@ -338,6 +373,51 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
   if (!res.ok) throw new Error(json?.error?.message || `${provider} HTTP ${res.status}`);
   const txt = json?.choices?.[0]?.message?.content || '';
   return { provider, model, text: txt, data: expectJson ? extractJsonFromText(txt) : null };
+}
+
+async function listAvailableModels(overrideConfig = null) {
+  const cfg = resolveRuntimeAiConfig(overrideConfig);
+  const provider = cfg.resolvedProvider;
+  if (!provider || provider === 'offline' || (!cfg.apiKey && provider !== 'custom')) {
+    return { ok: false, models: [], error: 'Aucune clé API configurée.' };
+  }
+  if (provider === 'gemini') {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cfg.apiKey)}`);
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.error?.message || `Gemini HTTP ${res.status}`);
+    const models = (json.models || [])
+      .filter(m => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+      .map(m => String(m.name || '').replace(/^models\//, ''))
+      .filter(name => /gemini/i.test(name) && !/embedding|tts|imagen|veo|aqa/i.test(name))
+      .sort((a, b) => {
+        const aFlash = /flash/i.test(a) ? 0 : 1;
+        const bFlash = /flash/i.test(b) ? 0 : 1;
+        if (aFlash !== bFlash) return aFlash - bFlash;
+        return b.localeCompare(a);
+      });
+    return { ok: true, provider, models: models.slice(0, 25) };
+  }
+  if (provider === 'anthropic') {
+    return {
+      ok: true,
+      provider,
+      models: ['claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-3-7-sonnet-latest', 'claude-3-5-haiku-latest']
+    };
+  }
+  let endpoint = 'https://api.openai.com/v1/models';
+  const headers = {};
+  if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
+  if (provider === 'openrouter') endpoint = 'https://openrouter.ai/api/v1/models';
+  else if (provider === 'groq') endpoint = 'https://api.groq.com/openai/v1/models';
+  else if (provider === 'custom') {
+    if (!cfg.baseUrl) throw new Error('URL de base requise');
+    endpoint = `${cfg.baseUrl.replace(/\/+$/, '').replace(/\/chat\/completions$/, '')}/models`;
+  }
+  const res = await fetch(endpoint, { headers });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json?.error?.message || `${provider} HTTP ${res.status}`);
+  const models = (json.data || []).map(m => m.id).filter(Boolean).slice(0, 40);
+  return { ok: true, provider, models };
 }
 
 async function testAiConnection(overrideConfig = null) {
@@ -706,6 +786,7 @@ module.exports = {
   analyzePlanDocument,
   refineCadSpecWithAI,
   testAiConnection,
+  listAvailableModels,
   extractLocalDimensions,
   buildDefaultCadSpec
 };

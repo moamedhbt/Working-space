@@ -70,6 +70,8 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
   const [showAiKey, setShowAiKey] = useState(false);
   const [savingAi, setSavingAi] = useState(false);
   const [testingAi, setTestingAi] = useState(false);
+  const [loadingAiModels, setLoadingAiModels] = useState(false);
+  const [liveAiModels, setLiveAiModels] = useState([]);
   const [aiTestResult, setAiTestResult] = useState(null);
 
   async function loadAiSettings() {
@@ -132,6 +134,28 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
       showToast(e.message, 'err');
     } finally {
       setTestingAi(false);
+    }
+  }
+
+  async function fetchLiveAiModels() {
+    setLoadingAiModels(true);
+    try {
+      const payload = {
+        provider: aiForm.provider,
+        baseUrl: aiForm.baseUrl,
+        ...(aiForm.apiKey.trim() ? { apiKey: aiForm.apiKey.trim() } : {})
+      };
+      const res = await api('/api/admin/ai-settings/models', 'POST', payload);
+      if (res.ok && Array.isArray(res.models) && res.models.length > 0) {
+        setLiveAiModels(res.models);
+        showToast(`${res.models.length} modèles disponibles détectés pour ${res.provider}.`);
+      } else {
+        showToast(res.error || 'Aucun modèle retourné', 'err');
+      }
+    } catch (e) {
+      showToast(e.message, 'err');
+    } finally {
+      setLoadingAiModels(false);
     }
   }
 
@@ -1339,22 +1363,40 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
               </div>
 
               <div>
-                <label className="text-[11px] text-slate-400 block mb-1">
-                  Modèle <span className="text-slate-500">(laisser vide = défaut recommandé)</span>
+                <label className="text-[11px] text-slate-400 block mb-1 flex items-center justify-between">
+                  <span>Modèle <span className="text-slate-500">(vide = défaut)</span></span>
+                  <button
+                    type="button"
+                    disabled={loadingAiModels}
+                    onClick={fetchLiveAiModels}
+                    className="text-[10px] text-purple-300 hover:text-purple-200 underline cursor-pointer"
+                  >
+                    {loadingAiModels ? 'Chargement...' : 'Lister mes modèles'}
+                  </button>
                 </label>
                 <input
                   value={aiForm.model}
                   onChange={e => setAiForm({ ...aiForm, model: e.target.value })}
                   placeholder={
-                    aiForm.provider === 'gemini' ? 'gemini-2.5-flash' :
+                    aiForm.provider === 'gemini' ? 'gemini-3.8-flash' :
                     aiForm.provider === 'openai' ? 'gpt-4o-mini' :
                     aiForm.provider === 'anthropic' ? 'claude-sonnet-4-20250514' :
-                    aiForm.provider === 'openrouter' ? 'google/gemini-2.5-flash' :
+                    aiForm.provider === 'openrouter' ? 'google/gemini-3.8-flash' :
                     aiForm.provider === 'groq' ? 'meta-llama/llama-4-scout-17b-16e-instruct' :
                     'Auto / modèle par défaut'
                   }
                   className="w-full p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white font-mono-num"
                 />
+                {liveAiModels.length > 0 && (
+                  <select
+                    value={liveAiModels.includes(aiForm.model) ? aiForm.model : ''}
+                    onChange={e => e.target.value && setAiForm(f => ({ ...f, model: e.target.value }))}
+                    className="w-full mt-1.5 p-1.5 rounded bg-[#0B0F14] border border-purple-500/40 text-purple-200 text-[11px] font-mono-num"
+                  >
+                    <option value="">— Choisir parmi {liveAiModels.length} modèles détectés —</option>
+                    {liveAiModels.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                )}
               </div>
 
               <div>

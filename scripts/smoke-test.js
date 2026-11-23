@@ -298,7 +298,7 @@ async function run() {
     const aiPut = await req('/api/admin/ai-settings', 'PUT', {
       provider: 'gemini',
       apiKey: 'AIzaSyTestSecretKey1234567890',
-      model: 'gemini-2.5-flash'
+      model: 'gemini-3.8-flash'
     }, dirToken);
     assert.strictEqual(aiPut.status, 200);
     assert.strictEqual(aiPut.data.aiSettings.hasApiKey, true);

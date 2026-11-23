@@ -74,10 +74,10 @@ function saveSettings({ workDays, shiftStart, shiftEnd }) {
 
 const AI_PROVIDERS_META = [
   { id: 'auto', label: 'Automatique (détection selon clé)', defaultModel: '', note: 'Choisit automatiquement le provider actif' },
-  { id: 'gemini', label: 'Google Gemini (Recommandé — Gratuit/Éco + PDF & photos 2D)', defaultModel: 'gemini-2.5-flash', note: 'Lit directement images JPG/PNG et PDF nativement' },
+  { id: 'gemini', label: 'Google Gemini (Recommandé — Gratuit/Éco + PDF & photos 2D)', defaultModel: 'gemini-3.8-flash', note: 'Lit directement images JPG/PNG et PDF nativement' },
   { id: 'openai', label: 'OpenAI (GPT-4o / GPT-4o-mini)', defaultModel: 'gpt-4o-mini', note: 'Très fiable sur plans mécaniques et JSON structuré' },
   { id: 'anthropic', label: 'Anthropic Claude (Sonnet 4)', defaultModel: 'claude-sonnet-4-20250514', note: 'Excellente compréhension technique & CAO' },
-  { id: 'openrouter', label: 'OpenRouter (1 clé → tous les modèles)', defaultModel: 'google/gemini-2.5-flash', note: 'Permet de changer Gemini/Claude/GPT/Qwen sans changer de compte' },
+  { id: 'openrouter', label: 'OpenRouter (1 clé → tous les modèles)', defaultModel: 'google/gemini-3.8-flash', note: 'Permet de changer Gemini/Claude/GPT/Qwen sans changer de compte' },
   { id: 'groq', label: 'Groq (Vision ultra-rapide)', defaultModel: 'meta-llama/llama-4-scout-17b-16e-instruct', note: 'Rapide, quota gratuit généreux' },
   { id: 'custom', label: 'Endpoint personnalisé (Compatible OpenAI / Ollama)', defaultModel: 'llava', note: 'Serveur local Ollama, LM Studio, Mistral, DeepSeek, etc.' }
 ];
@@ -120,7 +120,7 @@ function getAiSettings() {
 
   // Fallback to environment variables if no DB key configured
   if (process.env.GEMINI_API_KEY) {
-    return { provider: 'gemini', resolvedProvider: 'gemini', apiKey: process.env.GEMINI_API_KEY, model: dbModel || 'gemini-2.5-flash', baseUrl: '', source: 'env' };
+    return { provider: 'gemini', resolvedProvider: 'gemini', apiKey: process.env.GEMINI_API_KEY, model: dbModel || 'gemini-3.8-flash', baseUrl: '', source: 'env' };
   }
   if (process.env.OPENAI_API_KEY) {
     return { provider: 'openai', resolvedProvider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: dbModel || 'gpt-4o-mini', baseUrl: '', source: 'env' };
@@ -129,7 +129,7 @@ function getAiSettings() {
     return { provider: 'anthropic', resolvedProvider: 'anthropic', apiKey: process.env.ANTHROPIC_API_KEY, model: dbModel || 'claude-sonnet-4-20250514', baseUrl: '', source: 'env' };
   }
   if (process.env.OPENROUTER_API_KEY) {
-    return { provider: 'openrouter', resolvedProvider: 'openrouter', apiKey: process.env.OPENROUTER_API_KEY, model: dbModel || 'google/gemini-2.5-flash', baseUrl: '', source: 'env' };
+    return { provider: 'openrouter', resolvedProvider: 'openrouter', apiKey: process.env.OPENROUTER_API_KEY, model: dbModel || 'google/gemini-3.8-flash', baseUrl: '', source: 'env' };
   }
   if (process.env.GROQ_API_KEY) {
     return { provider: 'groq', resolvedProvider: 'groq', apiKey: process.env.GROQ_API_KEY, model: dbModel || 'meta-llama/llama-4-scout-17b-16e-instruct', baseUrl: '', source: 'env' };
