@@ -3,8 +3,9 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   Box, Download, Upload, Sparkles, CheckCircle2, FileCode,
-  Send, Trash2, ClipboardList, Layers, Eye, EyeOff, Plus, Copy,
-  RotateCcw, Scissors, Grid3X3, Compass, AlertCircle, ChevronDown, ChevronRight, Save
+  Send, Trash2, ClipboardList, Layers, Eye, EyeOff, Copy,
+  RotateCcw, Scissors, Grid3X3, Compass, AlertCircle, ChevronDown,
+  ChevronRight, Save, Paperclip, X, FileText
 } from 'lucide-react';
 import { api } from '../api';
 import {
@@ -13,11 +14,18 @@ import {
   exportMeshToStepText,
   exportSpecToCadQueryPython
 } from '../utils/cadCsgEngine';
+import { prepareVisionAttachment } from '../utils/fileAttachmentHelper';
 
 const OP_LABELS = {
   add_cylinder: { name: 'Cylindre / Brut', kind: 'add' },
   add_box: { name: 'Bloc / Parallélépipède', kind: 'add' },
+  add_cone: { name: 'Cône / Tronc de cône', kind: 'add' },
+  add_revolve: { name: 'Profil de révolution', kind: 'add' },
+  add_extrude: { name: 'Contour 2D extrudé', kind: 'add' },
   cut_bore: { name: 'Alésage', kind: 'cut' },
+  cut_cone: { name: 'Chanfrein / Cône intérieur', kind: 'cut' },
+  cut_revolve: { name: 'Usinage de révolution', kind: 'cut' },
+  cut_extrude: { name: 'Poche / Découpe 2D', kind: 'cut' },
   cut_hole_pattern: { name: 'Perçages (Cercle PCD)', kind: 'cut' },
   cut_thread: { name: 'Filetage / Taraudage', kind: 'cut' },
   cut_flat: { name: 'Méplat', kind: 'cut' },
@@ -30,19 +38,44 @@ const TOOL_LIBRARY = [
     op: 'add_cylinder',
     short: '+ Cylindre',
     kind: 'add',
-    factory: () => ({ label: 'Cylindre', op: 'add_cylinder', axis: 'x', diameter: 50, length: 100, x: 0, y: 0, z: 0, tolerance: '' })
+    factory: () => ({ label: 'Cylindre', op: 'add_cylinder', axis: 'x', diameter: 50, length: 100, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0, tolerance: '' })
   },
   {
     op: 'add_box',
     short: '+ Bloc',
     kind: 'add',
-    factory: () => ({ label: 'Bloc', op: 'add_box', lx: 100, ly: 60, lz: 20, x: 0, y: 0, z: 0, tolerance: '' })
+    factory: () => ({ label: 'Bloc', op: 'add_box', lx: 100, ly: 60, lz: 20, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0, tolerance: '' })
+  },
+  {
+    op: 'add_cone',
+    short: '+ Cône',
+    kind: 'add',
+    factory: () => ({ label: 'Cône', op: 'add_cone', axis: 'x', d1: 50, d2: 30, length: 30, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0, tolerance: '' })
+  },
+  {
+    op: 'add_extrude',
+    short: '+ Hexagone / 2D',
+    kind: 'add',
+    factory: () => {
+      const r = 25;
+      const pts = Array.from({ length: 6 }, (_, i) => {
+        const a = (i * Math.PI) / 3;
+        return [Number((Math.cos(a) * r).toFixed(3)), Number((Math.sin(a) * r).toFixed(3))];
+      });
+      return { label: '6 pans / Contour 2D', op: 'add_extrude', axis: 'x', points: pts, depth: 20, bevel: 0, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0, tolerance: '' };
+    }
   },
   {
     op: 'cut_bore',
     short: '− Alésage',
     kind: 'cut',
-    factory: () => ({ label: 'Alésage', op: 'cut_bore', axis: 'x', diameter: 20, length: 120, x: 0, y: 0, z: 0, tolerance: 'H7' })
+    factory: () => ({ label: 'Alésage', op: 'cut_bore', axis: 'x', diameter: 20, length: 120, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0, tolerance: 'H7' })
+  },
+  {
+    op: 'cut_cone',
+    short: '− Chanfrein',
+    kind: 'cut',
+    factory: () => ({ label: 'Chanfrein / Fraisure', op: 'cut_cone', axis: 'x', d1: 24, d2: 18, length: 4, x: 50, y: 0, z: 0, rx: 0, ry: 0, rz: 0, tolerance: '' })
   },
   {
     op: 'cut_hole_pattern',
@@ -66,7 +99,7 @@ const TOOL_LIBRARY = [
     op: 'cut_slot',
     short: '− Rainure',
     kind: 'cut',
-    factory: () => ({ label: 'Rainure', op: 'cut_slot', lx: 20, ly: 60, lz: 8, x: 0, y: 0, z: 22, tolerance: '' })
+    factory: () => ({ label: 'Rainure', op: 'cut_slot', lx: 20, ly: 60, lz: 8, x: 0, y: 0, z: 22, rx: 0, ry: 0, rz: 0, tolerance: '' })
   },
   {
     op: 'cut_groove',
@@ -93,6 +126,9 @@ function featureSummary(f) {
   if (!f) return '';
   if (f.op === 'add_cylinder') return `Ø${fmtMm(f.diameter)} × L${fmtMm(f.length)} (axe ${(f.axis || 'x').toUpperCase()})`;
   if (f.op === 'add_box') return `${fmtMm(f.lx)} × ${fmtMm(f.ly)} × ${fmtMm(f.lz)} mm`;
+  if (f.op === 'add_cone' || f.op === 'cut_cone') return `Ø${fmtMm(f.d1)} → Ø${fmtMm(f.d2)} · L${fmtMm(f.length)} (axe ${(f.axis || 'x').toUpperCase()})`;
+  if (f.op === 'add_revolve' || f.op === 'cut_revolve') return `Profil ${(f.points || []).length} pts (axe ${(f.axis || 'x').toUpperCase()})`;
+  if (f.op === 'add_extrude' || f.op === 'cut_extrude') return `Contour ${(f.points || []).length} sommets · prof. ${fmtMm(f.depth)} mm`;
   if (f.op === 'cut_bore') return `Ø${fmtMm(f.diameter)} × L${fmtMm(f.length)} (axe ${(f.axis || 'x').toUpperCase()})`;
   if (f.op === 'cut_flat') return `Côté ${f.side || '+y'} · d=${fmtMm(f.distanceFromCenter)} mm`;
   if (f.op === 'cut_slot') return `${fmtMm(f.lx)} × ${fmtMm(f.ly)} × ${fmtMm(f.lz)} mm`;
@@ -142,6 +178,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
   const clipPlaneRef = useRef(new THREE.Plane(new THREE.Vector3(0, 0, -1), 0));
   const saveTimerRef = useRef(null);
   const skipNextSaveRef = useRef(true);
+  const chatEndRef = useRef(null);
 
   const [cadSpec, setCadSpec] = useState(() => piece?.cadSpec || emptySpecForPiece(piece));
   const [fiche, setFiche] = useState(() => piece?.ficheTechnique || null);
@@ -149,12 +186,15 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
   const [selectedFeatureId, setSelectedFeatureId] = useState(null);
 
   const [dims, setDims] = useState({ x: 0, y: 0, z: 0 });
-  const [displayMode, setDisplayMode] = useState('shaded_edges'); // shaded | shaded_edges | wireframe | transparent | section
+  const [displayMode, setDisplayMode] = useState('shaded_edges');
   const [showAxes, setShowAxes] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [activeView, setActiveView] = useState('iso');
 
-  const [uploadedPlan, setUploadedPlan] = useState(null); // { filename, base64, fileId }
+  const [uploadedPlan, setUploadedPlan] = useState(null);
+  const [chatAttachments, setChatAttachments] = useState([]); // [{ filename, mimeType, base64, previewUrl, isFromPdf }]
+  const [preparingFile, setPreparingFile] = useState(false);
+
   const [analyzing, setAnalyzing] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
   const [refining, setRefining] = useState(false);
@@ -167,7 +207,12 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
   const [statusMsg, setStatusMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
-  // POINT 5: Immediately switch & load per-OF 3D state when active OF changes!
+  // Auto-scroll chat when new messages arrive
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [chatMessages.length, refining]);
+
+  // Immediately switch & load per-OF 3D state when active OF changes
   useEffect(() => {
     skipNextSaveRef.current = true;
     setCadSpec(piece?.cadSpec || emptySpecForPiece(piece));
@@ -175,13 +220,14 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     setChatMessages(Array.isArray(piece?.beChat) ? piece.beChat : []);
     setSelectedFeatureId(null);
     setUploadedPlan(null);
+    setChatAttachments([]);
     setValidatedByBe(false);
     setChatError('');
     setErrorMsg('');
     setStatusMsg('');
   }, [piece?.id]);
 
-  // Auto-save per-OF studio state to SQLite (debounced)
+  // Auto-save per-OF studio state (strip heavy base64 previews from persisted chat history)
   useEffect(() => {
     if (!piece?.id) return;
     if (skipNextSaveRef.current) {
@@ -192,13 +238,20 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     saveTimerRef.current = setTimeout(async () => {
       try {
         setSavingStudio(true);
+        const lightChat = chatMessages.map(m => ({
+          role: m.role,
+          text: m.text,
+          modified: m.modified,
+          model: m.model,
+          ts: m.ts,
+          attachmentNames: m.attachmentNames || (m.attachments ? m.attachments.map(a => a.filename) : undefined)
+        }));
         await api(`/api/pieces/${piece.id}/be-studio`, 'PUT', {
           cadSpec,
           ficheTechnique: fiche,
-          beChat: chatMessages
+          beChat: lightChat
         });
       } catch {
-        // Silent background save failure
       } finally {
         setSavingStudio(false);
       }
@@ -213,7 +266,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     const el = mountRef.current;
     if (!el) return;
     const width = el.clientWidth || 560;
-    const height = el.clientHeight || 380;
+    const height = el.clientHeight || 400;
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color('#090d14');
@@ -268,7 +321,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     const onResize = () => {
       if (!el) return;
       const w = el.clientWidth || 560;
-      const h = el.clientHeight || 380;
+      const h = el.clientHeight || 400;
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
@@ -283,13 +336,11 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     };
   }, []);
 
-  // Toggle grid / axes helpers
   useEffect(() => {
     if (gridRef.current) gridRef.current.visible = showGrid;
     if (axesRef.current) axesRef.current.visible = showAxes;
   }, [showGrid, showAxes]);
 
-  // Fit camera to current solid bounding sphere for any standard CAD view
   function setCameraView(viewName) {
     setActiveView(viewName);
     const camera = cameraRef.current;
@@ -360,7 +411,6 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     group.add(mesh);
     solidMeshRef.current = mesh;
 
-    // Crisp CAD crease edges overlay
     if (isEdges && !isWire) {
       const edgesGeo = new THREE.EdgesGeometry(mesh.geometry, 24);
       const edgesMat = new THREE.LineBasicMaterial({
@@ -372,19 +422,17 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
       group.add(new THREE.LineSegments(edgesGeo, edgesMat));
     }
 
-    // Visual ISO thread sleeves
     for (const ov of (threadOverlays || [])) {
       ov.material.clippingPlanes = isSection ? [clipPlaneRef.current] : [];
       group.add(ov);
     }
 
-    // Reposition grid neatly under part
     if (gridRef.current && mesh.geometry.boundingBox) {
       gridRef.current.position.y = mesh.geometry.boundingBox.min.y - 5;
     }
   }, [cadSpec, displayMode]);
 
-  async function runPlanAnalysis({ fileId = null, filename = '', base64 = null }) {
+  async function runPlanAnalysis({ fileId = null, filename = '', base64 = null, attachments = [] }) {
     setAnalyzing(true);
     setErrorMsg('');
     setStatusMsg('');
@@ -393,6 +441,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
         fileId,
         filename,
         base64,
+        attachments: attachments.map(a => ({ filename: a.filename, mimeType: a.mimeType, base64: a.base64 })),
         notes: piece ? `${piece.nom} ${piece.matiere || ''} ${piece.notesQualite || ''}` : ''
       });
       if (res.ficheTechnique) setFiche(res.ficheTechnique);
@@ -412,17 +461,16 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
   async function handlePlanUpload(e) {
     const file = e.target.files?.[0];
     if (!file) return;
+    setAnalyzing(true);
+    setErrorMsg('');
     try {
-      const base64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
-      setUploadedPlan({ filename: file.name, base64, fileId: null });
-      await runPlanAnalysis({ filename: file.name, base64 });
+      // Automatically render PDF pages to HD PNG so OpenRouter, OpenAI, Claude & Gemini all see them!
+      const prepared = await prepareVisionAttachment(file, 2);
+      setUploadedPlan({ filename: file.name, attachments: prepared, fileId: null });
+      await runPlanAnalysis({ filename: file.name, attachments: prepared });
     } catch (err) {
-      setErrorMsg(err.message);
+      setErrorMsg('Lecture du fichier impossible : ' + err.message);
+      setAnalyzing(false);
     } finally {
       e.target.value = '';
     }
@@ -431,35 +479,110 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
   async function analyzeExistingClientPlan() {
     const cf = piece?.be?.clientFile || piece?.be?.planFile;
     if (!cf) return;
-    setUploadedPlan({ filename: cf.filename, base64: null, fileId: cf.id });
-    await runPlanAnalysis({ fileId: cf.id, filename: cf.filename });
+    setAnalyzing(true);
+    setErrorMsg('');
+    try {
+      // If the stored OF file is a PDF, fetch and render it to HD PNG client-side so OpenRouter/OpenAI also see it!
+      if (/\.pdf$/i.test(cf.filename || '') && cf.url) {
+        const resp = await fetch(cf.url);
+        const blob = await resp.blob();
+        const fileObj = new File([blob], cf.filename, { type: 'application/pdf' });
+        const prepared = await prepareVisionAttachment(fileObj, 2);
+        setUploadedPlan({ filename: cf.filename, attachments: prepared, fileId: cf.id });
+        await runPlanAnalysis({ filename: cf.filename, attachments: prepared });
+      } else {
+        setUploadedPlan({ filename: cf.filename, attachments: [], fileId: cf.id });
+        await runPlanAnalysis({ fileId: cf.id, filename: cf.filename });
+      }
+    } catch (err) {
+      setErrorMsg(err.message);
+      setAnalyzing(false);
+    }
+  }
+
+  // Attach image or PDF directly inside the AI chat
+  async function handleChatFileSelect(e) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setPreparingFile(true);
+    setChatError('');
+    try {
+      const added = [];
+      for (const file of files.slice(0, 2)) {
+        const prepared = await prepareVisionAttachment(file, 2);
+        added.push(...prepared);
+      }
+      setChatAttachments(prev => [...prev, ...added].slice(0, 4));
+    } catch (err) {
+      setChatError('Impossible de charger le fichier joint : ' + err.message);
+    } finally {
+      setPreparingFile(false);
+      e.target.value = '';
+    }
+  }
+
+  // Allow Ctrl+V screenshot paste directly into chat textarea!
+  async function handleChatPaste(e) {
+    const items = Array.from(e.clipboardData?.items || []);
+    const imgItem = items.find(i => i.type && i.type.startsWith('image/'));
+    if (!imgItem) return;
+    const file = imgItem.getAsFile();
+    if (!file) return;
+    e.preventDefault();
+    setPreparingFile(true);
+    try {
+      const named = new File([file], `capture_${Date.now()}.png`, { type: file.type || 'image/png' });
+      const prepared = await prepareVisionAttachment(named, 1);
+      setChatAttachments(prev => [...prev, ...prepared].slice(0, 4));
+    } catch (err) {
+      setChatError('Impossible de coller la capture : ' + err.message);
+    } finally {
+      setPreparingFile(false);
+    }
   }
 
   async function handleAiChatSubmit(e) {
     e?.preventDefault();
     const text = aiPrompt.trim();
-    if (!text) return;
+    if (!text && chatAttachments.length === 0) return;
+
     setRefining(true);
     setChatError('');
-    const nextUserMsg = { role: 'user', text, ts: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) };
+
+    const sentAttachments = [...chatAttachments];
+    const displayPrompt = text || `Document joint (${sentAttachments.map(a => a.originalFilename || a.filename).join(', ')})`;
+    const nextUserMsg = {
+      role: 'user',
+      text: displayPrompt,
+      attachments: sentAttachments.map(a => ({ filename: a.originalFilename || a.filename, previewUrl: a.previewUrl, isFromPdf: a.isFromPdf })),
+      attachmentNames: sentAttachments.map(a => a.originalFilename || a.filename),
+      ts: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+    };
     const updatedHistory = [...chatMessages, nextUserMsg];
     setChatMessages(updatedHistory);
     setAiPrompt('');
+    setChatAttachments([]);
 
     try {
+      const payloadAttachments = sentAttachments.length > 0
+        ? sentAttachments.map(a => ({ filename: a.filename, mimeType: a.mimeType, base64: a.base64 }))
+        : (uploadedPlan?.attachments || []).map(a => ({ filename: a.filename, mimeType: a.mimeType, base64: a.base64 }));
+
       const res = await api('/api/be/refine-3d', 'POST', {
         pieceId: piece?.id || null,
-        fileId: uploadedPlan?.fileId || null,
-        filename: uploadedPlan?.filename || piece?.be?.clientFile?.filename || 'plan.png',
-        base64: uploadedPlan?.base64 || null,
+        fileId: sentAttachments.length === 0 ? (uploadedPlan?.fileId || null) : null,
+        filename: sentAttachments[0]?.filename || uploadedPlan?.filename || piece?.be?.clientFile?.filename || 'plan.png',
+        attachments: payloadAttachments,
         cadSpec,
         ficheTechnique: fiche,
-        history: updatedHistory,
+        history: updatedHistory.map(m => ({ role: m.role, text: m.text })),
         prompt: text
       });
+
       if (res.modified && res.cadSpec) {
         setCadSpec(res.cadSpec);
         setValidatedByBe(false);
+        setTimeout(() => setCameraView(activeView), 60);
       }
       setChatMessages(prev => [
         ...prev,
@@ -479,7 +602,6 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     }
   }
 
-  // Manual CAD tool operations
   function addToolFeature(tool) {
     const id = `f_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
     const feat = { id, ...tool.factory(), hidden: false };
@@ -603,13 +725,13 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
   const existingPlanFile = piece?.be?.clientFile || piece?.be?.planFile || null;
 
   return (
-    <div className="cyber-card p-4 space-y-4">
+    <div className="cyber-card p-3.5 sm:p-4 space-y-3.5">
       {/* HEADER BAR */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#1E2A38]">
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-[#1E2A38]">
         <div>
-          <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-white flex flex-wrap items-center gap-2">
             <Box className="w-4 h-4 text-[#22D3EE]" />
-            Studio CAO 3D & Assistant BE
+            Studio CAO 3D & Assistant IA BE
             {piece && (
               <span className="px-2 py-0.5 rounded bg-[#22D3EE]/15 border border-[#22D3EE]/40 text-[#22D3EE] text-[11px] font-mono-num">
                 {piece.id} · {piece.nom}
@@ -617,7 +739,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
             )}
           </h3>
           <p className="text-[11px] text-slate-400">
-            Modélisation 3D liée à l'OF actif · Édition manuelle au 0.001 mm · Discussion IA BE · Exports .STL / .STEP / CadQuery .py
+            CAO universelle (révolution, contours 2D, cônes, filetages, rotations) · Cotes manuelles au 0.001 mm · Photos & PDF lisibles dans le chat IA
           </p>
         </div>
 
@@ -633,15 +755,15 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
               type="button"
               disabled={analyzing}
               onClick={analyzeExistingClientPlan}
-              className="px-3 py-1.5 rounded-[6px] bg-sky-600/20 border border-sky-500/40 hover:border-sky-400 text-sky-200 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+              className="px-2.5 py-1.5 rounded-[6px] bg-sky-600/20 border border-sky-500/40 hover:border-sky-400 text-sky-200 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
             >
               <Sparkles className="w-3.5 h-3.5" />
               {analyzing ? 'Analyse...' : `Analyser le plan de ${piece.id}`}
             </button>
           )}
-          <label className="px-3 py-1.5 rounded-[6px] bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer">
+          <label className="px-2.5 py-1.5 rounded-[6px] bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer">
             <Upload className="w-3.5 h-3.5" />
-            {analyzing ? 'Analyse en cours...' : 'Importer Plan 2D (Photo / PDF)'}
+            {analyzing ? 'Analyse...' : 'Importer Plan 2D (Photo / PDF)'}
             <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" onChange={handlePlanUpload} className="hidden" />
           </label>
         </div>
@@ -660,7 +782,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
 
       {/* FICHE TECHNIQUE EXTRAITE DU PLAN 2D */}
       {fiche && (
-        <div className="p-3.5 rounded-[6px] bg-[#0B0F14] border border-purple-500/40 space-y-2.5">
+        <div className="p-3 rounded-[6px] bg-[#0B0F14] border border-purple-500/40 space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="text-xs font-semibold text-purple-300 flex items-center gap-1.5">
               <ClipboardList className="w-4 h-4" /> Fiche Technique extraite
@@ -713,27 +835,23 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
           </div>
 
           {fiche.suggestedOperations?.length > 0 && (
-            <div className="pt-1">
-              <div className="text-[10px] text-slate-400 uppercase tracking-wider mb-1">Gamme d'usinage suggérée :</div>
-              <div className="flex flex-wrap gap-1.5">
-                {fiche.suggestedOperations.map((op, i) => (
-                  <span key={i} className="px-2 py-1 rounded bg-[#111821] border border-[#1E2A38] text-[11px] text-slate-200">
-                    <strong className="text-[#22D3EE]">Op {(i + 1) * 10}</strong> · {op.libelle} ({op.tempsReglageMin}m + {op.tempsUnitaireMin}m/pce)
-                  </span>
-                ))}
-              </div>
+            <div className="flex flex-wrap gap-1.5 pt-0.5">
+              {fiche.suggestedOperations.map((op, i) => (
+                <span key={i} className="px-2 py-1 rounded bg-[#111821] border border-[#1E2A38] text-[11px] text-slate-200">
+                  <strong className="text-[#22D3EE]">Op {(i + 1) * 10}</strong> · {op.libelle} ({op.tempsReglageMin}m + {op.tempsUnitaireMin}m/pce)
+                </span>
+              ))}
             </div>
           )}
         </div>
       )}
 
-      {/* MAIN STUDIO GRID: PRO 3D VIEWPORT (LEFT) + AI CHAT & MANUAL INSPECTOR (RIGHT) */}
-      <div className="grid lg:grid-cols-12 gap-4">
-        {/* LEFT COLUMN (7 cols): PRO CAD VIEWPORT + CAMERA/DISPLAY CONTROLS */}
-        <div className="lg:col-span-7 space-y-2.5">
-          {/* POINT 4: PRO CAD CAMERA VIEWS & DISPLAY MODES TOOLBAR */}
-          <div className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] space-y-2">
-            {/* Row 1: Camera positions */}
+      {/* BALANCED 2-COLUMN WORKSPACE (NO WASTED EMPTY SPACE) */}
+      <div className="grid lg:grid-cols-12 gap-3.5 items-start">
+        {/* LEFT COLUMN (7 cols): PRO 3D VIEWPORT + MANUAL 0.001 mm INSPECTOR */}
+        <div className="lg:col-span-7 space-y-3">
+          {/* PRO CAD CAMERA & DISPLAY TOOLBAR */}
+          <div className="p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] space-y-1.5">
             <div className="flex flex-wrap items-center gap-1 text-[11px]">
               <span className="text-[10px] text-slate-500 uppercase tracking-wider mr-1 flex items-center gap-1">
                 <Compass className="w-3 h-3" /> Vue :
@@ -770,7 +888,6 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
               </button>
             </div>
 
-            {/* Row 2: Render / Display modes & Helpers */}
             <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px] pt-1 border-t border-[#1E2A38]/70">
               <div className="flex flex-wrap items-center gap-1">
                 {[
@@ -816,7 +933,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
 
           {/* 3D CANVAS */}
           <div className="relative rounded-[6px] overflow-hidden border border-[#1E2A38] bg-[#090d14]">
-            <div ref={mountRef} className="w-full h-[380px]" />
+            <div ref={mountRef} className="w-full h-[400px]" />
 
             {!hasFeatures && (
               <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#090d14]/70 pointer-events-none text-center p-6">
@@ -825,7 +942,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                   Scène 3D vierge {piece ? `pour ${piece.id}` : ''}
                 </div>
                 <div className="text-[11px] text-slate-500 max-w-sm mt-1">
-                  Importez un plan 2D, discutez avec l'IA à droite ou ajoutez un volume avec la bibliothèque d'outils CAO.
+                  Joignez une photo/PDF dans la discussion IA à droite, décrivez la pièce librement ou utilisez la bibliothèque d'outils CAO ci-dessous.
                 </div>
               </div>
             )}
@@ -838,18 +955,17 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
             </div>
           </div>
 
-          {/* POINT 2: MANUAL CAD INSPECTOR & NEUTRAL TOOL LIBRARY (0.001 mm precision) */}
+          {/* MANUAL CAD INSPECTOR & NEUTRAL TOOL LIBRARY */}
           <div className="p-3 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] space-y-2.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-xs font-semibold text-white flex items-center gap-1.5">
                 <Layers className="w-3.5 h-3.5 text-[#22D3EE]" />
                 Éditeur manuel des cotes & opérations ({cadSpec.features?.length || 0})
               </div>
-              <span className="text-[10px] text-slate-400">Cliquez une ligne pour modifier au 0.001 mm</span>
+              <span className="text-[10px] text-slate-400">Cliquez une ligne pour éditer au 0.001 mm</span>
             </div>
 
-            {/* Neutral CAD Tool Library Bar */}
-            <div className="flex flex-wrap gap-1 pt-0.5">
+            <div className="flex flex-wrap gap-1">
               {TOOL_LIBRARY.map(tool => (
                 <button
                   key={tool.op}
@@ -866,11 +982,10 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
               ))}
             </div>
 
-            {/* Editable Feature List */}
-            <div className="space-y-1.5 max-h-80 overflow-y-auto pr-1">
+            <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
               {(cadSpec.features || []).length === 0 ? (
-                <div className="text-[11px] text-slate-500 py-3 text-center">
-                  Aucune opération CAO définie. Ajoutez un volume ci-dessus ou demandez à l'IA.
+                <div className="text-[11px] text-slate-500 py-2.5 text-center">
+                  Aucune opération CAO définie. Ajoutez un outil ci-dessus ou demandez à l'IA.
                 </div>
               ) : (cadSpec.features || []).map((f, idx) => {
                 const meta = OP_LABELS[f.op] || { name: f.op, kind: 'cut' };
@@ -884,7 +999,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                         : 'bg-[#111821]/60 border-[#1E2A38] hover:border-slate-600'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-2 px-2.5 py-2 text-[11px]">
+                    <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-[11px]">
                       <button
                         type="button"
                         onClick={() => setSelectedFeatureId(isSelected ? null : f.id)}
@@ -909,38 +1024,22 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                       </button>
 
                       <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => updateFeature(f.id, { hidden: !f.hidden })}
-                          className="p-1 text-slate-400 hover:text-white cursor-pointer"
-                          title={f.hidden ? 'Afficher' : 'Masquer'}
-                        >
+                        <button type="button" onClick={() => updateFeature(f.id, { hidden: !f.hidden })} className="p-1 text-slate-400 hover:text-white cursor-pointer" title={f.hidden ? 'Afficher' : 'Masquer'}>
                           {f.hidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => duplicateFeature(f)}
-                          className="p-1 text-slate-400 hover:text-[#22D3EE] cursor-pointer"
-                          title="Dupliquer"
-                        >
+                        <button type="button" onClick={() => duplicateFeature(f)} className="p-1 text-slate-400 hover:text-[#22D3EE] cursor-pointer" title="Dupliquer">
                           <Copy className="w-3.5 h-3.5" />
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => removeFeature(f.id)}
-                          className="p-1 text-slate-400 hover:text-red-400 cursor-pointer"
-                          title="Supprimer"
-                        >
+                        <button type="button" onClick={() => removeFeature(f.id)} className="p-1 text-slate-400 hover:text-red-400 cursor-pointer" title="Supprimer">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     </div>
 
-                    {/* EXPANDED MANUAL DIMENSION EDITOR (0.001 mm step!) */}
                     {isSelected && (
                       <div className="px-2.5 pb-3 pt-2 border-t border-[#1E2A38] space-y-2 text-[11px]">
                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                          <div className="col-span-2 sm:col-span-2">
+                          <div className="col-span-2">
                             <label className="text-[10px] text-slate-400 block mb-0.5">Désignation</label>
                             <input
                               value={f.label || ''}
@@ -959,7 +1058,6 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                           </div>
                         </div>
 
-                        {/* Specific fields per operation type */}
                         {(f.op === 'add_cylinder' || f.op === 'cut_bore') && (
                           <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
                             <NumField label="Diamètre (mm)" value={f.diameter} min={0.1} onChange={v => updateFeature(f.id, { diameter: v })} />
@@ -970,9 +1068,25 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                                 <option value="x">X</option><option value="y">Y</option><option value="z">Z</option>
                               </select>
                             </div>
-                            <NumField label="Pos X (mm)" value={f.x ?? 0} onChange={v => updateFeature(f.id, { x: v })} />
-                            <NumField label="Pos Y (mm)" value={f.y ?? 0} onChange={v => updateFeature(f.id, { y: v })} />
-                            <NumField label="Pos Z (mm)" value={f.z ?? 0} onChange={v => updateFeature(f.id, { z: v })} />
+                            <NumField label="Pos X" value={f.x ?? 0} onChange={v => updateFeature(f.id, { x: v })} />
+                            <NumField label="Pos Y" value={f.y ?? 0} onChange={v => updateFeature(f.id, { y: v })} />
+                            <NumField label="Pos Z" value={f.z ?? 0} onChange={v => updateFeature(f.id, { z: v })} />
+                          </div>
+                        )}
+
+                        {(f.op === 'add_cone' || f.op === 'cut_cone') && (
+                          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                            <NumField label="Ø début (mm)" value={f.d1} min={0} onChange={v => updateFeature(f.id, { d1: v })} />
+                            <NumField label="Ø fin (mm)" value={f.d2} min={0} onChange={v => updateFeature(f.id, { d2: v })} />
+                            <NumField label="Longueur (mm)" value={f.length} min={0.1} onChange={v => updateFeature(f.id, { length: v })} />
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-0.5">Axe</label>
+                              <select value={f.axis || 'x'} onChange={e => updateFeature(f.id, { axis: e.target.value })} className="w-full px-2 py-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-white text-[11px]">
+                                <option value="x">X</option><option value="y">Y</option><option value="z">Z</option>
+                              </select>
+                            </div>
+                            <NumField label="Pos X" value={f.x ?? 0} onChange={v => updateFeature(f.id, { x: v })} />
+                            <NumField label="Pos Y" value={f.y ?? 0} onChange={v => updateFeature(f.id, { y: v })} />
                           </div>
                         )}
 
@@ -981,9 +1095,68 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                             <NumField label="Long. X (mm)" value={f.lx} min={0.1} onChange={v => updateFeature(f.id, { lx: v })} />
                             <NumField label="Larg. Y (mm)" value={f.ly} min={0.1} onChange={v => updateFeature(f.id, { ly: v })} />
                             <NumField label="Haut. Z (mm)" value={f.lz} min={0.1} onChange={v => updateFeature(f.id, { lz: v })} />
-                            <NumField label="Pos X (mm)" value={f.x ?? 0} onChange={v => updateFeature(f.id, { x: v })} />
-                            <NumField label="Pos Y (mm)" value={f.y ?? 0} onChange={v => updateFeature(f.id, { y: v })} />
-                            <NumField label="Pos Z (mm)" value={f.z ?? 0} onChange={v => updateFeature(f.id, { z: v })} />
+                            <NumField label="Pos X" value={f.x ?? 0} onChange={v => updateFeature(f.id, { x: v })} />
+                            <NumField label="Pos Y" value={f.y ?? 0} onChange={v => updateFeature(f.id, { y: v })} />
+                            <NumField label="Pos Z" value={f.z ?? 0} onChange={v => updateFeature(f.id, { z: v })} />
+                          </div>
+                        )}
+
+                        {(f.op === 'add_extrude' || f.op === 'cut_extrude') && (
+                          <div className="space-y-2">
+                            <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                              <NumField label="Profondeur (mm)" value={f.depth ?? 20} min={0.1} onChange={v => updateFeature(f.id, { depth: v })} />
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">Axe</label>
+                                <select value={f.axis || 'z'} onChange={e => updateFeature(f.id, { axis: e.target.value })} className="w-full px-2 py-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-white text-[11px]">
+                                  <option value="x">X</option><option value="y">Y</option><option value="z">Z</option>
+                                </select>
+                              </div>
+                              <NumField label="Pos X" value={f.x ?? 0} onChange={v => updateFeature(f.id, { x: v })} />
+                              <NumField label="Pos Y" value={f.y ?? 0} onChange={v => updateFeature(f.id, { y: v })} />
+                              <NumField label="Pos Z" value={f.z ?? 0} onChange={v => updateFeature(f.id, { z: v })} />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-0.5">Points du contour 2D [[u, v], ...] (mm)</label>
+                              <input
+                                defaultValue={JSON.stringify(f.points || [])}
+                                onBlur={e => {
+                                  try {
+                                    const parsed = JSON.parse(e.target.value);
+                                    if (Array.isArray(parsed) && parsed.length >= 3) updateFeature(f.id, { points: parsed });
+                                  } catch {}
+                                }}
+                                className="w-full px-2 py-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-cyan-200 text-[10px] font-mono-num"
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {(f.op === 'add_revolve' || f.op === 'cut_revolve') && (
+                          <div className="space-y-2">
+                            <div className="grid grid-cols-4 gap-2">
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">Axe</label>
+                                <select value={f.axis || 'x'} onChange={e => updateFeature(f.id, { axis: e.target.value })} className="w-full px-2 py-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-white text-[11px]">
+                                  <option value="x">X</option><option value="y">Y</option><option value="z">Z</option>
+                                </select>
+                              </div>
+                              <NumField label="Pos X" value={f.x ?? 0} onChange={v => updateFeature(f.id, { x: v })} />
+                              <NumField label="Pos Y" value={f.y ?? 0} onChange={v => updateFeature(f.id, { y: v })} />
+                              <NumField label="Pos Z" value={f.z ?? 0} onChange={v => updateFeature(f.id, { z: v })} />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-0.5">Profil de révolution [[rayon, posAxiale], ...] (mm)</label>
+                              <input
+                                defaultValue={JSON.stringify(f.points || [])}
+                                onBlur={e => {
+                                  try {
+                                    const parsed = JSON.parse(e.target.value);
+                                    if (Array.isArray(parsed) && parsed.length >= 2) updateFeature(f.id, { points: parsed });
+                                  } catch {}
+                                }}
+                                className="w-full px-2 py-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-cyan-200 text-[10px] font-mono-num"
+                              />
+                            </div>
                           </div>
                         )}
 
@@ -1015,8 +1188,8 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                                 <option value="x">X</option><option value="y">Y</option><option value="z">Z</option>
                               </select>
                             </div>
-                            <NumField label="Pos X (mm)" value={f.x ?? 0} onChange={v => updateFeature(f.id, { x: v })} />
-                            <NumField label="Pos Y (mm)" value={f.y ?? 0} onChange={v => updateFeature(f.id, { y: v })} />
+                            <NumField label="Pos X" value={f.x ?? 0} onChange={v => updateFeature(f.id, { x: v })} />
+                            <NumField label="Pos Y" value={f.y ?? 0} onChange={v => updateFeature(f.id, { y: v })} />
                           </div>
                         )}
 
@@ -1032,7 +1205,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                                 <option value="x">X</option><option value="y">Y</option><option value="z">Z</option>
                               </select>
                             </div>
-                            <NumField label="Pos X (mm)" value={f.x ?? 0} onChange={v => updateFeature(f.id, { x: v })} />
+                            <NumField label="Pos X" value={f.x ?? 0} onChange={v => updateFeature(f.id, { x: v })} />
                           </div>
                         )}
 
@@ -1052,14 +1225,23 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                             <NumField label="Longueur (mm)" value={f.length} min={1} onChange={v => updateFeature(f.id, { length: v })} />
                             <NumField label="Nb filets" value={f.starts ?? 1} step="1" min={1} onChange={v => updateFeature(f.id, { starts: v })} />
                             <div>
-                              <label className="text-[10px] text-slate-400 block mb-0.5">Sens / Type</label>
+                              <label className="text-[10px] text-slate-400 block mb-0.5">Type</label>
                               <select value={f.internal !== false ? 'int' : 'ext'} onChange={e => updateFeature(f.id, { internal: e.target.value === 'int' })} className="w-full px-2 py-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-white text-[11px]">
                                 <option value="int">Taraudage (Intérieur)</option>
                                 <option value="ext">Filetage (Extérieur)</option>
                               </select>
                             </div>
                             <NumField label="Ø PCD (0=centre)" value={f.pcd ?? 0} min={0} onChange={v => updateFeature(f.id, { pcd: v })} />
-                            <NumField label="Nb trous taraudés" value={f.count ?? 1} step="1" min={1} onChange={v => updateFeature(f.id, { count: v })} />
+                            <NumField label="Nb trous" value={f.count ?? 1} step="1" min={1} onChange={v => updateFeature(f.id, { count: v })} />
+                          </div>
+                        )}
+
+                        {/* Optional 3D Rotation angles (for inclined holes / angled cuts) */}
+                        {f.op !== 'cut_flat' && f.op !== 'cut_hole_pattern' && f.op !== 'cut_groove' && f.op !== 'cut_thread' && (
+                          <div className="grid grid-cols-3 gap-2 pt-1 border-t border-[#1E2A38]/60">
+                            <NumField label="Rotation RX (°)" value={f.rx ?? 0} step="0.1" onChange={v => updateFeature(f.id, { rx: v })} />
+                            <NumField label="Rotation RY (°)" value={f.ry ?? 0} step="0.1" onChange={v => updateFeature(f.id, { ry: v })} />
+                            <NumField label="Rotation RZ (°)" value={f.rz ?? 0} step="0.1" onChange={v => updateFeature(f.id, { rz: v })} />
                           </div>
                         )}
                       </div>
@@ -1071,44 +1253,53 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
           </div>
         </div>
 
-        {/* RIGHT COLUMN (5 cols): CLEAN AI BE DISCUSSION + MANDATORY VALIDATION & EXPORTS */}
+        {/* RIGHT COLUMN (5 cols): COMPACT, CLEAN AI BE CHAT (WITH IMAGE & PDF UPLOAD) + VALIDATION */}
         <div className="lg:col-span-5 flex flex-col gap-3">
-          {/* POINTS 1 & 3: PURE CONVERSATIONAL AI ENGINEER CHAT (ZERO FAKE SUGGESTIONS) */}
-          <div className="p-3.5 rounded-[6px] bg-[#0B0F14] border border-sky-500/35 flex flex-col flex-1 min-h-[380px] space-y-2.5">
-            <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-[#1E2A38]">
-              <div className="text-xs font-semibold text-sky-300 flex items-center gap-1.5">
-                <Sparkles className="w-4 h-4" /> Discussion IA — Assistant BE
+          {/* CONVERSATIONAL AI PANEL */}
+          <div className="rounded-[6px] bg-[#0B0F14] border border-sky-500/35 flex flex-col h-[560px] overflow-hidden">
+            {/* Chat Header */}
+            <div className="px-3.5 py-2.5 border-b border-[#1E2A38] bg-[#0E141D] flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-sky-400" />
+                <div>
+                  <div className="text-xs font-semibold text-white">Discussion IA — Bureau d'Études</div>
+                  <div className="text-[10px] text-slate-400">Texte libre, photo, PDF ou capture collée (Ctrl+V)</div>
+                </div>
               </div>
               {chatMessages.length > 0 && (
                 <button
                   type="button"
                   onClick={() => { setChatMessages([]); setChatError(''); }}
-                  className="text-[10px] text-slate-400 hover:text-red-300 cursor-pointer"
+                  className="px-2 py-1 rounded bg-[#111821] border border-[#1E2A38] text-[10px] text-slate-400 hover:text-red-300 cursor-pointer"
                 >
-                  Effacer la discussion
+                  Effacer
                 </button>
               )}
             </div>
 
-            {/* Conversation history */}
-            <div className="flex-1 space-y-2 overflow-y-auto max-h-[340px] pr-1">
+            {/* Chat Messages Scroll Area */}
+            <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
               {chatMessages.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-center py-8 px-3 text-[11px] text-slate-500">
-                  <Sparkles className="w-5 h-5 text-sky-500/50 mb-2" />
-                  Discutez librement avec votre assistant IA BE : posez une question technique, vérifiez une tolérance ou décrivez une modification à appliquer sur la pièce 3D.
+                <div className="rounded-[6px] bg-[#111821]/80 border border-[#1E2A38] p-3.5 text-xs text-slate-300 space-y-2">
+                  <div className="font-semibold text-sky-300 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5" /> Assistant CAO & Méthodes prêt
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Décrivez la pièce à dessiner, joignez un plan photo/PDF avec le trombone <strong className="text-slate-200">📎</strong> (ou collez une capture avec <kbd className="px-1 py-0.5 rounded bg-[#0B0F14] border border-[#1E2A38] text-[10px]">Ctrl+V</kbd>), ou demandez directement une modification : révolutions, chanfreins, 6 pans, poches 2D, perçages inclinés, taraudages, tolérances au 0.001 mm.
+                  </p>
                 </div>
               ) : chatMessages.map((m, idx) => (
                 <div
                   key={idx}
                   className={`p-2.5 rounded-[6px] text-xs leading-relaxed ${
                     m.role === 'user'
-                      ? 'bg-[#111821] border border-[#1E2A38] text-slate-100 ml-6'
-                      : 'bg-sky-950/30 border border-sky-500/30 text-slate-200 mr-4'
+                      ? 'bg-[#131C28] border border-[#243447] text-slate-100 ml-5'
+                      : 'bg-sky-950/30 border border-sky-500/30 text-slate-200 mr-3'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2 mb-1 text-[10px]">
                     <span className={m.role === 'user' ? 'text-slate-400 font-semibold' : 'text-sky-300 font-semibold'}>
-                      {m.role === 'user' ? 'Ingénieur BE' : `Assistant IA${m.model ? ` (${m.model})` : ''}`}
+                      {m.role === 'user' ? 'Ingénieur BE' : `Assistant IA${m.model ? ` · ${m.model}` : ''}`}
                     </span>
                     <div className="flex items-center gap-1.5">
                       {m.role === 'ai' && m.modified && (
@@ -1119,49 +1310,119 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                       <span className="text-slate-500 font-mono-num">{m.ts || ''}</span>
                     </div>
                   </div>
+
+                  {/* Inline thumbnails for user attachments */}
+                  {Array.isArray(m.attachments) && m.attachments.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 mb-1.5">
+                      {m.attachments.map((att, ai) => (
+                        <div key={ai} className="relative rounded overflow-hidden border border-[#243447] bg-[#0B0F14]">
+                          {att.previewUrl ? (
+                            <img src={att.previewUrl} alt={att.filename} className="h-16 max-w-[120px] object-cover" />
+                          ) : (
+                            <div className="px-2 py-1 text-[10px] text-slate-300 flex items-center gap-1">
+                              <FileText className="w-3 h-3" /> {att.filename}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : Array.isArray(m.attachmentNames) && m.attachmentNames.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mb-1">
+                      {m.attachmentNames.map((nm, ai) => (
+                        <span key={ai} className="px-1.5 py-0.5 rounded bg-[#0B0F14] border border-[#1E2A38] text-[10px] text-slate-400 flex items-center gap-1">
+                          <Paperclip className="w-2.5 h-2.5" /> {nm}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
                   <div className="whitespace-pre-wrap">{m.text}</div>
                 </div>
               ))}
+
               {refining && (
                 <div className="p-2.5 rounded-[6px] bg-sky-950/20 border border-sky-500/20 text-sky-300 text-xs animate-pulse">
                   L'IA analyse votre demande...
                 </div>
               )}
+              <div ref={chatEndRef} />
             </div>
 
             {chatError && (
-              <div className="p-2 rounded bg-red-950/50 border border-red-500/40 text-red-300 text-[11px] flex items-start gap-1.5">
+              <div className="mx-3 mb-2 p-2 rounded bg-red-950/50 border border-red-500/40 text-red-300 text-[11px] flex items-start gap-1.5 shrink-0">
                 <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                 <span>{chatError}</span>
               </div>
             )}
 
-            <form onSubmit={handleAiChatSubmit} className="space-y-2 pt-1 border-t border-[#1E2A38]">
-              <textarea
-                rows={2}
-                value={aiPrompt}
-                onChange={e => setAiPrompt(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleAiChatSubmit();
-                  }
-                }}
-                placeholder="Écrivez votre question technique ou modification à l'IA (Entrée pour envoyer)..."
-                className="w-full p-2 rounded bg-[#111821] border border-[#1E2A38] focus:border-sky-400 focus:outline-none text-xs text-white resize-none"
-              />
-              <button
-                type="submit"
-                disabled={refining || !aiPrompt.trim()}
-                className="w-full py-2 rounded-[6px] bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <Send className="w-3.5 h-3.5" /> {refining ? 'Envoi en cours...' : 'Envoyer à l’IA'}
-              </button>
+            {/* Chat Input Bar with Attachment Preview + Paperclip (Image & PDF) */}
+            <form onSubmit={handleAiChatSubmit} className="p-2.5 border-t border-[#1E2A38] bg-[#0E141D] space-y-2 shrink-0">
+              {chatAttachments.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {chatAttachments.map((att, idx) => (
+                    <div key={idx} className="relative group rounded border border-sky-500/40 bg-[#0B0F14] p-1 flex items-center gap-1.5 pr-6">
+                      <img src={att.previewUrl} alt={att.filename} className="w-9 h-9 object-cover rounded" />
+                      <div className="text-[10px] leading-tight max-w-[110px]">
+                        <div className="text-slate-200 truncate">{att.originalFilename || att.filename}</div>
+                        <div className="text-sky-400">{att.isFromPdf ? `PDF p.${att.pageIndex || 1}` : 'Image'}</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setChatAttachments(prev => prev.filter((_, i) => i !== idx))}
+                        className="absolute top-1 right-1 p-0.5 rounded bg-slate-900/80 text-slate-400 hover:text-red-400 cursor-pointer"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex items-end gap-1.5">
+                <label
+                  className="p-2.5 rounded-[6px] bg-[#111821] border border-[#1E2A38] hover:border-sky-400 text-slate-300 hover:text-sky-300 cursor-pointer shrink-0 transition"
+                  title="Joindre une photo ou un plan PDF dans la discussion"
+                >
+                  <Paperclip className={`w-4 h-4 ${preparingFile ? 'animate-pulse text-sky-400' : ''}`} />
+                  <input
+                    type="file"
+                    accept=".pdf,.png,.jpg,.jpeg,.webp"
+                    multiple
+                    disabled={preparingFile}
+                    onChange={handleChatFileSelect}
+                    className="hidden"
+                  />
+                </label>
+
+                <textarea
+                  rows={2}
+                  value={aiPrompt}
+                  onChange={e => setAiPrompt(e.target.value)}
+                  onPaste={handleChatPaste}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleAiChatSubmit();
+                    }
+                  }}
+                  placeholder={preparingFile ? 'Conversion PDF/image HD...' : 'Message à l’IA (Entrée = envoyer · Ctrl+V = coller une capture)...'}
+                  className="flex-1 p-2 rounded-[6px] bg-[#111821] border border-[#1E2A38] focus:border-sky-400 focus:outline-none text-xs text-white resize-none"
+                />
+
+                <button
+                  type="submit"
+                  disabled={refining || preparingFile || (!aiPrompt.trim() && chatAttachments.length === 0)}
+                  className="px-3 py-2.5 rounded-[6px] bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white text-xs font-semibold flex items-center gap-1 cursor-pointer shrink-0"
+                  title="Envoyer à l'IA"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              </div>
             </form>
           </div>
 
           {/* MANDATORY BE VALIDATION & EXPORTS */}
-          <div className="p-3.5 rounded-[6px] bg-[#0B0F14] border border-emerald-500/35 space-y-2.5">
+          <div className="p-3 rounded-[6px] bg-[#0B0F14] border border-emerald-500/35 space-y-2.5">
             <label className="flex items-start gap-2 text-xs text-slate-200 cursor-pointer">
               <input
                 type="checkbox"

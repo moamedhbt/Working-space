@@ -165,6 +165,25 @@ function extractReadableTextFromPdfBuffer(buf) {
   return matches.join(' ').replace(/[^\x20-\x7EÀ-ÿØø±×]/g, ' ').slice(0, 6000);
 }
 
+const CAD_OPS_SCHEMA_DOC = `Opérations CAO universelles autorisées dans features (toutes dimensions en mm, précision jusqu'à 0.001 mm, champs optionnels communs : "x","y","z" position en mm, "rx","ry","rz" rotation en degrés, "tolerance" ex: "±0.003", "H7", "6H") :
+VOLUMES AJOUTÉS :
+- { "id":"f1", "label":string, "op":"add_cylinder", "axis":"x"|"y"|"z", "diameter":number, "length":number, "x":0,"y":0,"z":0, "rx"?:0,"ry"?:0,"rz"?:0 }
+- { "id":"f2", "label":string, "op":"add_box", "lx":number, "ly":number, "lz":number, "x":0,"y":0,"z":0, "rx"?:0,"ry"?:0,"rz"?:0 }
+- { "id":"f3", "label":string, "op":"add_cone", "axis":"x"|"y"|"z", "d1":number, "d2":number, "length":number, "x":0,"y":0,"z":0, "rx"?:0,"ry"?:0,"rz"?:0 } (cônes, chanfreins extérieurs, arbres coniques)
+- { "id":"f4", "label":string, "op":"add_revolve", "axis":"x"|"y"|"z", "points":[[r1,pos1],[r2,pos2],...], "x":0,"y":0,"z":0 } (PROFIL DE RÉVOLUTION LIBRE : points [rayon>=0, coordonnée axiale] ordonnés — permet de dessiner N'IMPORTE QUELLE pièce tournée complexe avec chanfreins, épaulements, collerettes, cônes, gorges en une seule fonction !)
+- { "id":"f5", "label":string, "op":"add_extrude", "axis":"x"|"y"|"z", "points":[[u1,v1],[u2,v2],...], "depth":number, "bevel"?:number, "x":0,"y":0,"z":0, "rx"?:0,"ry"?:0,"rz"?:0 } (CONTOUR 2D LIBRE EXTRUDÉ : hexagone 6 pans, bride spéciale, patte, profil quelconque)
+
+ENLÈVEMENTS DE MATIÈRE / USINAGES :
+- { "id":"f6", "label":string, "op":"cut_bore", "axis":"x"|"y"|"z", "diameter":number, "length":number, "x":0,"y":0,"z":0, "rx"?:0,"ry"?:0,"rz"?:0 }
+- { "id":"f7", "label":string, "op":"cut_cone", "axis":"x"|"y"|"z", "d1":number, "d2":number, "length":number, "x":0,"y":0,"z":0, "rx"?:0,"ry"?:0,"rz"?:0 } (chanfrein d'alésage, fraisage conique, cône Morse)
+- { "id":"f8", "label":string, "op":"cut_revolve", "axis":"x"|"y"|"z", "points":[[r1,pos1],[r2,pos2],...], "x":0,"y":0,"z":0 } (profil intérieur de révolution libre : alésages étagés + chanfreins)
+- { "id":"f9", "label":string, "op":"cut_extrude", "axis":"x"|"y"|"z", "points":[[u1,v1],[u2,v2],...], "depth":number, "x":0,"y":0,"z":0, "rx"?:0,"ry"?:0,"rz"?:0 } (POCHE / DÉCOUPE 2D LIBRE : trou oblong, 6 pans creux, poche de fraisage sur mesure, lumière)
+- { "id":"f10", "label":string, "op":"cut_flat", "side":"+y"|"-y"|"+z"|"-z"|"+x"|"-x", "distanceFromCenter":number, "span":number }
+- { "id":"f11", "label":string, "op":"cut_slot", "lx":number, "ly":number, "lz":number, "x":0,"y":0,"z":0, "rx"?:0,"ry"?:0,"rz"?:0 }
+- { "id":"f12", "label":string, "op":"cut_hole_pattern", "axis":"x"|"y"|"z", "count":number, "holeDiameter":number, "pcd":number, "depth":number, "startAngleDeg":number, "x":0,"y":0,"z":0, "rx"?:0,"ry"?:0,"rz"?:0 }
+- { "id":"f13", "label":string, "op":"cut_groove", "axis":"x"|"y"|"z", "outerDiameter":number, "innerDiameter":number, "width":number, "pitch":number, "count":number, "x":0,"y":0,"z":0 }
+- { "id":"f14", "label":string, "op":"cut_thread", "threadType":"M"|"Tr"|"G"|"UNC", "nominalDiameter":number, "pitch":number, "starts":number, "length":number, "axis":"x"|"y"|"z", "internal":boolean, "x":0,"y":0,"z":0, "pcd"?:number, "count"?:number, "startAngleDeg"?:number }`;
+
 const VISION_PROMPT = (filename, extraPrompt = '') => `Tu es un ingénieur BE / méthodes CNC expert en lecture de plans mécaniques ISO 2D et modélisation CAO paramétrique (style CadQuery / CSG).
 Analyse attentivement ce plan technique 2D (${filename}) — y compris les annotations manuscrites, cartouche, vues, coupes, tolérances géométriques et notes.
 ${extraPrompt}
@@ -188,19 +207,10 @@ Retourne STRICTEMENT un JSON valide (aucun texte autour) respectant exactement c
   "cadSpec": {
     "unit": "mm",
     "name": string,
-    "features": [
-      // Ordonne les fonctions CAO du volume principal vers les enlèvements de matière :
-      // { "id": "f1", "label": string, "op": "add_cylinder", "axis": "x"|"y"|"z", "diameter": number, "length": number, "x": number, "y": number, "z": number }
-      // { "id": "f2", "label": string, "op": "add_box", "lx": number, "ly": number, "lz": number, "x": number, "y": number, "z": number }
-      // { "id": "f3", "label": string, "op": "cut_bore", "axis": "x"|"y"|"z", "diameter": number, "length": number, "x": number, "y": number, "z": number }
-      // { "id": "f4", "label": string, "op": "cut_flat", "side": "+y"|"-y"|"+z"|"-z"|"+x"|"-x", "distanceFromCenter": number, "span": number }
-      // { "id": "f5", "label": string, "op": "cut_slot", "lx": number, "ly": number, "lz": number, "x": number, "y": number, "z": number }
-      // { "id": "f6", "label": string, "op": "cut_hole_pattern", "axis": "x"|"y"|"z", "count": number, "holeDiameter": number, "pcd": number, "depth": number, "startAngleDeg": number, "x": number, "y": number, "z": number, "tolerance"?: string }
-      // { "id": "f7", "label": string, "op": "cut_groove", "axis": "x"|"y"|"z", "outerDiameter": number, "innerDiameter": number, "width": number, "pitch": number, "count": number, "x": number, "y": number, "z": number, "tolerance"?: string }
-      // { "id": "f8", "label": string, "op": "cut_thread", "threadType": "M"|"Tr"|"G"|"UNC", "nominalDiameter": number, "pitch": number, "starts": number, "length": number, "axis": "x"|"y"|"z", "internal": boolean, "x": number, "y": number, "z": number, "pcd"?: number, "count"?: number, "startAngleDeg"?: number, "tolerance"?: string }
-    ]
+    "features": [ ... ]
   }
 }
+${CAD_OPS_SCHEMA_DOC}
 Assure-toi que toutes les dimensions sont en mm (précision jusqu'à 0.001 mm), centrées autour de (0,0,0), fidèles au plan 2D.`;
 
 function extractJsonFromText(txt) {
@@ -245,18 +255,32 @@ function resolveRuntimeAiConfig(override = null) {
   return { provider, resolvedProvider, apiKey, model, baseUrl, source: 'override' };
 }
 
-async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'image/jpeg', overrideConfig = null, expectJson = true }) {
+async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'image/jpeg', images = [], overrideConfig = null, expectJson = true }) {
   const cfg = resolveRuntimeAiConfig(overrideConfig);
   const provider = cfg.resolvedProvider;
   if (!provider || provider === 'offline') return null;
   if (!cfg.apiKey && provider !== 'custom') return null;
 
   const model = cfg.model || defaultModelForProvider(provider);
-  const b64 = buffer && Buffer.isBuffer(buffer) && buffer.length > 0 ? buffer.toString('base64') : null;
+
+  // Normalize all vision attachments into [{ mimeType, base64 }]
+  const mediaList = [];
+  if (Array.isArray(images)) {
+    for (const img of images) {
+      if (!img?.base64) continue;
+      const cleanB64 = String(img.base64).includes(',') ? String(img.base64).split(',')[1] : String(img.base64);
+      if (cleanB64) mediaList.push({ mimeType: img.mimeType || 'image/png', base64: cleanB64 });
+    }
+  }
+  if (mediaList.length === 0 && buffer && Buffer.isBuffer(buffer) && buffer.length > 0) {
+    mediaList.push({ mimeType, base64: buffer.toString('base64') });
+  }
 
   if (provider === 'gemini') {
     const parts = [{ text: promptText }];
-    if (b64) parts.push({ inline_data: { mime_type: mimeType, data: b64 } });
+    for (const m of mediaList) {
+      parts.push({ inline_data: { mime_type: m.mimeType, data: m.base64 } });
+    }
 
     const callOnce = async (mdl) => {
       const cleanMdl = String(mdl || '').replace(/^models\//, '');
@@ -306,16 +330,18 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
 
   if (provider === 'anthropic') {
     const content = [];
-    if (b64 && mimeType !== 'application/pdf') {
-      content.push({
-        type: 'image',
-        source: { type: 'base64', media_type: mimeType, data: b64 }
-      });
-    } else if (b64 && mimeType === 'application/pdf') {
-      content.push({
-        type: 'document',
-        source: { type: 'base64', media_type: 'application/pdf', data: b64 }
-      });
+    for (const m of mediaList) {
+      if (m.mimeType === 'application/pdf') {
+        content.push({
+          type: 'document',
+          source: { type: 'base64', media_type: 'application/pdf', data: m.base64 }
+        });
+      } else {
+        content.push({
+          type: 'image',
+          source: { type: 'base64', media_type: m.mimeType, data: m.base64 }
+        });
+      }
     }
     content.push({ type: 'text', text: promptText });
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -354,8 +380,10 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
   }
 
   const contentParts = [{ type: 'text', text: promptText }];
-  if (b64 && mimeType !== 'application/pdf') {
-    contentParts.push({ type: 'image_url', image_url: { url: `data:${mimeType};base64,${b64}` } });
+  for (const m of mediaList) {
+    if (m.mimeType !== 'application/pdf') {
+      contentParts.push({ type: 'image_url', image_url: { url: `data:${m.mimeType};base64,${m.base64}` } });
+    }
   }
   const payload = {
     model,
@@ -443,8 +471,9 @@ async function testAiConnection(overrideConfig = null) {
 
 function sanitizeCadSpec(spec, fallbackName = 'Piece_CNC') {
   const ALLOWED_OPS = new Set([
-    'add_cylinder', 'add_box', 'cut_bore', 'cut_flat',
-    'cut_slot', 'cut_hole_pattern', 'cut_groove', 'cut_thread'
+    'add_cylinder', 'add_box', 'add_cone', 'add_revolve', 'add_extrude',
+    'cut_bore', 'cut_cone', 'cut_revolve', 'cut_extrude',
+    'cut_flat', 'cut_slot', 'cut_hole_pattern', 'cut_groove', 'cut_thread'
   ]);
   const features = Array.isArray(spec?.features)
     ? spec.features
@@ -464,7 +493,7 @@ function sanitizeCadSpec(spec, fallbackName = 'Piece_CNC') {
   };
 }
 
-async function analyzePlanDocument({ buffer, filename = 'plan', notes = '' }) {
+async function analyzePlanDocument({ buffer, filename = 'plan', notes = '', attachments = [] }) {
   const ext = path.extname(filename).toLowerCase();
   const mimeType =
     ext === '.pdf' ? 'application/pdf' :
@@ -477,10 +506,11 @@ async function analyzePlanDocument({ buffer, filename = 'plan', notes = '' }) {
   let mode = 'local_parser';
   let aiWarning = '';
 
-  if (buffer && Buffer.isBuffer(buffer) && buffer.length > 0 && aiCfg.resolvedProvider !== 'offline') {
+  const hasMedia = (Array.isArray(attachments) && attachments.length > 0) || (buffer && Buffer.isBuffer(buffer) && buffer.length > 0);
+  if (hasMedia && aiCfg.resolvedProvider !== 'offline') {
     const promptText = VISION_PROMPT(filename, notes ? `Contexte OF : ${notes}` : '');
     try {
-      const resp = await callConfiguredAiRaw({ promptText, buffer, mimeType, expectJson: true });
+      const resp = await callConfiguredAiRaw({ promptText, buffer, mimeType, images: attachments, expectJson: true });
       if (resp?.data) {
         aiData = resp.data;
         mode = `${resp.provider}_vision_ai`;
@@ -726,7 +756,7 @@ function applyLocalCadPrompt(cadSpec, prompt = '') {
   };
 }
 
-async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer = null, filename = 'plan', ficheTechnique = null }) {
+async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer = null, filename = 'plan', attachments = [], ficheTechnique = null }) {
   const cleanSpec = sanitizeCadSpec(cadSpec);
   const ext = path.extname(filename || '').toLowerCase();
   const mimeType =
@@ -740,9 +770,9 @@ async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer =
     .map(m => `${m.role === 'user' ? 'Ingénieur BE' : 'Assistant IA BE'} : ${m.text}`)
     .join('\n');
 
-  const refineInstruction = `Tu es un ingénieur Bureau d'Études / Méthodes CNC et expert CAO paramétrique (CadQuery / CSG).
-Tu discutes en français naturel avec l'ingénieur BE pour concevoir, vérifier et corriger un modèle 3D mécanique (précision jusqu'à 0.001 mm).
-Comprends le langage naturel même s'il y a des fautes de frappe (ex: "filtage dans les treau" = filetage / taraudage dans les trous).
+  const refineInstruction = `Tu es un ingénieur Bureau d'Études / Méthodes CNC et expert CAO paramétrique universelle (style CadQuery / SolidWorks / CSG).
+Tu discutes librement en français naturel avec l'ingénieur BE pour concevoir, vérifier et modifier n'importe quelle pièce mécanique 3D (précision jusqu'à 0.001 mm).
+Comprends le langage naturel même s'il y a des fautes de frappe (ex: "filtage dans les treau" = taraudage/filetage dans les trous, "chanfrin" = chanfrein, "6 pan" = hexagone).
 
 Modèle 3D actuel (JSON cadSpec) :
 ${JSON.stringify(cleanSpec, null, 2)}
@@ -753,9 +783,9 @@ Nouveau message de l'ingénieur BE :
 "${prompt}"
 
 RÈGLES IMPORTANTES :
-1. Si l'ingénieur pose une question technique (ex: "tu peux faire un filetage dans les trous ?") OU s'il manque une donnée mécanique importante (ex: type de filetage M10/Tr65, pas, profondeur, débouchant ou borgne, quels trous cibler), RÉPONDS clairement en français comme un collègue ingénieur BE, vérifie la cohérence avec la pièce actuelle, pose tes questions précises, et mets "modified": false en renvoyant le cadSpec inchangé.
-2. Si l'ingénieur donne une instruction claire (ou confirme une proposition précédente), APPLIQUE la modification sur "cadSpec" avec précision (au 0.001 mm près), mets "modified": true, et explique clairement ce qui a été fait dans "reply".
-3. Si le modèle 3D est vide (features: []) et que l'ingénieur décrit une pièce ou demande de la créer depuis le plan 2D, construis la pièce complète.
+1. Si des images/plans sont joints à ce message, analyse-les attentivement (cotes, vues, coupes, tolérances, notes) pour répondre ou dessiner la pièce fidèlement.
+2. Si l'ingénieur pose une question technique ou s'il manque une donnée essentielle, RÉPONDS clairement en français comme un ingénieur BE expérimenté, vérifie la cohérence mécanique, pose tes questions précises, et mets "modified": false.
+3. Si la demande est claire (créer une pièce de zéro, modifier un diamètre/chanfrein/hexagone/poche/taraudage/cône/perçage incliné, ou reproduire l'image/PDF joint), APPLIQUE-LA avec une vraie liberté géométrique (utilise add_revolve pour les profils tournés complexes, add_extrude/cut_extrude pour les polygones/oblongs/poches/6 pans, add_cone/cut_cone pour les chanfreins/cônes, rx/ry/rz pour les perçages inclinés, cut_thread pour les filetages/taraudages) et mets "modified": true.
 
 Retourne STRICTEMENT un objet JSON valide (sans texte hors JSON) :
 {
@@ -764,24 +794,26 @@ Retourne STRICTEMENT un objet JSON valide (sans texte hors JSON) :
   "cadSpec": { "unit": "mm", "name": string, "features": [ ... ] }
 }
 
-Opérations autorisées dans features (toutes dimensions en mm, précision jusqu'à 0.001 mm, champ optionnel "tolerance" ex: "±0.003", "H7", "6H") :
-- { "id": "f1", "label": string, "op": "add_cylinder", "axis": "x"|"y"|"z", "diameter": number, "length": number, "x": number, "y": number, "z": number, "tolerance"?: string }
-- { "id": "f2", "label": string, "op": "add_box", "lx": number, "ly": number, "lz": number, "x": number, "y": number, "z": number, "tolerance"?: string }
-- { "id": "f3", "label": string, "op": "cut_bore", "axis": "x"|"y"|"z", "diameter": number, "length": number, "x": number, "y": number, "z": number, "tolerance"?: string }
-- { "id": "f4", "label": string, "op": "cut_flat", "side": "+y"|"-y"|"+z"|"-z"|"+x"|"-x", "distanceFromCenter": number, "span": number, "tolerance"?: string }
-- { "id": "f5", "label": string, "op": "cut_slot", "lx": number, "ly": number, "lz": number, "x": number, "y": number, "z": number, "tolerance"?: string }
-- { "id": "f6", "label": string, "op": "cut_hole_pattern", "axis": "x"|"y"|"z", "count": number, "holeDiameter": number, "pcd": number, "depth": number, "startAngleDeg": number, "x": number, "y": number, "z": number, "tolerance"?: string }
-- { "id": "f7", "label": string, "op": "cut_groove", "axis": "x"|"y"|"z", "outerDiameter": number, "innerDiameter": number, "width": number, "pitch": number, "count": number, "x": number, "y": number, "z": number, "tolerance"?: string }
-- { "id": "f8", "label": string, "op": "cut_thread", "threadType": "M"|"Tr"|"G"|"UNC", "nominalDiameter": number, "pitch": number, "starts": number, "length": number, "axis": "x"|"y"|"z", "internal": boolean, "x": number, "y": number, "z": number, "pcd"?: number, "count"?: number, "startAngleDeg"?: number, "tolerance"?: string }`;
+${CAD_OPS_SCHEMA_DOC}`;
 
   const aiCfg = getAiSettings();
+
+  // Merge explicit chat attachments + OF 2D plan buffer if present
+  const visionImages = [];
+  if (Array.isArray(attachments)) {
+    for (const a of attachments) {
+      if (a?.base64) visionImages.push({ mimeType: a.mimeType || 'image/png', base64: a.base64 });
+    }
+  }
+  if (planBuffer && Buffer.isBuffer(planBuffer) && planBuffer.length > 0 && visionImages.length < 3) {
+    visionImages.push({ mimeType, base64: planBuffer.toString('base64') });
+  }
 
   // When an AI provider IS configured, NEVER silently hide errors behind the offline parser!
   if (aiCfg.resolvedProvider !== 'offline') {
     const resp = await callConfiguredAiRaw({
       promptText: refineInstruction,
-      buffer: planBuffer && Buffer.isBuffer(planBuffer) ? planBuffer : null,
-      mimeType,
+      images: visionImages,
       expectJson: true
     });
     const parsed = resp?.data;

@@ -3,13 +3,62 @@ import { Brush, Evaluator, ADDITION, SUBTRACTION } from 'three-bvh-csg';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 
 function orientCylinder(geo, axis = 'x') {
-  if (axis === 'x') geo.rotateZ(Math.PI / 2);
+  if (axis === 'x') geo.rotateZ(-Math.PI / 2);
   else if (axis === 'z') geo.rotateX(Math.PI / 2);
-  // axis === 'y' is default Three.js cylinder orientation
+  // axis === 'y' is default Three.js cylinder/lathe orientation
   return geo;
 }
 
-function makeBrush(geometry, pos = [0, 0, 0]) {
+function buildRevolveGeometry(rawPoints = [], axis = 'x') {
+  const pts = (Array.isArray(rawPoints) ? rawPoints : [])
+    .map(p => (Array.isArray(p) ? [Math.max(0, Number(p[0]) || 0), Number(p[1]) || 0] : null))
+    .filter(Boolean);
+  if (pts.length < 2) return null;
+
+  // Close profile cleanly to the revolution axis (r = 0) so the CSG solid is watertight
+  const closed = [];
+  if (pts[0][0] > 0.001) closed.push(new THREE.Vector2(0, pts[0][1]));
+  for (const [r, pos] of pts) {
+    closed.push(new THREE.Vector2(Math.max(0, r), pos));
+  }
+  const last = pts[pts.length - 1];
+  if (last[0] > 0.001) closed.push(new THREE.Vector2(0, last[1]));
+
+  const geo = new THREE.LatheGeometry(closed, 56);
+  return orientCylinder(geo, axis);
+}
+
+function buildExtrudeGeometry(rawPoints = [], depth = 20, axis = 'z', bevel = 0) {
+  const pts = (Array.isArray(rawPoints) ? rawPoints : [])
+    .map(p => (Array.isArray(p) ? [Number(p[0]) || 0, Number(p[1]) || 0] : null))
+    .filter(Boolean);
+  if (pts.length < 3) return null;
+
+  const shape = new THREE.Shape();
+  shape.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) {
+    shape.lineTo(pts[i][0], pts[i][1]);
+  }
+  shape.closePath();
+
+  const d = Math.max(0.2, Number(depth) || 20);
+  const b = Math.max(0, Math.min(d * 0.25, Number(bevel) || 0));
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: d,
+    bevelEnabled: b > 0.01,
+    bevelThickness: b,
+    bevelSize: b,
+    bevelSegments: 2,
+    curveSegments: 32
+  });
+  // Center extrusion along Z (-d/2 .. +d/2), then orient to requested axis
+  geo.translate(0, 0, -d / 2);
+  if (axis === 'x') geo.rotateY(Math.PI / 2);
+  else if (axis === 'y') geo.rotateX(-Math.PI / 2);
+  return geo;
+}
+
+function makeBrush(geometry, pos = [0, 0, 0], rotDeg = [0, 0, 0]) {
   if (!geometry.attributes.normal) geometry.computeVertexNormals();
   if (!geometry.attributes.uv) {
     const count = geometry.attributes.position.count;
@@ -17,6 +66,12 @@ function makeBrush(geometry, pos = [0, 0, 0]) {
   }
   const brush = new Brush(geometry);
   brush.position.set(pos[0] || 0, pos[1] || 0, pos[2] || 0);
+  const deg = Math.PI / 180;
+  brush.rotation.set(
+    (Number(rotDeg[0]) || 0) * deg,
+    (Number(rotDeg[1]) || 0) * deg,
+    (Number(rotDeg[2]) || 0) * deg
+  );
   brush.updateMatrixWorld(true);
   return brush;
 }
@@ -40,30 +95,75 @@ export function buildCsgSolidFromSpec(cadSpec) {
       const x = Number(f.x) || 0;
       const y = Number(f.y) || 0;
       const z = Number(f.z) || 0;
+      const rot = [Number(f.rx) || 0, Number(f.ry) || 0, Number(f.rz) || 0];
 
       if (f.op === 'add_cylinder') {
         const d = Math.max(0.5, Number(f.diameter) || 40);
         const l = Math.max(0.5, Number(f.length) || 80);
         const geo = orientCylinder(new THREE.CylinderGeometry(d / 2, d / 2, l, 56), axis);
-        const b = makeBrush(geo, [x, y, z]);
+        const b = makeBrush(geo, [x, y, z], rot);
         current = current ? evaluator.evaluate(current, b, ADDITION) : b;
         applied.push(f.id);
       } else if (f.op === 'add_box') {
         const lx = Math.max(0.5, Number(f.lx) || 80);
         const ly = Math.max(0.5, Number(f.ly) || 60);
         const lz = Math.max(0.5, Number(f.lz) || 20);
-        const b = makeBrush(new THREE.BoxGeometry(lx, ly, lz), [x, y, z]);
+        const b = makeBrush(new THREE.BoxGeometry(lx, ly, lz), [x, y, z], rot);
         current = current ? evaluator.evaluate(current, b, ADDITION) : b;
         applied.push(f.id);
+      } else if (f.op === 'add_cone') {
+        const d1 = Math.max(0, Number(f.d1 ?? 40));
+        const d2 = Math.max(0, Number(f.d2 ?? 20));
+        const l = Math.max(0.5, Number(f.length) || 40);
+        const geo = orientCylinder(new THREE.CylinderGeometry(d2 / 2, d1 / 2, l, 56), axis);
+        const b = makeBrush(geo, [x, y, z], rot);
+        current = current ? evaluator.evaluate(current, b, ADDITION) : b;
+        applied.push(f.id);
+      } else if (f.op === 'add_revolve') {
+        const geo = buildRevolveGeometry(f.points, axis);
+        if (geo) {
+          const b = makeBrush(geo, [x, y, z], rot);
+          current = current ? evaluator.evaluate(current, b, ADDITION) : b;
+          applied.push(f.id);
+        }
+      } else if (f.op === 'add_extrude') {
+        const geo = buildExtrudeGeometry(f.points, f.depth ?? 20, f.axis || 'z', f.bevel || 0);
+        if (geo) {
+          const b = makeBrush(geo, [x, y, z], rot);
+          current = current ? evaluator.evaluate(current, b, ADDITION) : b;
+          applied.push(f.id);
+        }
       } else if (!current) {
         continue;
       } else if (f.op === 'cut_bore') {
         const d = Math.max(0.2, Number(f.diameter) || 20);
         const l = Math.max(0.5, Number(f.length) || 250);
         const geo = orientCylinder(new THREE.CylinderGeometry(d / 2, d / 2, l, 48), axis);
-        const b = makeBrush(geo, [x, y, z]);
+        const b = makeBrush(geo, [x, y, z], rot);
         current = evaluator.evaluate(current, b, SUBTRACTION);
         applied.push(f.id);
+      } else if (f.op === 'cut_cone') {
+        const d1 = Math.max(0, Number(f.d1 ?? 24));
+        const d2 = Math.max(0, Number(f.d2 ?? 16));
+        const l = Math.max(0.2, Number(f.length) || 10);
+        const geo = orientCylinder(new THREE.CylinderGeometry(d2 / 2, d1 / 2, l, 48), axis);
+        const b = makeBrush(geo, [x, y, z], rot);
+        current = evaluator.evaluate(current, b, SUBTRACTION);
+        applied.push(f.id);
+      } else if (f.op === 'cut_revolve') {
+        const geo = buildRevolveGeometry(f.points, axis);
+        if (geo) {
+          const b = makeBrush(geo, [x, y, z], rot);
+          current = evaluator.evaluate(current, b, SUBTRACTION);
+          applied.push(f.id);
+        }
+      } else if (f.op === 'cut_extrude') {
+        const geo = buildExtrudeGeometry(f.points, f.depth ?? 40, f.axis || 'z', 0);
+        if (geo) {
+          const b = makeBrush(geo, [x, y, z], rot);
+          current = evaluator.evaluate(current, b, SUBTRACTION);
+          applied.push(f.id);
+        }
       } else if (f.op === 'cut_flat') {
         const dist = Math.max(0.5, Number(f.distanceFromCenter) || 50);
         const span = Math.max(10, Number(f.span) || 300);
@@ -77,14 +177,14 @@ export function buildCsgSolidFromSpec(cadSpec) {
         else if (side === '-z') { pos = [0, 0, -(dist + cutThick / 2)]; dims = [span, span, cutThick]; }
         else if (side === '+x') { pos = [dist + cutThick / 2, 0, 0]; dims = [cutThick, span, span]; }
         else if (side === '-x') { pos = [-(dist + cutThick / 2), 0, 0]; dims = [cutThick, span, span]; }
-        const b = makeBrush(new THREE.BoxGeometry(dims[0], dims[1], dims[2]), pos);
+        const b = makeBrush(new THREE.BoxGeometry(dims[0], dims[1], dims[2]), pos, rot);
         current = evaluator.evaluate(current, b, SUBTRACTION);
         applied.push(f.id);
       } else if (f.op === 'cut_slot') {
         const lx = Math.max(0.2, Number(f.lx) || 20);
         const ly = Math.max(0.2, Number(f.ly) || 20);
         const lz = Math.max(0.2, Number(f.lz) || 10);
-        const b = makeBrush(new THREE.BoxGeometry(lx, ly, lz), [x, y, z]);
+        const b = makeBrush(new THREE.BoxGeometry(lx, ly, lz), [x, y, z], rot);
         current = evaluator.evaluate(current, b, SUBTRACTION);
         applied.push(f.id);
       } else if (f.op === 'cut_hole_pattern') {
@@ -328,6 +428,20 @@ export function exportSpecToCadQueryPython(cadSpec) {
     } else if (f.op === 'add_box') {
       lines.push(`s${idx} = cq.Workplane("XY").box(${Number(f.lx) || 80}, ${Number(f.ly) || 60}, ${Number(f.lz) || 20}).translate((${x}, ${y}, ${z}))`);
       lines.push(`result = s${idx} if result is None else result.union(s${idx})`);
+    } else if (f.op === 'add_cone' || f.op === 'cut_cone') {
+      const r1 = (Number(f.d1 ?? 40)) / 2;
+      const r2 = (Number(f.d2 ?? 20)) / 2;
+      const l = Number(f.length) || 30;
+      lines.push(`cn${idx} = cq.Workplane("${pl}").circle(${Math.max(0.05, r1)}).workplane(offset=${l}).circle(${Math.max(0.05, r2)}).loft().translate((${x}, ${y}, ${z}))`);
+      lines.push(f.op === 'add_cone' ? `result = cn${idx} if result is None else result.union(cn${idx})` : `result = result.cut(cn${idx})`);
+    } else if ((f.op === 'add_revolve' || f.op === 'cut_revolve') && Array.isArray(f.points) && f.points.length >= 2) {
+      const ptsStr = f.points.map(p => `(${Number(p[0]) || 0}, ${Number(p[1]) || 0})`).join(', ');
+      lines.push(`rev${idx} = cq.Workplane("XZ").polyline([${ptsStr}]).close().revolve(360, (0, 0, 0), (0, 1, 0)).translate((${x}, ${y}, ${z}))`);
+      lines.push(f.op === 'add_revolve' ? `result = rev${idx} if result is None else result.union(rev${idx})` : `result = result.cut(rev${idx})`);
+    } else if ((f.op === 'add_extrude' || f.op === 'cut_extrude') && Array.isArray(f.points) && f.points.length >= 3) {
+      const ptsStr = f.points.map(p => `(${Number(p[0]) || 0}, ${Number(p[1]) || 0})`).join(', ');
+      lines.push(`ex${idx} = cq.Workplane("${pl}").polyline([${ptsStr}]).close().extrude(${Number(f.depth) || 20}, both=True).translate((${x}, ${y}, ${z}))`);
+      lines.push(f.op === 'add_extrude' ? `result = ex${idx} if result is None else result.union(ex${idx})` : `result = result.cut(ex${idx})`);
     } else if (f.op === 'cut_bore') {
       lines.push(`c${idx} = cq.Workplane("${pl}").circle(${(Number(f.diameter) || 20) / 2}).extrude(${Number(f.length) || 250}, both=True).translate((${x}, ${y}, ${z}))`);
       lines.push(`result = result.cut(c${idx})`);
