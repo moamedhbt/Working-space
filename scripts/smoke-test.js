@@ -263,8 +263,23 @@ async function run() {
     }, beToken);
     assert.strictEqual(planAna.status, 200);
     assert.strictEqual(planAna.data.extracted.partType, 'bride');
+    assert.ok(planAna.data.ficheTechnique && Array.isArray(planAna.data.cadSpec.features));
 
-    // 15. Fix 3: Full History Export & Raw DB download
+    // 15. Fix 3+: Engineer 3D Prompt Refinement + Apply AI Technical Sheet to OF
+    const refRes = await req('/api/be/refine-3d', 'POST', {
+      cadSpec: planAna.data.cadSpec,
+      prompt: 'Ajoute 6 trous Ø10 sur PCD 70 à 38° et ajoute méplat à 114.5 mm'
+    }, beToken);
+    assert.strictEqual(refRes.status, 200);
+    assert.ok(refRes.data.cadSpec.features.length > planAna.data.cadSpec.features.length);
+
+    const applyFiche = await req(`/api/pieces/${chefOf.data.id}/apply-fiche-ia`, 'POST', {
+      ficheTechnique: planAna.data.ficheTechnique,
+      replaceOperations: true
+    }, beToken);
+    assert.strictEqual(applyFiche.status, 200);
+
+    // 16. Fix 3: Full History Export & Raw DB download
     const exp = await req('/api/admin/export-history', 'GET', null, dirToken);
     assert.strictEqual(exp.status, 200);
     assert.ok(Array.isArray(exp.data.pieces) && Array.isArray(exp.data.stops));
@@ -273,7 +288,7 @@ async function run() {
     const dbBuf = Buffer.from(await dbDl.arrayBuffer());
     assert.ok(dbBuf.subarray(0, 15).toString('utf8').startsWith('SQLite format 3'));
 
-    console.log('✅ TOUS LES TESTS DE SMOKE ONT RÉUSSI (15/15) !');
+    console.log('✅ TOUS LES TESTS DE SMOKE ONT RÉUSSI (16/16) !');
   } finally {
     proc.kill('SIGTERM');
     for (const f of [tmpDb, `${tmpDb}-wal`, `${tmpDb}-shm`]) {

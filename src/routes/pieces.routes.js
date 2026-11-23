@@ -20,7 +20,7 @@ const {
   getMaintenanceLogs
 } = require('../db/database');
 const { analyzeScheduleAndAI } = require('../services/scheduler');
-const { analyzePlanDocument } = require('../services/planAnalyzer');
+const { analyzePlanDocument, refineCadSpecWithAI } = require('../services/planAnalyzer');
 const { auth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -698,6 +698,101 @@ router.post('/be/analyze-plan', auth, requireRole('directeur', 'be', 'chef'), as
   } catch (err) {
     res.status(500).json({ error: 'Erreur analyse plan : ' + err.message });
   }
+});
+
+router.post('/be/refine-3d', auth, requireRole('directeur', 'be', 'chef'), async (req, res) => {
+  try {
+    const { fileId, filename, base64, cadSpec, prompt, ficheTechnique } = req.body || {};
+    if (!prompt || !String(prompt).trim()) {
+      return res.status(400).json({ error: 'Écrivez une instruction de correction pour l’IA.' });
+    }
+    let buf = null;
+    let name = filename || 'plan.png';
+    if (fileId) {
+      const f = queryOne('SELECT * FROM be_files WHERE id = ?', [fileId]);
+      if (f) {
+        const rel = String(f.url || '').replace(/^\/uploads\//, '');
+        const fullPath = path.join(UPLOADS_DIR, rel);
+        if (fs.existsSync(fullPath)) buf = fs.readFileSync(fullPath);
+        name = f.filename;
+      }
+    } else if (base64) {
+      const raw = String(base64).includes(',') ? String(base64).split(',')[1] : String(base64);
+      buf = Buffer.from(raw, 'base64');
+    }
+
+    const result = await refineCadSpecWithAI({
+      cadSpec,
+      prompt: String(prompt).trim(),
+      planBuffer: buf,
+      filename: name,
+      ficheTechnique
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: 'Erreur correction 3D IA : ' + err.message });
+  }
+});
+
+router.post('/pieces/:id/apply-fiche-ia', auth, requireRole('directeur', 'be', 'chef'), (req, res) => {
+  const { id } = req.params;
+  const piece = queryOne('SELECT * FROM pieces WHERE id = ?', [id]);
+  if (!piece) return res.status(404).json({ error: 'OF introuvable' });
+
+  const { ficheTechnique = {}, replaceOperations = false } = req.body || {};
+  const machines = queryAll('SELECT * FROM machines WHERE actif = 1');
+
+  const mat = [ficheTechnique.material, ficheTechnique.rawStock].filter(Boolean).join(' · ');
+  const qualityParts = [
+    ...(Array.isArray(ficheTechnique.criticalTolerances) && ficheTechnique.criticalTolerances.length
+      ? [`Tolérances : ${ficheTechnique.criticalTolerances.join(', ')}`] : []),
+    ...(Array.isArray(ficheTechnique.specialNotes) && ficheTechnique.specialNotes.length
+      ? [`Notes : ${ficheTechnique.specialNotes.join(' | ')}`] : [])
+  ];
+  const notesQualite = qualityParts.join(' — ');
+
+  transaction(() => {
+    if (mat) {
+      runSql('UPDATE pieces SET matiere = ? WHERE id = ?', [mat, id]);
+    }
+    if (notesQualite) {
+      const merged = piece.notesQualite ? `${piece.notesQualite} | ${notesQualite}` : notesQualite;
+      runSql('UPDATE pieces SET notesQualite = ? WHERE id = ?', [merged, id]);
+    }
+    if (replaceOperations && Array.isArray(ficheTechnique.suggestedOperations) && ficheTechnique.suggestedOperations.length > 0) {
+      const hasStarted = queryOne("SELECT id FROM operations WHERE pieceId = ? AND statut != 'En attente'", [id]);
+      if (!hasStarted) {
+        runSql('DELETE FROM operations WHERE pieceId = ?', [id]);
+        ficheTechnique.suggestedOperations.forEach((op, idx) => {
+          const tLow = String(op.typeMachine || '').toLowerCase();
+          const m = machines.find(x => (x.type || '').toLowerCase().includes(tLow)) || machines[0];
+          const reg = Math.max(0, parseInt(op.tempsReglageMin ?? 20, 10) || 0);
+          const unit = Math.max(0, Number(op.tempsUnitaireMin ?? 10) || 0);
+          const planned = computeOpPlannedMin(reg, unit, piece.quantitePrevue, 60);
+          runSql(
+            `INSERT INTO operations (id, pieceId, ordre, libelle, machineId, operateurId, tempsReglageMin, tempsUnitaireMin, tempsPrevuMin, statut)
+             VALUES (?,?,?,?,?,?,?,?,?,'En attente')`,
+            [
+              `op_${id}_${(idx + 1) * 10}_${Math.floor(Math.random() * 1000)}`,
+              id,
+              (idx + 1) * 10,
+              String(op.libelle || `Opération ${idx + 1}`).trim(),
+              m?.id || piece.machineId,
+              piece.operateurId,
+              reg,
+              unit,
+              planned
+            ]
+          );
+        });
+      }
+    }
+    syncPieceFromOperations(id);
+  });
+
+  logAudit(req.user, 'FICHE IA APPLIQUÉE', `${id} · Matière / Tolérances${replaceOperations ? ' + Gamme' : ''}`);
+  logPieceEvent(id, req.user, 'fiche_ia', 'Fiche technique IA appliquée à l’OF', `${mat || ''}${notesQualite ? ` · ${notesQualite}` : ''}`);
+  res.json({ ok: true });
 });
 
 router.get('/be-files/:fileId/text', auth, (req, res) => {

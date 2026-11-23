@@ -233,7 +233,7 @@ export default function BeView({ state, user, reload }) {
             </select>
           </div>
         )}
-        <ParametricBuilder3D piece={selectedPiece} onPublishToOf={publishParametric3D} />
+        <ParametricBuilder3D piece={selectedPiece} onPublishToOf={publishParametric3D} onReload={reload} />
       </div>
 
       {/* 3D VIEWER FOR UPLOADED .STEP / .STL + MATERIAL CALCULATOR */}
