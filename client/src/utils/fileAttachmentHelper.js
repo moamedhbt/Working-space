@@ -101,3 +101,26 @@ export async function prepareVisionAttachment(file, maxPdfPages = 2) {
     isFromPdf: false
   }];
 }
+
+/**
+ * Rotates an already-prepared vision attachment 90 degrees clockwise
+ * so sideways phone photos of 2D drawings can be straightened before sending to Vision AI.
+ */
+export async function rotateAttachment90(att) {
+  if (!att?.base64) return att;
+  const img = await loadImage(att.base64);
+  const canvas = document.createElement('canvas');
+  canvas.width = img.height;
+  canvas.height = img.width;
+  const ctx = canvas.getContext('2d');
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate(Math.PI / 2);
+  ctx.drawImage(img, -img.width / 2, -img.height / 2);
+  const mime = att.mimeType === 'image/png' ? 'image/png' : 'image/jpeg';
+  const rotated = canvas.toDataURL(mime, 0.92);
+  return {
+    ...att,
+    base64: rotated,
+    previewUrl: rotated
+  };
+}

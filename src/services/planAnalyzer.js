@@ -828,6 +828,7 @@ ${CAD_OPS_SCHEMA_DOC}`;
         reply,
         modified,
         cadSpec: nextSpec,
+        ficheTechnique: parsed.ficheTechnique || null,
         changesSummary: reply
       };
     }

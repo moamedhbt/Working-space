@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   Box, Download, Upload, Sparkles, CheckCircle2, FileCode,
   Send, Trash2, ClipboardList, Layers, Eye, EyeOff, Copy,
-  RotateCcw, Scissors, Grid3X3, Compass, AlertCircle, ChevronDown,
+  RotateCcw, RotateCw, Scissors, Grid3X3, Compass, AlertCircle, ChevronDown,
   ChevronRight, Save, Paperclip, X, FileText
 } from 'lucide-react';
 import { api } from '../api';
@@ -14,7 +14,7 @@ import {
   exportMeshToStepText,
   exportSpecToCadQueryPython
 } from '../utils/cadCsgEngine';
-import { prepareVisionAttachment } from '../utils/fileAttachmentHelper';
+import { prepareVisionAttachment, rotateAttachment90 } from '../utils/fileAttachmentHelper';
 
 const OP_LABELS = {
   add_cylinder: { name: 'Cylindre / Brut', kind: 'add' },
@@ -541,6 +541,15 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     }
   }
 
+  async function handleRotateChatAttachment(idx) {
+    const target = chatAttachments[idx];
+    if (!target) return;
+    try {
+      const rotated = await rotateAttachment90(target);
+      setChatAttachments(prev => prev.map((a, i) => (i === idx ? rotated : a)));
+    } catch {}
+  }
+
   async function handleAiChatSubmit(e) {
     e?.preventDefault();
     const text = aiPrompt.trim();
@@ -550,6 +559,10 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     setChatError('');
 
     const sentAttachments = [...chatAttachments];
+    if (sentAttachments.length > 0) {
+      // Remember latest attached plan so follow-up chat turns still see the drawing!
+      setUploadedPlan({ filename: sentAttachments[0].originalFilename || sentAttachments[0].filename, attachments: sentAttachments, fileId: null });
+    }
     const displayPrompt = text || `Document joint (${sentAttachments.map(a => a.originalFilename || a.filename).join(', ')})`;
     const nextUserMsg = {
       role: 'user',
@@ -579,6 +592,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
         prompt: text
       });
 
+      if (res.ficheTechnique) setFiche(res.ficheTechnique);
       if (res.modified && res.cadSpec) {
         setCadSpec(res.cadSpec);
         setValidatedByBe(false);
@@ -1360,11 +1374,18 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
               {chatAttachments.length > 0 && (
                 <div className="flex flex-wrap gap-2">
                   {chatAttachments.map((att, idx) => (
-                    <div key={idx} className="relative group rounded border border-sky-500/40 bg-[#0B0F14] p-1 flex items-center gap-1.5 pr-6">
-                      <img src={att.previewUrl} alt={att.filename} className="w-9 h-9 object-cover rounded" />
-                      <div className="text-[10px] leading-tight max-w-[110px]">
+                    <div key={idx} className="relative rounded border border-sky-500/40 bg-[#0B0F14] p-1.5 flex items-center gap-2 pr-7">
+                      <img src={att.previewUrl} alt={att.filename} className="w-11 h-11 object-contain rounded bg-black/40" />
+                      <div className="text-[10px] leading-tight max-w-[125px] space-y-1">
                         <div className="text-slate-200 truncate">{att.originalFilename || att.filename}</div>
-                        <div className="text-sky-400">{att.isFromPdf ? `PDF p.${att.pageIndex || 1}` : 'Image'}</div>
+                        <button
+                          type="button"
+                          onClick={() => handleRotateChatAttachment(idx)}
+                          className="px-1.5 py-0.5 rounded bg-sky-500/15 border border-sky-500/40 text-sky-300 hover:bg-sky-500/25 flex items-center gap-1 cursor-pointer"
+                          title="Pivoter l'image de 90° pour la remettre droite"
+                        >
+                          <RotateCw className="w-2.5 h-2.5" /> Pivoter 90°
+                        </button>
                       </div>
                       <button
                         type="button"
