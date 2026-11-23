@@ -309,7 +309,26 @@ async function run() {
     assert.strictEqual(aiClear.status, 200);
     assert.strictEqual(aiClear.data.aiSettings.hasApiKey, false);
 
-    console.log('✅ TOUS LES TESTS DE SMOKE ONT RÉUSSI (17/17) !');
+    // 18. Per-OF BE Studio persistence (cadSpec with 0.001mm + cut_thread, chat isolation)
+    const saveStudio = await req(`/api/pieces/${chefOf.data.id}/be-studio`, 'PUT', {
+      cadSpec: {
+        unit: 'mm',
+        name: chefOf.data.id,
+        features: [
+          { id: 'f1', label: 'Cylindre', op: 'add_cylinder', axis: 'x', diameter: 120.003, length: 230, x: 0, y: 0, z: 0, tolerance: '±0.003' },
+          { id: 'f2', label: 'Taraudage M10', op: 'cut_thread', threadType: 'M', nominalDiameter: 10, pitch: 1.5, starts: 1, length: 25, axis: 'x', internal: true, pcd: 70, count: 6, tolerance: '6H' }
+        ]
+      },
+      beChat: [{ role: 'user', text: 'Test discussion BE' }]
+    }, beToken);
+    assert.strictEqual(saveStudio.status, 200);
+    const st18 = await req('/api/state', 'GET', null, beToken);
+    const savedOf = st18.data.pieces.find(p => p.id === chefOf.data.id);
+    assert.ok(savedOf?.cadSpec?.features?.length === 2, 'OF studio cadSpec should persist');
+    assert.strictEqual(savedOf.cadSpec.features[0].diameter, 120.003);
+    assert.strictEqual(savedOf.beChat.length, 1);
+
+    console.log('✅ TOUS LES TESTS DE SMOKE ONT RÉUSSI (18/18) !');
   } finally {
     proc.kill('SIGTERM');
     for (const f of [tmpDb, `${tmpDb}-wal`, `${tmpDb}-shm`]) {

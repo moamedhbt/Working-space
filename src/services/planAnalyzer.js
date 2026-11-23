@@ -195,12 +195,13 @@ Retourne STRICTEMENT un JSON valide (aucun texte autour) respectant exactement c
       // { "id": "f3", "label": string, "op": "cut_bore", "axis": "x"|"y"|"z", "diameter": number, "length": number, "x": number, "y": number, "z": number }
       // { "id": "f4", "label": string, "op": "cut_flat", "side": "+y"|"-y"|"+z"|"-z"|"+x"|"-x", "distanceFromCenter": number, "span": number }
       // { "id": "f5", "label": string, "op": "cut_slot", "lx": number, "ly": number, "lz": number, "x": number, "y": number, "z": number }
-      // { "id": "f6", "label": string, "op": "cut_hole_pattern", "axis": "x"|"y"|"z", "count": number, "holeDiameter": number, "pcd": number, "depth": number, "startAngleDeg": number, "x": number, "y": number, "z": number }
-      // { "id": "f7", "label": string, "op": "cut_groove", "axis": "x"|"y"|"z", "outerDiameter": number, "innerDiameter": number, "width": number, "pitch": number, "count": number, "x": number, "y": number, "z": number }
+      // { "id": "f6", "label": string, "op": "cut_hole_pattern", "axis": "x"|"y"|"z", "count": number, "holeDiameter": number, "pcd": number, "depth": number, "startAngleDeg": number, "x": number, "y": number, "z": number, "tolerance"?: string }
+      // { "id": "f7", "label": string, "op": "cut_groove", "axis": "x"|"y"|"z", "outerDiameter": number, "innerDiameter": number, "width": number, "pitch": number, "count": number, "x": number, "y": number, "z": number, "tolerance"?: string }
+      // { "id": "f8", "label": string, "op": "cut_thread", "threadType": "M"|"Tr"|"G"|"UNC", "nominalDiameter": number, "pitch": number, "starts": number, "length": number, "axis": "x"|"y"|"z", "internal": boolean, "x": number, "y": number, "z": number, "pcd"?: number, "count"?: number, "startAngleDeg"?: number, "tolerance"?: string }
     ]
   }
 }
-Assure-toi que toutes les dimensions sont en mm, centrées autour de (0,0,0), fidèles au plan 2D.`;
+Assure-toi que toutes les dimensions sont en mm (précision jusqu'à 0.001 mm), centrées autour de (0,0,0), fidèles au plan 2D.`;
 
 function extractJsonFromText(txt) {
   if (!txt) return null;
@@ -441,14 +442,19 @@ async function testAiConnection(overrideConfig = null) {
 }
 
 function sanitizeCadSpec(spec, fallbackName = 'Piece_CNC') {
-  const ALLOWED_OPS = new Set(['add_cylinder', 'add_box', 'cut_bore', 'cut_flat', 'cut_slot', 'cut_hole_pattern', 'cut_groove']);
+  const ALLOWED_OPS = new Set([
+    'add_cylinder', 'add_box', 'cut_bore', 'cut_flat',
+    'cut_slot', 'cut_hole_pattern', 'cut_groove', 'cut_thread'
+  ]);
   const features = Array.isArray(spec?.features)
     ? spec.features
       .filter(f => f && ALLOWED_OPS.has(f.op))
       .map((f, idx) => ({
         ...f,
         id: f.id || `f${idx + 1}`,
-        label: String(f.label || f.op)
+        label: String(f.label || f.op),
+        tolerance: f.tolerance ? String(f.tolerance) : '',
+        hidden: Boolean(f.hidden)
       }))
     : [];
   return {
@@ -720,7 +726,7 @@ function applyLocalCadPrompt(cadSpec, prompt = '') {
   };
 }
 
-async function refineCadSpecWithAI({ cadSpec, prompt, planBuffer = null, filename = 'plan', ficheTechnique = null }) {
+async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer = null, filename = 'plan', ficheTechnique = null }) {
   const cleanSpec = sanitizeCadSpec(cadSpec);
   const ext = path.extname(filename || '').toLowerCase();
   const mimeType =
@@ -729,56 +735,95 @@ async function refineCadSpecWithAI({ cadSpec, prompt, planBuffer = null, filenam
     ext === '.webp' ? 'image/webp' :
     'image/jpeg';
 
-  const refineInstruction = `Tu es un ingénieur CAO paramétrique (CadQuery / CSG).
-Voici le modèle 3D actuel (JSON cadSpec) :
+  const recentHistory = (Array.isArray(history) ? history : [])
+    .slice(-10)
+    .map(m => `${m.role === 'user' ? 'Ingénieur BE' : 'Assistant IA BE'} : ${m.text}`)
+    .join('\n');
+
+  const refineInstruction = `Tu es un ingénieur Bureau d'Études / Méthodes CNC et expert CAO paramétrique (CadQuery / CSG).
+Tu discutes en français naturel avec l'ingénieur BE pour concevoir, vérifier et corriger un modèle 3D mécanique (précision jusqu'à 0.001 mm).
+Comprends le langage naturel même s'il y a des fautes de frappe (ex: "filtage dans les treau" = filetage / taraudage dans les trous).
+
+Modèle 3D actuel (JSON cadSpec) :
 ${JSON.stringify(cleanSpec, null, 2)}
 
 ${ficheTechnique ? `Fiche technique de la pièce : ${JSON.stringify(ficheTechnique)}` : ''}
-
-Demande de correction de l'ingénieur BE par rapport au plan 2D :
+${recentHistory ? `Historique récent de la discussion :\n${recentHistory}\n` : ''}
+Nouveau message de l'ingénieur BE :
 "${prompt}"
 
-Retourne STRICTEMENT un JSON valide :
+RÈGLES IMPORTANTES :
+1. Si l'ingénieur pose une question technique (ex: "tu peux faire un filetage dans les trous ?") OU s'il manque une donnée mécanique importante (ex: type de filetage M10/Tr65, pas, profondeur, débouchant ou borgne, quels trous cibler), RÉPONDS clairement en français comme un collègue ingénieur BE, vérifie la cohérence avec la pièce actuelle, pose tes questions précises, et mets "modified": false en renvoyant le cadSpec inchangé.
+2. Si l'ingénieur donne une instruction claire (ou confirme une proposition précédente), APPLIQUE la modification sur "cadSpec" avec précision (au 0.001 mm près), mets "modified": true, et explique clairement ce qui a été fait dans "reply".
+3. Si le modèle 3D est vide (features: []) et que l'ingénieur décrit une pièce ou demande de la créer depuis le plan 2D, construis la pièce complète.
+
+Retourne STRICTEMENT un objet JSON valide (sans texte hors JSON) :
 {
-  "changesSummary": string (résumé court en français des corrections faites),
+  "reply": string (ta réponse naturelle d'ingénieur BE en français),
+  "modified": boolean (true si cadSpec a été modifié, false si simple discussion/question),
   "cadSpec": { "unit": "mm", "name": string, "features": [ ... ] }
 }
-Opérations autorisées dans features : add_cylinder, add_box, cut_bore, cut_flat, cut_slot, cut_hole_pattern, cut_groove. Toutes les dimensions en mm.`;
 
-  let aiResp = null;
-  let mode = 'local_cad_parser';
+Opérations autorisées dans features (toutes dimensions en mm, précision jusqu'à 0.001 mm, champ optionnel "tolerance" ex: "±0.003", "H7", "6H") :
+- { "id": "f1", "label": string, "op": "add_cylinder", "axis": "x"|"y"|"z", "diameter": number, "length": number, "x": number, "y": number, "z": number, "tolerance"?: string }
+- { "id": "f2", "label": string, "op": "add_box", "lx": number, "ly": number, "lz": number, "x": number, "y": number, "z": number, "tolerance"?: string }
+- { "id": "f3", "label": string, "op": "cut_bore", "axis": "x"|"y"|"z", "diameter": number, "length": number, "x": number, "y": number, "z": number, "tolerance"?: string }
+- { "id": "f4", "label": string, "op": "cut_flat", "side": "+y"|"-y"|"+z"|"-z"|"+x"|"-x", "distanceFromCenter": number, "span": number, "tolerance"?: string }
+- { "id": "f5", "label": string, "op": "cut_slot", "lx": number, "ly": number, "lz": number, "x": number, "y": number, "z": number, "tolerance"?: string }
+- { "id": "f6", "label": string, "op": "cut_hole_pattern", "axis": "x"|"y"|"z", "count": number, "holeDiameter": number, "pcd": number, "depth": number, "startAngleDeg": number, "x": number, "y": number, "z": number, "tolerance"?: string }
+- { "id": "f7", "label": string, "op": "cut_groove", "axis": "x"|"y"|"z", "outerDiameter": number, "innerDiameter": number, "width": number, "pitch": number, "count": number, "x": number, "y": number, "z": number, "tolerance"?: string }
+- { "id": "f8", "label": string, "op": "cut_thread", "threadType": "M"|"Tr"|"G"|"UNC", "nominalDiameter": number, "pitch": number, "starts": number, "length": number, "axis": "x"|"y"|"z", "internal": boolean, "x": number, "y": number, "z": number, "pcd"?: number, "count"?: number, "startAngleDeg"?: number, "tolerance"?: string }`;
+
   const aiCfg = getAiSettings();
 
+  // When an AI provider IS configured, NEVER silently hide errors behind the offline parser!
   if (aiCfg.resolvedProvider !== 'offline') {
-    try {
-      const resp = await callConfiguredAiRaw({
-        promptText: refineInstruction,
-        buffer: planBuffer && Buffer.isBuffer(planBuffer) ? planBuffer : null,
-        mimeType,
-        expectJson: true
-      });
-      if (resp?.data?.cadSpec) {
-        aiResp = resp.data;
-        mode = `${resp.provider}_vision_ai`;
-      }
-    } catch {}
+    const resp = await callConfiguredAiRaw({
+      promptText: refineInstruction,
+      buffer: planBuffer && Buffer.isBuffer(planBuffer) ? planBuffer : null,
+      mimeType,
+      expectJson: true
+    });
+    const parsed = resp?.data;
+    if (parsed && (parsed.reply || parsed.cadSpec)) {
+      const nextSpec = parsed.cadSpec ? sanitizeCadSpec(parsed.cadSpec, cleanSpec.name) : cleanSpec;
+      const modified = parsed.modified !== undefined ? Boolean(parsed.modified) : JSON.stringify(nextSpec) !== JSON.stringify(cleanSpec);
+      const reply = String(parsed.reply || parsed.changesSummary || (modified ? 'Modèle 3D mis à jour.' : 'Bien reçu.'));
+      return {
+        mode: `${resp.provider}_vision_ai`,
+        provider: resp.provider,
+        model: resp.model,
+        reply,
+        modified,
+        cadSpec: nextSpec,
+        changesSummary: reply
+      };
+    }
+    // If model replied in plain text without JSON wrapper, still return its real answer instead of faking offline!
+    if (resp?.text && resp.text.trim()) {
+      const plain = resp.text.trim();
+      return {
+        mode: `${resp.provider}_vision_ai`,
+        provider: resp.provider,
+        model: resp.model,
+        reply: plain,
+        modified: false,
+        cadSpec: cleanSpec,
+        changesSummary: plain
+      };
+    }
+    throw new Error(`Réponse vide du modèle IA (${aiCfg.resolvedProvider}).`);
   }
 
-  if (aiResp?.cadSpec) {
-    return {
-      mode,
-      cadSpec: sanitizeCadSpec(aiResp.cadSpec, cleanSpec.name),
-      changesSummary: aiResp.changesSummary || 'Modèle 3D mis à jour par IA.',
-      disclaimer: 'Vérifiez la géométrie 3D mise à jour par rapport au plan 2D avant validation.'
-    };
-  }
-
+  // Only when NO AI key is configured anywhere: local deterministic parser
   const localRes = applyLocalCadPrompt(cleanSpec, prompt);
+  const modified = JSON.stringify(localRes.cadSpec) !== JSON.stringify(cleanSpec);
   return {
-    mode,
+    mode: 'local_cad_parser',
+    reply: localRes.changesSummary,
+    modified,
     cadSpec: localRes.cadSpec,
-    changesSummary: localRes.changesSummary,
-    disclaimer: 'Vérifiez la géométrie 3D mise à jour par rapport au plan 2D avant validation.'
+    changesSummary: localRes.changesSummary
   };
 }
 

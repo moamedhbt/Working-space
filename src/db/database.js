@@ -521,8 +521,18 @@ function getEnrichedPieces(whereClause = '', params = []) {
     const activeCnc = beFiles.find(f => f.categorie === 'cnc' && f.isActive) || null;
     const active3d = beFiles.find(f => f.categorie === '3d' && f.isActive) || null;
 
+    let cadSpec = null;
+    let ficheTechnique = null;
+    let beChat = [];
+    try { if (p.cadSpecJson) cadSpec = JSON.parse(p.cadSpecJson); } catch {}
+    try { if (p.ficheTechniqueJson) ficheTechnique = JSON.parse(p.ficheTechniqueJson); } catch {}
+    try { if (p.beChatJson) beChat = JSON.parse(p.beChatJson); } catch {}
+
     return {
       ...p,
+      cadSpec,
+      ficheTechnique,
+      beChat: Array.isArray(beChat) ? beChat : [],
       machine: p.machine || 'Non affectée',
       operateur: p.operateur || 'Non affecté',
       machineActif: p.machineActif === null ? true : !!p.machineActif,
@@ -688,6 +698,9 @@ function createSchema() {
       beNonRequis INTEGER DEFAULT 0,
       chefValide INTEGER DEFAULT 0,
       estRepriseEnCours INTEGER DEFAULT 0,
+      cadSpecJson TEXT DEFAULT '',
+      ficheTechniqueJson TEXT DEFAULT '',
+      beChatJson TEXT DEFAULT '',
       createdAt TEXT,
       closedAt TEXT
     );
@@ -842,6 +855,9 @@ function migrateLegacySchemaIfNeeded() {
       ['typeMachine', "TEXT DEFAULT ''"],
       ['createdById', 'TEXT'],
       ['createdBy', "TEXT DEFAULT ''"],
+      ['cadSpecJson', "TEXT DEFAULT ''"],
+      ['ficheTechniqueJson', "TEXT DEFAULT ''"],
+      ['beChatJson', "TEXT DEFAULT ''"],
       ['createdByRole', "TEXT DEFAULT ''"],
       ['validationDirection', 'INTEGER DEFAULT 1'],
       ['beValide', 'INTEGER DEFAULT 0'],

@@ -702,9 +702,9 @@ router.post('/be/analyze-plan', auth, requireRole('directeur', 'be', 'chef'), as
 
 router.post('/be/refine-3d', auth, requireRole('directeur', 'be', 'chef'), async (req, res) => {
   try {
-    const { fileId, filename, base64, cadSpec, prompt, ficheTechnique } = req.body || {};
+    const { pieceId, fileId, filename, base64, cadSpec, prompt, history, ficheTechnique } = req.body || {};
     if (!prompt || !String(prompt).trim()) {
-      return res.status(400).json({ error: 'Écrivez une instruction de correction pour l’IA.' });
+      return res.status(400).json({ error: 'Écrivez un message ou une instruction pour l’IA.' });
     }
     let buf = null;
     let name = filename || 'plan.png';
@@ -719,19 +719,55 @@ router.post('/be/refine-3d', auth, requireRole('directeur', 'be', 'chef'), async
     } else if (base64) {
       const raw = String(base64).includes(',') ? String(base64).split(',')[1] : String(base64);
       buf = Buffer.from(raw, 'base64');
+    } else if (pieceId) {
+      // Automatically attach the active OF's 2D plan (client or BE plan) so the AI sees it!
+      const f = queryOne(
+        "SELECT * FROM be_files WHERE pieceId = ? AND categorie IN ('client', 'plan') AND isActive = 1 ORDER BY CASE categorie WHEN 'client' THEN 0 ELSE 1 END LIMIT 1",
+        [pieceId]
+      );
+      if (f) {
+        const rel = String(f.url || '').replace(/^\/uploads\//, '');
+        const fullPath = path.join(UPLOADS_DIR, rel);
+        if (fs.existsSync(fullPath)) {
+          buf = fs.readFileSync(fullPath);
+          name = f.filename;
+        }
+      }
     }
 
     const result = await refineCadSpecWithAI({
       cadSpec,
       prompt: String(prompt).trim(),
+      history: Array.isArray(history) ? history : [],
       planBuffer: buf,
       filename: name,
       ficheTechnique
     });
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: 'Erreur correction 3D IA : ' + err.message });
+    res.status(502).json({ error: 'Erreur IA : ' + err.message });
   }
+});
+
+router.put('/pieces/:id/be-studio', auth, requireRole('directeur', 'be', 'chef'), (req, res) => {
+  const { id } = req.params;
+  const piece = queryOne('SELECT id FROM pieces WHERE id = ?', [id]);
+  if (!piece) return res.status(404).json({ error: 'OF introuvable' });
+
+  const { cadSpec, ficheTechnique, beChat } = req.body || {};
+  transaction(() => {
+    if (cadSpec !== undefined) {
+      runSql('UPDATE pieces SET cadSpecJson = ? WHERE id = ?', [cadSpec ? JSON.stringify(cadSpec) : '', id]);
+    }
+    if (ficheTechnique !== undefined) {
+      runSql('UPDATE pieces SET ficheTechniqueJson = ? WHERE id = ?', [ficheTechnique ? JSON.stringify(ficheTechnique) : '', id]);
+    }
+    if (beChat !== undefined) {
+      const trimmed = Array.isArray(beChat) ? beChat.slice(-40) : [];
+      runSql('UPDATE pieces SET beChatJson = ? WHERE id = ?', [JSON.stringify(trimmed), id]);
+    }
+  });
+  res.json({ ok: true });
 });
 
 router.post('/pieces/:id/apply-fiche-ia', auth, requireRole('directeur', 'be', 'chef'), (req, res) => {

@@ -64,17 +64,18 @@ export default function BeView({ state, user, reload }) {
     }
   }
 
-  async function publishParametric3D({ filename, base64, notes }) {
-    if (!selectedPiece) return;
+  async function publishParametric3D(pieceId, filename, base64, notes) {
+    const targetId = pieceId || selectedPiece?.id;
+    if (!targetId) return;
     try {
-      const res = await api(`/api/pieces/${selectedPiece.id}/be-files`, 'POST', {
+      const res = await api(`/api/pieces/${targetId}/be-files`, 'POST', {
         categorie: '3d',
         filename,
         base64,
         notes
       });
-      notify(`3D ${res.revision} publié sur ${selectedPiece.id} (${res.filename}).`);
-      setViewerFile({ url: res.url, name: `${selectedPiece.id} · ${res.filename} (${res.revision})` });
+      notify(`3D ${res.revision} publié sur ${targetId} (${res.filename}).`);
+      setViewerFile({ url: res.url, name: `${targetId} · ${res.filename} (${res.revision})` });
       reload();
     } catch (e) {
       notify(e.message, 'err');
@@ -271,6 +272,20 @@ export default function BeView({ state, user, reload }) {
                   <span className="text-slate-400 text-xs font-normal ml-2">({p.client})</span>
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedPieceId(p.id);
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className={`px-2 py-1 rounded text-[11px] flex items-center gap-1 cursor-pointer border ${
+                      selectedPiece?.id === p.id
+                        ? 'bg-[#22D3EE]/20 border-[#22D3EE] text-[#22D3EE] font-semibold'
+                        : 'bg-[#111821] border-[#1E2A38] text-slate-300 hover:border-[#22D3EE]'
+                    }`}
+                  >
+                    <Box className="w-3 h-3" /> {selectedPiece?.id === p.id ? 'Actif en 3D' : 'Ouvrir en 3D'}
+                  </button>
                   <button
                     type="button"
                     onClick={() => setTimelinePiece(p)}

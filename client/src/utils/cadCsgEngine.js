@@ -31,8 +31,10 @@ export function buildCsgSolidFromSpec(cadSpec) {
   const features = Array.isArray(cadSpec?.features) ? cadSpec.features : [];
   let current = null;
   const applied = [];
+  const threadOverlays = [];
 
   for (const f of features) {
+    if (!f || f.hidden) continue;
     try {
       const axis = f.axis || 'x';
       const x = Number(f.x) || 0;
@@ -40,31 +42,31 @@ export function buildCsgSolidFromSpec(cadSpec) {
       const z = Number(f.z) || 0;
 
       if (f.op === 'add_cylinder') {
-        const d = Math.max(2, Number(f.diameter) || 40);
-        const l = Math.max(2, Number(f.length) || 80);
-        const geo = orientCylinder(new THREE.CylinderGeometry(d / 2, d / 2, l, 48), axis);
+        const d = Math.max(0.5, Number(f.diameter) || 40);
+        const l = Math.max(0.5, Number(f.length) || 80);
+        const geo = orientCylinder(new THREE.CylinderGeometry(d / 2, d / 2, l, 56), axis);
         const b = makeBrush(geo, [x, y, z]);
         current = current ? evaluator.evaluate(current, b, ADDITION) : b;
         applied.push(f.id);
       } else if (f.op === 'add_box') {
-        const lx = Math.max(2, Number(f.lx) || 80);
-        const ly = Math.max(2, Number(f.ly) || 60);
-        const lz = Math.max(2, Number(f.lz) || 20);
+        const lx = Math.max(0.5, Number(f.lx) || 80);
+        const ly = Math.max(0.5, Number(f.ly) || 60);
+        const lz = Math.max(0.5, Number(f.lz) || 20);
         const b = makeBrush(new THREE.BoxGeometry(lx, ly, lz), [x, y, z]);
         current = current ? evaluator.evaluate(current, b, ADDITION) : b;
         applied.push(f.id);
       } else if (!current) {
         continue;
       } else if (f.op === 'cut_bore') {
-        const d = Math.max(1, Number(f.diameter) || 20);
-        const l = Math.max(4, Number(f.length) || 250);
+        const d = Math.max(0.2, Number(f.diameter) || 20);
+        const l = Math.max(0.5, Number(f.length) || 250);
         const geo = orientCylinder(new THREE.CylinderGeometry(d / 2, d / 2, l, 48), axis);
         const b = makeBrush(geo, [x, y, z]);
         current = evaluator.evaluate(current, b, SUBTRACTION);
         applied.push(f.id);
       } else if (f.op === 'cut_flat') {
-        const dist = Math.max(2, Number(f.distanceFromCenter) || 50);
-        const span = Math.max(20, Number(f.span) || 300);
+        const dist = Math.max(0.5, Number(f.distanceFromCenter) || 50);
+        const span = Math.max(10, Number(f.span) || 300);
         const cutThick = 200;
         const side = f.side || '+y';
         let pos = [0, 0, 0];
@@ -79,17 +81,17 @@ export function buildCsgSolidFromSpec(cadSpec) {
         current = evaluator.evaluate(current, b, SUBTRACTION);
         applied.push(f.id);
       } else if (f.op === 'cut_slot') {
-        const lx = Math.max(1, Number(f.lx) || 20);
-        const ly = Math.max(1, Number(f.ly) || 20);
-        const lz = Math.max(1, Number(f.lz) || 10);
+        const lx = Math.max(0.2, Number(f.lx) || 20);
+        const ly = Math.max(0.2, Number(f.ly) || 20);
+        const lz = Math.max(0.2, Number(f.lz) || 10);
         const b = makeBrush(new THREE.BoxGeometry(lx, ly, lz), [x, y, z]);
         current = evaluator.evaluate(current, b, SUBTRACTION);
         applied.push(f.id);
       } else if (f.op === 'cut_hole_pattern') {
-        const count = Math.max(1, Math.min(24, parseInt(f.count, 10) || 4));
-        const hd = Math.max(1, Number(f.holeDiameter) || 8);
-        const pcd = Math.max(4, Number(f.pcd) || 60);
-        const depth = Math.max(4, Number(f.depth) || 120);
+        const count = Math.max(1, Math.min(36, parseInt(f.count, 10) || 4));
+        const hd = Math.max(0.2, Number(f.holeDiameter) || 8);
+        const pcd = Math.max(1, Number(f.pcd) || 60);
+        const depth = Math.max(0.5, Number(f.depth) || 120);
         const startRad = ((Number(f.startAngleDeg) || 0) * Math.PI) / 180;
         const r = pcd / 2;
 
@@ -112,10 +114,10 @@ export function buildCsgSolidFromSpec(cadSpec) {
         }
         applied.push(f.id);
       } else if (f.op === 'cut_groove') {
-        const count = Math.max(1, Math.min(16, parseInt(f.count, 10) || 4));
-        const od = Math.max(4, Number(f.outerDiameter) || 65);
-        const w = Math.max(1, Number(f.width) || 4);
-        const pitch = Math.max(w + 0.5, Number(f.pitch) || 8);
+        const count = Math.max(1, Math.min(20, parseInt(f.count, 10) || 4));
+        const od = Math.max(1, Number(f.outerDiameter) || 65);
+        const w = Math.max(0.2, Number(f.width) || 4);
+        const pitch = Math.max(w + 0.2, Number(f.pitch) || 8);
         const startOffset = -((count - 1) * pitch) / 2;
 
         for (let i = 0; i < count; i++) {
@@ -126,6 +128,79 @@ export function buildCsgSolidFromSpec(cadSpec) {
           current = evaluator.evaluate(current, b, SUBTRACTION);
         }
         applied.push(f.id);
+      } else if (f.op === 'cut_thread') {
+        // Real internal/external thread or tapped hole pattern on PCD:
+        // Cuts core hole (if internal) + visible thread relief rings + cosmetic ISO amber overlay
+        const nomD = Math.max(1, Number(f.nominalDiameter) || 10);
+        const pitch = Math.max(0.25, Number(f.pitch) || 1.5);
+        const len = Math.max(1, Number(f.length) || 30);
+        const internal = f.internal !== false;
+        const minorD = Math.max(0.5, nomD - 1.0825 * pitch);
+        const pcd = Number(f.pcd) || 0;
+        const count = pcd > 0 ? Math.max(1, Math.min(24, parseInt(f.count, 10) || 1)) : 1;
+        const startRad = ((Number(f.startAngleDeg) || 0) * Math.PI) / 180;
+
+        const positions = [];
+        if (pcd > 0 && count > 1) {
+          const r = pcd / 2;
+          for (let i = 0; i < count; i++) {
+            const ang = startRad + (i / count) * Math.PI * 2;
+            if (axis === 'x') positions.push([x, y + Math.cos(ang) * r, z + Math.sin(ang) * r]);
+            else if (axis === 'y') positions.push([x + Math.cos(ang) * r, y, z + Math.sin(ang) * r]);
+            else positions.push([x + Math.cos(ang) * r, y + Math.sin(ang) * r, z]);
+          }
+        } else {
+          positions.push([x, y, z]);
+        }
+
+        // Visual thread rings count (capped for snappy browser CSG performance)
+        const rings = Math.max(3, Math.min(18, Math.floor(len / Math.max(pitch, len / 18))));
+        const ringStep = len / rings;
+
+        for (const [tx, ty, tz] of positions) {
+          if (internal) {
+            // Ensure pilot bore exists
+            const pilotGeo = orientCylinder(new THREE.CylinderGeometry(minorD / 2, minorD / 2, len, 32), axis);
+            current = evaluator.evaluate(current, makeBrush(pilotGeo, [tx, ty, tz]), SUBTRACTION);
+            // Cut crisp internal thread grooves (up to 10 grooves on main bore to keep FPS smooth)
+            const csgRings = positions.length === 1 ? Math.min(12, rings) : Math.min(4, rings);
+            const csgStep = len / csgRings;
+            for (let rIdx = 0; rIdx < csgRings; rIdx++) {
+              const off = -len / 2 + csgStep * (rIdx + 0.5);
+              const gp = axis === 'x' ? [tx + off, ty, tz] : axis === 'y' ? [tx, ty + off, tz] : [tx, ty, tz + off];
+              const gGeo = orientCylinder(new THREE.CylinderGeometry(nomD / 2, nomD / 2, Math.min(csgStep * 0.48, pitch * 0.5), 28), axis);
+              current = evaluator.evaluate(current, makeBrush(gGeo, gp), SUBTRACTION);
+            }
+          } else {
+            // External thread grooves
+            const csgRings = Math.min(12, rings);
+            const csgStep = len / csgRings;
+            for (let rIdx = 0; rIdx < csgRings; rIdx++) {
+              const off = -len / 2 + csgStep * (rIdx + 0.5);
+              const gp = axis === 'x' ? [tx + off, ty, tz] : axis === 'y' ? [tx, ty + off, tz] : [tx, ty, tz + off];
+              // Annular ring cut: outer oversized minus minorD
+              const outerR = nomD / 2 + 2;
+              const ringShape = new THREE.Shape();
+              ringShape.absarc(0, 0, outerR, 0, Math.PI * 2, false);
+              const holePath = new THREE.Path();
+              holePath.absarc(0, 0, minorD / 2, 0, Math.PI * 2, true);
+              ringShape.holes.push(holePath);
+              const extGeo = new THREE.ExtrudeGeometry(ringShape, { depth: Math.min(csgStep * 0.45, pitch * 0.5), bevelEnabled: false, curveSegments: 24 });
+              extGeo.center();
+              if (axis === 'x') extGeo.rotateY(Math.PI / 2);
+              else if (axis === 'y') extGeo.rotateX(Math.PI / 2);
+              current = evaluator.evaluate(current, makeBrush(extGeo, gp), SUBTRACTION);
+            }
+          }
+
+          // Cosmetic ISO thread callout cylinder (amber wireframe sleeve so tapped holes & threads stand out clearly!)
+          const sleeveGeo = orientCylinder(new THREE.CylinderGeometry(nomD / 2 + 0.08, nomD / 2 + 0.08, len, 24, rings, true), axis);
+          const sleeveMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b, wireframe: true, transparent: true, opacity: 0.55 });
+          const sleeve = new THREE.Mesh(sleeveGeo, sleeveMat);
+          sleeve.position.set(tx, ty, tz);
+          threadOverlays.push(sleeve);
+        }
+        applied.push(f.id);
       }
     } catch (err) {
       console.warn('CSG feature skipped:', f.id, err.message);
@@ -133,13 +208,19 @@ export function buildCsgSolidFromSpec(cadSpec) {
   }
 
   if (!current) {
-    current = makeBrush(new THREE.CylinderGeometry(25, 25, 80, 48), [0, 0, 0]);
+    return {
+      mesh: null,
+      threadOverlays: [],
+      appliedCount: 0,
+      dimensions: { x: 0, y: 0, z: 0 }
+    };
   }
 
   const material = new THREE.MeshStandardMaterial({
     color: 0x38bdf8,
-    metalness: 0.55,
-    roughness: 0.3
+    metalness: 0.48,
+    roughness: 0.32,
+    side: THREE.DoubleSide
   });
   const mesh = new THREE.Mesh(current.geometry, material);
   mesh.name = cadSpec?.name || 'Piece_CSG';
@@ -150,11 +231,12 @@ export function buildCsgSolidFromSpec(cadSpec) {
   mesh.geometry.boundingBox.getSize(size);
   return {
     mesh,
+    threadOverlays,
     appliedCount: applied.length,
     dimensions: {
-      x: Number(size.x.toFixed(1)),
-      y: Number(size.y.toFixed(1)),
-      z: Number(size.z.toFixed(1))
+      x: Number(size.x.toFixed(3)),
+      y: Number(size.y.toFixed(3)),
+      z: Number(size.z.toFixed(3))
     }
   };
 }
@@ -234,7 +316,8 @@ export function exportSpecToCadQueryPython(cadSpec) {
   const planeForAxis = ax => (ax === 'x' ? 'YZ' : ax === 'y' ? 'XZ' : 'XY');
 
   (cadSpec?.features || []).forEach((f, idx) => {
-    lines.push(`# ${idx + 1}. ${f.label || f.op}`);
+    if (f.hidden) return;
+    lines.push(`# ${idx + 1}. ${f.label || f.op}${f.tolerance ? ` [Tolérance: ${f.tolerance}]` : ''}`);
     const ax = f.axis || 'x';
     const pl = planeForAxis(ax);
     const x = Number(f.x) || 0, y = Number(f.y) || 0, z = Number(f.z) || 0;
@@ -272,6 +355,27 @@ export function exportSpecToCadQueryPython(cadSpec) {
         lines.push(`    h = cq.Workplane("XY").circle(${hd / 2}).extrude(${dep}, both=True).translate((${x} + r * math.cos(ang), ${y} + r * math.sin(ang), ${z}))`);
       }
       lines.push(`    result = result.cut(h)`);
+    } else if (f.op === 'cut_thread') {
+      const tt = f.threadType || 'M';
+      const nomD = Number(f.nominalDiameter) || 10;
+      const pitch = Number(f.pitch) || 1.5;
+      const starts = Number(f.starts) || 1;
+      const len = Number(f.length) || 30;
+      const minorD = Math.max(0.5, Number((nomD - 1.0825 * pitch).toFixed(3)));
+      lines.push(`# Spécification ISO filetage/taraudage : ${tt}${nomD}x${pitch}${starts > 1 ? ` (${starts} filets)` : ''} · ${f.internal !== false ? 'Intérieur' : 'Extérieur'} · L=${len} mm · Ø noyau=${minorD} mm`);
+      if (f.internal !== false) {
+        if (Number(f.pcd) > 0 && parseInt(f.count, 10) > 1) {
+          const n = parseInt(f.count, 10);
+          lines.push(`for i in range(${n}):`);
+          lines.push(`    ang = math.radians(${Number(f.startAngleDeg) || 0} + i * (360.0 / ${n}))`);
+          lines.push(`    r = ${Number(f.pcd) / 2}`);
+          lines.push(`    th = cq.Workplane("${pl}").circle(${minorD / 2}).extrude(${len}, both=True).translate((${x}, ${y} + r * math.cos(ang), ${z} + r * math.sin(ang)))`);
+          lines.push(`    result = result.cut(th)`);
+        } else {
+          lines.push(`th${idx} = cq.Workplane("${pl}").circle(${minorD / 2}).extrude(${len}, both=True).translate((${x}, ${y}, ${z}))`);
+          lines.push(`result = result.cut(th${idx})`);
+        }
+      }
     }
     lines.push('');
   });
