@@ -360,7 +360,7 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
     model,
     messages: [{ role: 'user', content: contentParts }]
   };
-  if (expectJson && (provider === 'openai' || provider === 'openrouter')) {
+  if (expectJson && provider === 'openai') {
     payload.response_format = { type: 'json_object' };
   }
 
