@@ -288,7 +288,28 @@ async function run() {
     const dbBuf = Buffer.from(await dbDl.arrayBuffer());
     assert.ok(dbBuf.subarray(0, 15).toString('utf8').startsWith('SQLite format 3'));
 
-    console.log('✅ TOUS LES TESTS DE SMOKE ONT RÉUSSI (16/16) !');
+    // 17. Directeur-only AI Provider Configuration (save, mask, RBAC, clear)
+    const aiBeDenied = await req('/api/admin/ai-settings', 'GET', null, beToken);
+    assert.strictEqual(aiBeDenied.status, 403);
+    const aiGet1 = await req('/api/admin/ai-settings', 'GET', null, dirToken);
+    assert.strictEqual(aiGet1.status, 200);
+    assert.ok(Array.isArray(aiGet1.data.availableProviders));
+
+    const aiPut = await req('/api/admin/ai-settings', 'PUT', {
+      provider: 'gemini',
+      apiKey: 'AIzaSyTestSecretKey1234567890',
+      model: 'gemini-2.5-flash'
+    }, dirToken);
+    assert.strictEqual(aiPut.status, 200);
+    assert.strictEqual(aiPut.data.aiSettings.hasApiKey, true);
+    assert.strictEqual(aiPut.data.aiSettings.resolvedProvider, 'gemini');
+    assert.ok(!JSON.stringify(aiPut.data).includes('AIzaSyTestSecretKey1234567890'), 'Raw API key must never be returned');
+
+    const aiClear = await req('/api/admin/ai-settings', 'PUT', { clearKey: true }, dirToken);
+    assert.strictEqual(aiClear.status, 200);
+    assert.strictEqual(aiClear.data.aiSettings.hasApiKey, false);
+
+    console.log('✅ TOUS LES TESTS DE SMOKE ONT RÉUSSI (17/17) !');
   } finally {
     proc.kill('SIGTERM');
     for (const f of [tmpDb, `${tmpDb}-wal`, `${tmpDb}-shm`]) {

@@ -3,13 +3,41 @@ import {
   LogOut, Cpu, BarChart3, Calendar, Sliders, FolderOpen,
   Wrench, Box, Tv, Shield, Search, ChevronLeft, ChevronRight, Smartphone, AlertTriangle, Activity
 } from 'lucide-react';
-import { api } from './api';
+import { api, getAuthToken, clearAuthToken } from './api';
 import Login from './components/Login';
 import DirectionView from './components/DirectionView';
 import ChefView from './components/ChefView';
 import BeView from './components/BeView';
 import OperateurView from './components/OperateurView';
 import TvView from './components/TvView';
+
+class ViewErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, message: '' };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, message: error?.message || 'Erreur d\'affichage' };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="p-6 rounded-lg bg-red-950/40 border border-red-500/40 text-red-200 text-xs space-y-2">
+          <div className="font-semibold">Une erreur d'affichage est survenue :</div>
+          <div className="font-mono-num text-red-300">{this.state.message}</div>
+          <button
+            type="button"
+            onClick={() => this.setState({ hasError: false, message: '' })}
+            className="px-3 py-1.5 rounded bg-red-600 text-white font-semibold cursor-pointer"
+          >
+            Recharger la vue
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function defaultTabForRole(role) {
   if (role === 'directeur') return 'overview';
@@ -22,6 +50,7 @@ function defaultTabForRole(role) {
 export default function App() {
   const [user, setUser] = useState(null);
   const [authChecking, setAuthChecking] = useState(true);
+  const [syncError, setSyncError] = useState('');
   const [state, setState] = useState({ users: [], machines: [], pieces: [], pannes: [], auditLogs: [] });
   const [tab, setTab] = useState('overview');
   const [collapsed, setCollapsed] = useState(false);
@@ -32,6 +61,7 @@ export default function App() {
   async function reload() {
     try {
       const data = await api('/api/state');
+      setSyncError('');
       setState(data);
       // Sync live user info (so renames or role updates reflect immediately)
       if (data.currentUser) {
@@ -47,15 +77,19 @@ export default function App() {
           return prev;
         });
       }
-    } catch {
-      localStorage.removeItem('atelier_token');
-      setUser(null);
+    } catch (err) {
+      if (err?.status === 401) {
+        clearAuthToken();
+        setUser(null);
+      } else {
+        setSyncError(err?.message || 'Connexion serveur temporairement interrompue...');
+      }
     }
   }
 
   // Restore session on page refresh (F5)
   useEffect(() => {
-    const token = localStorage.getItem('atelier_token');
+    const token = getAuthToken();
     if (!token) {
       setAuthChecking(false);
       return;
@@ -67,8 +101,8 @@ export default function App() {
           setTab(defaultTabForRole(res.user.role));
         }
       })
-      .catch(() => {
-        localStorage.removeItem('atelier_token');
+      .catch(err => {
+        if (err?.status === 401) clearAuthToken();
       })
       .finally(() => setAuthChecking(false));
   }, []);
@@ -202,7 +236,7 @@ export default function App() {
 
         <div className="p-2.5 border-t border-[#1E2A38]">
           <button
-            onClick={() => { localStorage.removeItem('atelier_token'); setUser(null); }}
+            onClick={() => { clearAuthToken(); setUser(null); }}
             className="w-full px-2.5 py-2 rounded-[6px] text-xs text-slate-400 hover:text-white hover:bg-[#111821] flex items-center gap-2.5 cursor-pointer"
           >
             <LogOut className="w-4 h-4 shrink-0" />
@@ -242,7 +276,7 @@ export default function App() {
               {user.nom}
             </span>
             <button
-              onClick={() => { localStorage.removeItem('atelier_token'); setUser(null); }}
+              onClick={() => { clearAuthToken(); setUser(null); }}
               className="md:hidden p-1.5 rounded-[6px] border border-[#1E2A38] text-slate-400 hover:text-white"
               title="Déconnexion"
             >
@@ -254,13 +288,23 @@ export default function App() {
 
         {/* CONTENT */}
         <main className="flex-1 p-4 md:p-6 max-w-[1440px] w-full mx-auto">
-          {['overview', 'pilotage', 'planning', 'simulator', 'dossiers', 'admin'].includes(tab) && (
-            <DirectionView state={state} user={user} reload={reload} activePanel={tab} search={search} />
+          {syncError && (
+            <div className="mb-3 px-3 py-2 rounded-[6px] bg-amber-500/10 border border-amber-500/40 text-amber-300 text-xs flex items-center justify-between gap-2">
+              <span>{syncError}</span>
+              <button type="button" onClick={reload} className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 font-semibold cursor-pointer">
+                Réessayer
+              </button>
+            </div>
           )}
-          {tab === 'chef' && <ChefView state={state} user={user} reload={reload} search={search} />}
-          {tab === 'be' && <BeView state={state} user={user} reload={reload} />}
-          {tab === 'operateur' && <OperateurView state={state} user={user} reload={reload} />}
-          {tab === 'tv' && <TvView state={state} />}
+          <ViewErrorBoundary key={tab}>
+            {['overview', 'pilotage', 'planning', 'simulator', 'dossiers', 'admin'].includes(tab) && (
+              <DirectionView state={state} user={user} reload={reload} activePanel={tab} search={search} />
+            )}
+            {tab === 'chef' && <ChefView state={state} user={user} reload={reload} search={search} />}
+            {tab === 'be' && <BeView state={state} user={user} reload={reload} />}
+            {tab === 'operateur' && <OperateurView state={state} user={user} reload={reload} />}
+            {tab === 'tv' && <TvView state={state} />}
+          </ViewErrorBoundary>
         </main>
       </div>
 

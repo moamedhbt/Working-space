@@ -1,4 +1,5 @@
 const path = require('path');
+const { getAiSettings } = require('../db/database');
 
 const MATERIALS_REGEX = [
   /CuZn\d+[A-Za-z0-9]*/i,
@@ -201,39 +202,162 @@ Retourne STRICTEMENT un JSON valide (aucun texte autour) respectant exactement c
 }
 Assure-toi que toutes les dimensions sont en mm, centrées autour de (0,0,0), fidèles au plan 2D.`;
 
-async function callGeminiJSON(parts) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts }] })
-  });
-  if (!res.ok) return null;
-  const json = await res.json();
-  const txt = json?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  const m = txt.match(/\{[\s\S]*\}/);
+function extractJsonFromText(txt) {
+  if (!txt) return null;
+  const trimmed = String(txt).trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {}
+  const m = trimmed.match(/\{[\s\S]*\}/);
   if (!m) return null;
   return JSON.parse(m[0]);
 }
 
-async function callOpenAIJSON(contentParts) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+function defaultModelForProvider(provider) {
+  if (provider === 'gemini') return 'gemini-2.5-flash';
+  if (provider === 'openai') return 'gpt-4o-mini';
+  if (provider === 'anthropic') return 'claude-sonnet-4-20250514';
+  if (provider === 'openrouter') return 'google/gemini-2.5-flash';
+  if (provider === 'groq') return 'meta-llama/llama-4-scout-17b-16e-instruct';
+  return 'gpt-4o-mini';
+}
+
+function resolveRuntimeAiConfig(override = null) {
+  const saved = getAiSettings();
+  if (!override) return saved;
+  const provider = override.provider !== undefined ? String(override.provider).trim() : saved.provider;
+  const apiKey = override.apiKey !== undefined && String(override.apiKey).trim() !== ''
+    ? String(override.apiKey).trim()
+    : saved.apiKey;
+  const model = override.model !== undefined ? String(override.model).trim() : saved.model;
+  const baseUrl = override.baseUrl !== undefined ? String(override.baseUrl).trim() : saved.baseUrl;
+
+  let resolvedProvider = provider || 'auto';
+  if (resolvedProvider === 'auto') {
+    if (!apiKey) resolvedProvider = 'offline';
+    else if (apiKey.startsWith('AIza')) resolvedProvider = 'gemini';
+    else if (apiKey.startsWith('sk-ant-')) resolvedProvider = 'anthropic';
+    else if (apiKey.startsWith('sk-or-')) resolvedProvider = 'openrouter';
+    else if (apiKey.startsWith('gsk_')) resolvedProvider = 'groq';
+    else resolvedProvider = 'openai';
+  }
+  return { provider, resolvedProvider, apiKey, model, baseUrl, source: 'override' };
+}
+
+async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'image/jpeg', overrideConfig = null, expectJson = true }) {
+  const cfg = resolveRuntimeAiConfig(overrideConfig);
+  const provider = cfg.resolvedProvider;
+  if (!provider || provider === 'offline') return null;
+  if (!cfg.apiKey && provider !== 'custom') return null;
+
+  const model = cfg.model || defaultModelForProvider(provider);
+  const b64 = buffer && Buffer.isBuffer(buffer) && buffer.length > 0 ? buffer.toString('base64') : null;
+
+  if (provider === 'gemini') {
+    const parts = [{ text: promptText }];
+    if (b64) parts.push({ inline_data: { mime_type: mimeType, data: b64 } });
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts }] })
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.error?.message || `Gemini HTTP ${res.status}`);
+    const txt = json?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    return { provider, model, text: txt, data: expectJson ? extractJsonFromText(txt) : null };
+  }
+
+  if (provider === 'anthropic') {
+    const content = [];
+    if (b64 && mimeType !== 'application/pdf') {
+      content.push({
+        type: 'image',
+        source: { type: 'base64', media_type: mimeType, data: b64 }
+      });
+    } else if (b64 && mimeType === 'application/pdf') {
+      content.push({
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: b64 }
+      });
+    }
+    content.push({ type: 'text', text: promptText });
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': cfg.apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 4096,
+        messages: [{ role: 'user', content }]
+      })
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.error?.message || `Anthropic HTTP ${res.status}`);
+    const txt = (json?.content || []).map(c => c.text || '').join('\n');
+    return { provider, model, text: txt, data: expectJson ? extractJsonFromText(txt) : null };
+  }
+
+  // OpenAI / OpenRouter / Groq / Custom OpenAI-compatible
+  let endpoint = 'https://api.openai.com/v1/chat/completions';
+  const headers = { 'Content-Type': 'application/json' };
+  if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
+  if (provider === 'openrouter') {
+    endpoint = 'https://openrouter.ai/api/v1/chat/completions';
+    headers['HTTP-Referer'] = 'https://atelier-manager.local';
+    headers['X-Title'] = 'Atelier Manager Pro';
+  } else if (provider === 'groq') {
+    endpoint = 'https://api.groq.com/openai/v1/chat/completions';
+  } else if (provider === 'custom') {
+    if (!cfg.baseUrl) throw new Error('URL de base requise pour un endpoint personnalisé');
+    const clean = cfg.baseUrl.replace(/\/+$/, '');
+    endpoint = clean.endsWith('/chat/completions') ? clean : `${clean}/chat/completions`;
+  }
+
+  const contentParts = [{ type: 'text', text: promptText }];
+  if (b64 && mimeType !== 'application/pdf') {
+    contentParts.push({ type: 'image_url', image_url: { url: `data:${mimeType};base64,${b64}` } });
+  }
+  const payload = {
+    model,
+    messages: [{ role: 'user', content: contentParts }]
+  };
+  if (expectJson && (provider === 'openai' || provider === 'openrouter')) {
+    payload.response_format = { type: 'json_object' };
+  }
+
+  const res = await fetch(endpoint, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      response_format: { type: 'json_object' },
-      messages: [{ role: 'user', content: contentParts }]
-    })
+    headers,
+    body: JSON.stringify(payload)
   });
-  if (!res.ok) return null;
-  const json = await res.json();
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json?.error?.message || `${provider} HTTP ${res.status}`);
   const txt = json?.choices?.[0]?.message?.content || '';
-  return txt ? JSON.parse(txt) : null;
+  return { provider, model, text: txt, data: expectJson ? extractJsonFromText(txt) : null };
+}
+
+async function testAiConnection(overrideConfig = null) {
+  const started = Date.now();
+  const cfg = resolveRuntimeAiConfig(overrideConfig);
+  if (!cfg.resolvedProvider || cfg.resolvedProvider === 'offline' || (!cfg.apiKey && cfg.resolvedProvider !== 'custom')) {
+    return { ok: false, error: 'Aucune clé API configurée (mode hors-ligne actif).' };
+  }
+  const resp = await callConfiguredAiRaw({
+    promptText: 'Réponds uniquement en JSON valide : {"status":"ok","message":"Connexion IA opérationnelle"}',
+    overrideConfig,
+    expectJson: false
+  });
+  return {
+    ok: true,
+    provider: resp.provider,
+    model: resp.model,
+    latencyMs: Date.now() - started,
+    reply: String(resp.text || '').slice(0, 140)
+  };
 }
 
 function sanitizeCadSpec(spec, fallbackName = 'Piece_CNC') {
@@ -262,28 +386,21 @@ async function analyzePlanDocument({ buffer, filename = 'plan', notes = '' }) {
     ext === '.webp' ? 'image/webp' :
     'image/jpeg';
 
+  const aiCfg = getAiSettings();
   let aiData = null;
   let mode = 'local_parser';
+  let aiWarning = '';
 
-  if (buffer && Buffer.isBuffer(buffer) && buffer.length > 0) {
-    const b64 = buffer.toString('base64');
+  if (buffer && Buffer.isBuffer(buffer) && buffer.length > 0 && aiCfg.resolvedProvider !== 'offline') {
     const promptText = VISION_PROMPT(filename, notes ? `Contexte OF : ${notes}` : '');
     try {
-      aiData = await callGeminiJSON([
-        { text: promptText },
-        { inline_data: { mime_type: mimeType, data: b64 } }
-      ]);
-      if (aiData) mode = 'gemini_vision_ai';
-    } catch {}
-
-    if (!aiData && mimeType !== 'application/pdf') {
-      try {
-        aiData = await callOpenAIJSON([
-          { type: 'text', text: promptText },
-          { type: 'image_url', image_url: { url: `data:${mimeType};base64,${b64}` } }
-        ]);
-        if (aiData) mode = 'openai_vision_ai';
-      } catch {}
+      const resp = await callConfiguredAiRaw({ promptText, buffer, mimeType, expectJson: true });
+      if (resp?.data) {
+        aiData = resp.data;
+        mode = `${resp.provider}_vision_ai`;
+      }
+    } catch (err) {
+      aiWarning = err.message;
     }
   }
 
@@ -314,9 +431,11 @@ async function analyzePlanDocument({ buffer, filename = 'plan', notes = '' }) {
     criticalTolerances: local.tolerances,
     specialNotes: local.specialNotes,
     suggestedOperations: local.suggestedOperations,
-    summary: local.detectedRaw.diameters.length > 0 || local.material
-      ? `Pré-analyse locale : ${local.detectedRaw.diameters.length} diamètre(s) détecté(s)${local.material ? `, matière ${local.material}` : ''}. Ajoutez GEMINI_API_KEY sur Render pour la lecture visuelle complète des photos 2D.`
-      : 'Modèle de départ généré localement. Ajoutez GEMINI_API_KEY sur Render pour la lecture visuelle IA des photos de plans 2D — ou affinez directement avec le prompt ingénieur ci-dessous.'
+    summary: aiWarning
+      ? `Repli local (erreur provider IA : ${aiWarning}). Vérifiez la configuration dans Administration → Configuration IA.`
+      : (local.detectedRaw.diameters.length > 0 || local.material
+        ? `Pré-analyse locale : ${local.detectedRaw.diameters.length} diamètre(s) détecté(s)${local.material ? `, matière ${local.material}` : ''}. Le Directeur peut activer un provider Vision IA dans Administration → Configuration IA.`
+        : 'Modèle de départ généré localement. Le Directeur peut activer un provider Vision IA dans Administration → Configuration IA, ou affinez directement via le prompt ingénieur.')
   };
 
   const cadSpec = aiData?.cadSpec && Array.isArray(aiData.cadSpec.features) && aiData.cadSpec.features.length > 0
@@ -325,7 +444,8 @@ async function analyzePlanDocument({ buffer, filename = 'plan', notes = '' }) {
 
   return {
     mode,
-    visionConfigured: Boolean(process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY),
+    visionConfigured: aiCfg.resolvedProvider !== 'offline',
+    aiProvider: aiCfg.resolvedProvider,
     ficheTechnique,
     cadSpec,
     extracted: local,
@@ -516,7 +636,7 @@ function applyLocalCadPrompt(cadSpec, prompt = '') {
     cadSpec: next,
     changesSummary: changes.length > 0
       ? changes.join(' · ')
-      : "Instruction enregistrée. Pour les modifications géométriques complexes en langage libre, configurez GEMINI_API_KEY sur Render — ou utilisez des cotes explicites (ex: 'Ajoute 6 trous Ø10 sur PCD 70', 'Ajoute méplat 114.5', 'Ajoute alésage Ø60', 'Ajoute rainure 25x12')."
+      : "Instruction enregistrée. Pour les modifications géométriques complexes en langage libre, le Directeur peut configurer une clé IA dans Administration → Configuration IA — ou utilisez des cotes explicites (ex: 'Ajoute 6 trous Ø10 sur PCD 70', 'Ajoute méplat 114.5', 'Ajoute alésage Ø60', 'Ajoute rainure 25x12')."
   };
 }
 
@@ -547,26 +667,20 @@ Opérations autorisées dans features : add_cylinder, add_box, cut_bore, cut_fla
 
   let aiResp = null;
   let mode = 'local_cad_parser';
+  const aiCfg = getAiSettings();
 
-  if (process.env.GEMINI_API_KEY) {
+  if (aiCfg.resolvedProvider !== 'offline') {
     try {
-      const parts = [{ text: refineInstruction }];
-      if (planBuffer && Buffer.isBuffer(planBuffer)) {
-        parts.push({ inline_data: { mime_type: mimeType, data: planBuffer.toString('base64') } });
+      const resp = await callConfiguredAiRaw({
+        promptText: refineInstruction,
+        buffer: planBuffer && Buffer.isBuffer(planBuffer) ? planBuffer : null,
+        mimeType,
+        expectJson: true
+      });
+      if (resp?.data?.cadSpec) {
+        aiResp = resp.data;
+        mode = `${resp.provider}_vision_ai`;
       }
-      aiResp = await callGeminiJSON(parts);
-      if (aiResp?.cadSpec) mode = 'gemini_vision_ai';
-    } catch {}
-  }
-
-  if (!aiResp && process.env.OPENAI_API_KEY) {
-    try {
-      const content = [{ type: 'text', text: refineInstruction }];
-      if (planBuffer && Buffer.isBuffer(planBuffer) && mimeType !== 'application/pdf') {
-        content.push({ type: 'image_url', image_url: { url: `data:${mimeType};base64,${planBuffer.toString('base64')}` } });
-      }
-      aiResp = await callOpenAIJSON(content);
-      if (aiResp?.cadSpec) mode = 'openai_vision_ai';
     } catch {}
   }
 
@@ -591,6 +705,7 @@ Opérations autorisées dans features : add_cylinder, add_box, cut_bore, cut_fla
 module.exports = {
   analyzePlanDocument,
   refineCadSpecWithAI,
+  testAiConnection,
   extractLocalDimensions,
   buildDefaultCadSpec
 };

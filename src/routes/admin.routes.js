@@ -14,12 +14,15 @@ const {
   restoreDBFromBuffer,
   getSettings,
   saveSettings,
+  getAiSettingsPublic,
+  saveAiSettings,
   syncPieceFromOperations,
   getEnrichedPieces,
   getEnrichedPannes,
   getEnrichedStops,
   getMaintenanceLogs
 } = require('../db/database');
+const { testAiConnection } = require('../services/planAnalyzer');
 const { auth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -37,6 +40,33 @@ router.put('/settings', auth, requireRole('directeur', 'chef'), (req, res) => {
   saveSettings({ workDays, shiftStart, shiftEnd });
   logAudit(req.user, 'CALENDRIER ATELIER MODIFIÉ', `${shiftStart || '08:00'}–${shiftEnd || '17:00'}`);
   res.json({ ok: true, settings: getSettings() });
+});
+
+router.get('/admin/ai-settings', auth, requireRole('directeur'), (req, res) => {
+  res.json(getAiSettingsPublic());
+});
+
+router.put('/admin/ai-settings', auth, requireRole('directeur'), (req, res) => {
+  const { provider, apiKey, model, baseUrl, clearKey } = req.body || {};
+  saveAiSettings({ provider, apiKey, model, baseUrl, clearKey: Boolean(clearKey) });
+  const pub = getAiSettingsPublic();
+  logAudit(
+    req.user,
+    'CONFIGURATION IA MODIFIÉE',
+    `Provider: ${pub.provider} (${pub.resolvedProvider})${pub.model ? ' · Modèle: ' + pub.model : ''}${clearKey ? ' · Clé supprimée' : ''}`
+  );
+  res.json({ ok: true, aiSettings: pub });
+});
+
+router.post('/admin/ai-settings/test', auth, requireRole('directeur'), async (req, res) => {
+  try {
+    const { provider, apiKey, model, baseUrl } = req.body || {};
+    const hasOverride = provider !== undefined || apiKey !== undefined || model !== undefined || baseUrl !== undefined;
+    const result = await testAiConnection(hasOverride ? { provider, apiKey, model, baseUrl } : null);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message || 'Échec du test IA' });
+  }
 });
 
 router.post('/users', auth, requireRole('directeur'), (req, res) => {

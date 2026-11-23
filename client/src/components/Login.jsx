@@ -1,20 +1,24 @@
 import React, { useState } from 'react';
 import { Lock, ShieldCheck } from 'lucide-react';
-import { api } from '../api';
+import { api, setAuthToken } from '../api';
 
 export default function Login({ onLogin }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
   async function submit(u = username, p = password) {
     try {
       setError('');
+      setLoading(true);
       const res = await api('/api/login', 'POST', { username: u, password: p });
-      localStorage.setItem('atelier_token', res.token);
+      setAuthToken(res.token);
       onLogin(res.user);
     } catch (e) {
       setError(e.message);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -29,7 +33,7 @@ export default function Login({ onLogin }) {
 
         {error && <div className="mb-4 p-2.5 rounded-lg bg-red-950/60 border border-red-800 text-red-300 text-xs">{error}</div>}
 
-        <div className="space-y-3">
+        <form onSubmit={e => { e.preventDefault(); submit(); }} className="space-y-3">
           <div>
             <label className="text-xs font-medium text-slate-400">Identifiant</label>
             <input
@@ -50,12 +54,13 @@ export default function Login({ onLogin }) {
             />
           </div>
           <button
-            onClick={() => submit()}
-            className="w-full py-2.5 rounded-lg bg-sky-600 hover:bg-sky-500 font-medium text-sm text-white flex items-center justify-center gap-2 transition cursor-pointer"
+            type="submit"
+            disabled={loading}
+            className="w-full py-2.5 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-60 font-medium text-sm text-white flex items-center justify-center gap-2 transition cursor-pointer"
           >
-            <Lock className="w-4 h-4" /> Se connecter
+            <Lock className="w-4 h-4" /> {loading ? 'Connexion...' : 'Se connecter'}
           </button>
-        </div>
+        </form>
 
         <div className="mt-5 pt-4 border-t border-slate-800">
           <p className="text-[11px] text-slate-500 mb-2">Connexion rapide (mot de passe : 1234)</p>

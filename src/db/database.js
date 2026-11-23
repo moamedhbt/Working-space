@@ -72,6 +72,114 @@ function saveSettings({ workDays, shiftStart, shiftEnd }) {
   });
 }
 
+const AI_PROVIDERS_META = [
+  { id: 'auto', label: 'Automatique (détection selon clé)', defaultModel: '', note: 'Choisit automatiquement le provider actif' },
+  { id: 'gemini', label: 'Google Gemini (Recommandé — Gratuit/Éco + PDF & photos 2D)', defaultModel: 'gemini-2.5-flash', note: 'Lit directement images JPG/PNG et PDF nativement' },
+  { id: 'openai', label: 'OpenAI (GPT-4o / GPT-4o-mini)', defaultModel: 'gpt-4o-mini', note: 'Très fiable sur plans mécaniques et JSON structuré' },
+  { id: 'anthropic', label: 'Anthropic Claude (Sonnet 4)', defaultModel: 'claude-sonnet-4-20250514', note: 'Excellente compréhension technique & CAO' },
+  { id: 'openrouter', label: 'OpenRouter (1 clé → tous les modèles)', defaultModel: 'google/gemini-2.5-flash', note: 'Permet de changer Gemini/Claude/GPT/Qwen sans changer de compte' },
+  { id: 'groq', label: 'Groq (Vision ultra-rapide)', defaultModel: 'meta-llama/llama-4-scout-17b-16e-instruct', note: 'Rapide, quota gratuit généreux' },
+  { id: 'custom', label: 'Endpoint personnalisé (Compatible OpenAI / Ollama)', defaultModel: 'llava', note: 'Serveur local Ollama, LM Studio, Mistral, DeepSeek, etc.' }
+];
+
+function maskSecretKey(k) {
+  const s = String(k || '').trim();
+  if (!s) return '';
+  if (s.length <= 8) return '••••••••';
+  return `${s.slice(0, 4)}••••${s.slice(-4)}`;
+}
+
+function getAiSettings() {
+  const rows = queryAll("SELECT key, value FROM atelier_settings WHERE key LIKE 'ai_%'");
+  const map = {};
+  for (const r of rows) map[r.key] = r.value;
+
+  const dbProvider = (map.ai_provider || 'auto').trim();
+  const dbApiKey = (map.ai_api_key || '').trim();
+  const dbModel = (map.ai_model || '').trim();
+  const dbBaseUrl = (map.ai_base_url || '').trim();
+
+  if (dbApiKey || (dbProvider === 'custom' && dbBaseUrl)) {
+    let resolvedProvider = dbProvider;
+    if (resolvedProvider === 'auto') {
+      if (dbApiKey.startsWith('AIza')) resolvedProvider = 'gemini';
+      else if (dbApiKey.startsWith('sk-ant-')) resolvedProvider = 'anthropic';
+      else if (dbApiKey.startsWith('sk-or-')) resolvedProvider = 'openrouter';
+      else if (dbApiKey.startsWith('gsk_')) resolvedProvider = 'groq';
+      else resolvedProvider = 'openai';
+    }
+    return {
+      provider: dbProvider,
+      resolvedProvider,
+      apiKey: dbApiKey,
+      model: dbModel,
+      baseUrl: dbBaseUrl,
+      source: 'database'
+    };
+  }
+
+  // Fallback to environment variables if no DB key configured
+  if (process.env.GEMINI_API_KEY) {
+    return { provider: 'gemini', resolvedProvider: 'gemini', apiKey: process.env.GEMINI_API_KEY, model: dbModel || 'gemini-2.5-flash', baseUrl: '', source: 'env' };
+  }
+  if (process.env.OPENAI_API_KEY) {
+    return { provider: 'openai', resolvedProvider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: dbModel || 'gpt-4o-mini', baseUrl: '', source: 'env' };
+  }
+  if (process.env.ANTHROPIC_API_KEY) {
+    return { provider: 'anthropic', resolvedProvider: 'anthropic', apiKey: process.env.ANTHROPIC_API_KEY, model: dbModel || 'claude-sonnet-4-20250514', baseUrl: '', source: 'env' };
+  }
+  if (process.env.OPENROUTER_API_KEY) {
+    return { provider: 'openrouter', resolvedProvider: 'openrouter', apiKey: process.env.OPENROUTER_API_KEY, model: dbModel || 'google/gemini-2.5-flash', baseUrl: '', source: 'env' };
+  }
+  if (process.env.GROQ_API_KEY) {
+    return { provider: 'groq', resolvedProvider: 'groq', apiKey: process.env.GROQ_API_KEY, model: dbModel || 'meta-llama/llama-4-scout-17b-16e-instruct', baseUrl: '', source: 'env' };
+  }
+
+  return {
+    provider: dbProvider || 'auto',
+    resolvedProvider: 'offline',
+    apiKey: '',
+    model: dbModel,
+    baseUrl: dbBaseUrl,
+    source: 'offline'
+  };
+}
+
+function getAiSettingsPublic() {
+  const cfg = getAiSettings();
+  return {
+    provider: cfg.provider,
+    resolvedProvider: cfg.resolvedProvider,
+    model: cfg.model,
+    baseUrl: cfg.baseUrl,
+    hasApiKey: !!cfg.apiKey,
+    maskedKey: maskSecretKey(cfg.apiKey),
+    source: cfg.source,
+    availableProviders: AI_PROVIDERS_META
+  };
+}
+
+function saveAiSettings({ provider, apiKey, model, baseUrl, clearKey }) {
+  const allowed = new Set(AI_PROVIDERS_META.map(p => p.id));
+  transaction(() => {
+    if (provider !== undefined) {
+      const clean = allowed.has(String(provider).trim()) ? String(provider).trim() : 'auto';
+      runSql('INSERT OR REPLACE INTO atelier_settings (key, value) VALUES (?, ?)', ['ai_provider', clean]);
+    }
+    if (clearKey) {
+      runSql("DELETE FROM atelier_settings WHERE key = 'ai_api_key'");
+    } else if (apiKey !== undefined && String(apiKey).trim() !== '') {
+      runSql('INSERT OR REPLACE INTO atelier_settings (key, value) VALUES (?, ?)', ['ai_api_key', String(apiKey).trim()]);
+    }
+    if (model !== undefined) {
+      runSql('INSERT OR REPLACE INTO atelier_settings (key, value) VALUES (?, ?)', ['ai_model', String(model).trim()]);
+    }
+    if (baseUrl !== undefined) {
+      runSql('INSERT OR REPLACE INTO atelier_settings (key, value) VALUES (?, ?)', ['ai_base_url', String(baseUrl).trim()]);
+    }
+  });
+}
+
 function getNextOfId() {
   const year = new Date().getFullYear();
   const key = `OF-${year}`;
@@ -947,6 +1055,9 @@ module.exports = {
   logPieceEvent,
   getSettings,
   saveSettings,
+  getAiSettings,
+  getAiSettingsPublic,
+  saveAiSettings,
   getNextOfId,
   nextRevisionLabel,
   computeOpPlannedMin,

@@ -3,12 +3,12 @@ import {
   Bot, CheckCircle, Plus, FolderCheck, UserPlus, ShoppingCart,
   FileText, FileSpreadsheet, Archive, Download, X, Database, Edit3, Check,
   AlertTriangle, Layers, Image, Activity, Wrench, Filter, ShieldAlert, ArchiveRestore,
-  Clock, Upload
+  Clock, Upload, Sparkles, Eye, EyeOff, KeyRound, Trash2, RefreshCw
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import JSZip from 'jszip';
-import { api } from '../api';
+import { api, getAuthToken } from '../api';
 import CreateOfModal from './CreateOfModal';
 import TimelineModal from './TimelineModal';
 
@@ -63,6 +63,77 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
   const [newUser, setNewUser] = useState({ nom: '', username: '', password: '', role: 'operateur' });
   const [editingUserId, setEditingUserId] = useState(null);
   const [editUserForm, setEditUserForm] = useState({ nom: '', role: 'operateur', password: '', actif: true });
+
+  // Directeur AI Provider Settings
+  const [aiMeta, setAiMeta] = useState(null);
+  const [aiForm, setAiForm] = useState({ provider: 'auto', apiKey: '', model: '', baseUrl: '' });
+  const [showAiKey, setShowAiKey] = useState(false);
+  const [savingAi, setSavingAi] = useState(false);
+  const [testingAi, setTestingAi] = useState(false);
+  const [aiTestResult, setAiTestResult] = useState(null);
+
+  async function loadAiSettings() {
+    try {
+      const data = await api('/api/admin/ai-settings');
+      setAiMeta(data);
+      setAiForm({
+        provider: data.provider || 'auto',
+        apiKey: '',
+        model: data.model || '',
+        baseUrl: data.baseUrl || ''
+      });
+    } catch {}
+  }
+
+  useEffect(() => {
+    if (activePanel === 'admin' && user?.role === 'directeur') {
+      loadAiSettings();
+    }
+  }, [activePanel, user?.role]);
+
+  async function saveAiConfig(clearKey = false) {
+    setSavingAi(true);
+    setAiTestResult(null);
+    try {
+      const payload = {
+        provider: aiForm.provider,
+        model: aiForm.model,
+        baseUrl: aiForm.baseUrl,
+        ...(clearKey ? { clearKey: true } : aiForm.apiKey.trim() ? { apiKey: aiForm.apiKey.trim() } : {})
+      };
+      const res = await api('/api/admin/ai-settings', 'PUT', payload);
+      setAiMeta(res.aiSettings);
+      setAiForm(f => ({ ...f, apiKey: '' }));
+      showToast(clearKey ? 'Clé IA supprimée (mode hors-ligne ou ENV).' : 'Configuration IA enregistrée et active immédiatement !');
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    } finally {
+      setSavingAi(false);
+    }
+  }
+
+  async function testAiConfig() {
+    setTestingAi(true);
+    setAiTestResult(null);
+    try {
+      const payload = {
+        provider: aiForm.provider,
+        model: aiForm.model,
+        baseUrl: aiForm.baseUrl,
+        ...(aiForm.apiKey.trim() ? { apiKey: aiForm.apiKey.trim() } : {})
+      };
+      const res = await api('/api/admin/ai-settings/test', 'POST', payload);
+      setAiTestResult(res);
+      if (res.ok) showToast(`Connexion IA réussie (${res.provider} / ${res.model} en ${res.latencyMs} ms)`);
+      else showToast(res.error || 'Test IA échoué', 'err');
+    } catch (e) {
+      setAiTestResult({ ok: false, error: e.message });
+      showToast(e.message, 'err');
+    } finally {
+      setTestingAi(false);
+    }
+  }
 
   const [sim, setSim] = useState({
     nom: '',
@@ -331,7 +402,7 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
 
   async function downloadRawDb() {
     try {
-      const token = localStorage.getItem('atelier_token') || '';
+      const token = getAuthToken();
       const resp = await fetch('/api/admin/download-db', {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -379,7 +450,7 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
 
       // Include hot SQLite DB snapshot too!
       try {
-        const token = localStorage.getItem('atelier_token') || '';
+        const token = getAuthToken();
         const dbResp = await fetch('/api/admin/download-db', { headers: { Authorization: `Bearer ${token}` } });
         if (dbResp.ok) {
           zip.file(`atelier_${stamp}.db`, await dbResp.blob());
@@ -1205,7 +1276,182 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
 
       {/* PANEL 6: ADMIN */}
       {activePanel === 'admin' && (
-        <div className="grid md:grid-cols-2 gap-4">
+        <div className="space-y-4">
+          {/* AI PROVIDER CONFIGURATION CARD (DIRECTEUR ONLY) */}
+          <div className="cyber-card p-4 border-purple-500/30 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-purple-400" />
+                <div>
+                  <h3 className="font-semibold text-sm text-white">Configuration IA — Lecture Plans 2D & Studio 3D BE</h3>
+                  <p className="text-[11px] text-slate-400">
+                    Choisissez votre fournisseur IA quand vous voulez (sans modifier Render). Utilisé automatiquement par le Bureau d'Études pour lire les photos/PDF 2D et affiner le 3D.
+                  </p>
+                </div>
+              </div>
+              <span className={`px-2.5 py-1 rounded text-[11px] font-semibold border ${
+                aiMeta?.source === 'database'
+                  ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                  : aiMeta?.source === 'env'
+                  ? 'bg-sky-500/15 border-sky-500/40 text-sky-300'
+                  : 'bg-slate-800 border-slate-700 text-slate-300'
+              }`}>
+                {aiMeta?.source === 'database'
+                  ? `Actif (${aiMeta.resolvedProvider} · Paramètres)`
+                  : aiMeta?.source === 'env'
+                  ? `Actif (${aiMeta.resolvedProvider} · Serveur ENV)`
+                  : 'Mode local hors-ligne'}
+              </span>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-3 text-xs">
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1">Fournisseur IA (Provider)</label>
+                <select
+                  value={aiForm.provider}
+                  onChange={e => {
+                    const nextProv = e.target.value;
+                    const meta = (aiMeta?.availableProviders || []).find(p => p.id === nextProv);
+                    setAiForm(f => ({
+                      ...f,
+                      provider: nextProv,
+                      model: meta?.defaultModel || ''
+                    }));
+                  }}
+                  className="w-full p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white"
+                >
+                  {(aiMeta?.availableProviders || [
+                    { id: 'auto', label: 'Automatique (détection selon clé)' },
+                    { id: 'gemini', label: 'Google Gemini (Recommandé — Gratuit/Éco)' },
+                    { id: 'openai', label: 'OpenAI (GPT-4o / GPT-4o-mini)' },
+                    { id: 'anthropic', label: 'Anthropic Claude (Sonnet 4)' },
+                    { id: 'openrouter', label: 'OpenRouter (1 clé → tous les modèles)' },
+                    { id: 'groq', label: 'Groq (Vision rapide)' },
+                    { id: 'custom', label: 'Endpoint personnalisé (Compatible OpenAI / Ollama)' }
+                  ]).map(p => (
+                    <option key={p.id} value={p.id}>{p.label}</option>
+                  ))}
+                </select>
+                {(() => {
+                  const sel = (aiMeta?.availableProviders || []).find(p => p.id === aiForm.provider);
+                  return sel?.note ? <div className="text-[10px] text-slate-400 mt-1">{sel.note}</div> : null;
+                })()}
+              </div>
+
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1">
+                  Modèle <span className="text-slate-500">(laisser vide = défaut recommandé)</span>
+                </label>
+                <input
+                  value={aiForm.model}
+                  onChange={e => setAiForm({ ...aiForm, model: e.target.value })}
+                  placeholder={
+                    aiForm.provider === 'gemini' ? 'gemini-2.5-flash' :
+                    aiForm.provider === 'openai' ? 'gpt-4o-mini' :
+                    aiForm.provider === 'anthropic' ? 'claude-sonnet-4-20250514' :
+                    aiForm.provider === 'openrouter' ? 'google/gemini-2.5-flash' :
+                    aiForm.provider === 'groq' ? 'meta-llama/llama-4-scout-17b-16e-instruct' :
+                    'Auto / modèle par défaut'
+                  }
+                  className="w-full p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white font-mono-num"
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1 flex items-center justify-between">
+                  <span className="flex items-center gap-1"><KeyRound className="w-3 h-3 text-purple-400" /> Clé API secrète</span>
+                  {aiMeta?.hasApiKey && (
+                    <span className="text-[10px] text-emerald-400 font-mono-num">Enregistrée : {aiMeta.maskedKey}</span>
+                  )}
+                </label>
+                <div className="flex gap-1.5">
+                  <input
+                    type={showAiKey ? 'text' : 'password'}
+                    value={aiForm.apiKey}
+                    onChange={e => setAiForm({ ...aiForm, apiKey: e.target.value })}
+                    placeholder={aiMeta?.hasApiKey ? 'Laisser vide pour garder la clé actuelle' : 'Collez votre clé API (AIza..., sk-..., etc.)'}
+                    className="flex-1 min-w-0 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white font-mono-num"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowAiKey(v => !v)}
+                    className="px-2.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-slate-400 hover:text-white cursor-pointer"
+                    title={showAiKey ? 'Masquer' : 'Afficher'}
+                  >
+                    {showAiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {aiForm.provider === 'custom' && (
+              <div className="text-xs">
+                <label className="text-[11px] text-slate-400 block mb-1">URL de base de l'API compatible OpenAI</label>
+                <input
+                  value={aiForm.baseUrl}
+                  onChange={e => setAiForm({ ...aiForm, baseUrl: e.target.value })}
+                  placeholder="Ex: http://localhost:11434/v1 ou https://api.mistral.ai/v1"
+                  className="w-full p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white font-mono-num"
+                />
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={savingAi}
+                  onClick={() => saveAiConfig(false)}
+                  className="px-3.5 py-2 rounded-[6px] bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Check className="w-3.5 h-3.5" /> {savingAi ? 'Enregistrement...' : 'Enregistrer la configuration IA'}
+                </button>
+                <button
+                  type="button"
+                  disabled={testingAi}
+                  onClick={testAiConfig}
+                  className="px-3 py-2 rounded-[6px] bg-[#0B0F14] border border-purple-500/40 hover:border-purple-400 text-purple-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${testingAi ? 'animate-spin' : ''}`} /> {testingAi ? 'Test en cours...' : 'Tester la connexion IA'}
+                </button>
+                {aiMeta?.hasApiKey && aiMeta?.source === 'database' && (
+                  <button
+                    type="button"
+                    disabled={savingAi}
+                    onClick={() => {
+                      if (window.confirm('Supprimer la clé API enregistrée ? Le système repassera en mode local hors-ligne.')) {
+                        saveAiConfig(true);
+                      }
+                    }}
+                    className="px-2.5 py-2 rounded-[6px] bg-red-500/10 border border-red-500/30 hover:border-red-400 text-red-300 text-xs flex items-center gap-1 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Effacer la clé
+                  </button>
+                )}
+              </div>
+              <div className="text-[10px] text-slate-500">
+                La clé est stockée uniquement côté serveur (SQLite) et jamais exposée aux autres rôles.
+              </div>
+            </div>
+
+            {aiTestResult && (
+              <div className={`p-2.5 rounded-[6px] text-xs border ${
+                aiTestResult.ok
+                  ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
+                  : 'bg-red-500/10 border-red-500/40 text-red-300'
+              }`}>
+                {aiTestResult.ok ? (
+                  <span>
+                    Connexion réussie : <strong>{aiTestResult.provider}</strong> ({aiTestResult.model}) — réponse reçue en <strong className="font-mono-num">{aiTestResult.latencyMs} ms</strong>.
+                  </span>
+                ) : (
+                  <span>Échec du test : {aiTestResult.error}</span>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-4">
           <div className="cyber-card p-4">
             <h3 className="font-semibold text-sm mb-3 flex items-center gap-2"><UserPlus className="w-4 h-4 text-[#22D3EE]" /> Comptes Utilisateurs</h3>
             <div className="grid grid-cols-2 gap-2 text-xs">
@@ -1313,6 +1559,7 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
                 </div>
               ))}
             </div>
+          </div>
           </div>
         </div>
       )}
