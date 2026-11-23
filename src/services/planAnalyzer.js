@@ -66,17 +66,20 @@ function buildDefaultCadSpec(extracted) {
 
 function extractLocalDimensions(text = '', filename = '') {
   const src = `${filename} ${text}`.replace(/\s+/g, ' ');
-  const diameters = [...src.matchAll(/(?:Ø|ø|diam(?:ètre|etre)?|D)\s*[:=]?\s*(\d+(?:[.,]\d+)?)/gi)]
+  const holesMatch = src.match(/(\d+)\s*[x×]\s*(?:Ø|ø|M)\s*(\d+(?:[.,]\d+)?)/i);
+  const srcWithoutHoles = holesMatch ? src.replace(holesMatch[0], ' ') : src;
+
+  const diameters = [...srcWithoutHoles.matchAll(/(?:Ø|ø|\bdiam(?:ètre|etre)?|\bD)\s*[:=]?\s*(\d+(?:[.,]\d+)?)/gi)]
     .map(m => parseFloat(m[1].replace(',', '.')))
     .filter(n => Number.isFinite(n) && n > 0 && n < 2000);
 
-  const lengthMatch = src.match(/(?:L|Long(?:ueur)?|H|Ht)\s*[:=]?\s*(\d+(?:[.,]\d+)?)/i);
-  const widthMatch = src.match(/(?:l|Larg(?:eur)?|W)\s*[:=]?\s*(\d+(?:[.,]\d+)?)/i);
-  const thickMatch = src.match(/(?:e|ep|ép(?:aisseur)?|thk)\s*[:=]?\s*(\d+(?:[.,]\d+)?)/i);
-  const holesMatch = src.match(/(\d+)\s*[x×]\s*(?:Ø|ø|M)\s*(\d+(?:[.,]\d+)?)/i);
-  const pcdMatch = src.match(/(?:PCD|entraxe|Ø\s*per[çc]age)\s*[:=]?\s*(\d+(?:[.,]\d+)?)/i);
-  const threadMatch = src.match(/(Tr\s*\d+\s*[x×]\s*\d+[^,;]*|M\d+\s*[x×]\s*\d+(?:[.,]\d+)?)/i);
-  const tolerances = [...src.matchAll(/(?:±\s*\d+(?:[.,]\d+)?|\+\d+[.,]\d+\/\d+|[A-Za-z]\d{1,2}\b|Ra\s*\d+(?:[.,]\d+)?)/g)]
+  const lengthMatch = src.match(/\b(?:L|Long(?:ueur)?|Ht)\s*[:=]?\s*(\d+(?:[.,]\d+)?)|\bH\s*[:=]\s*(\d+(?:[.,]\d+)?)/i);
+  const lengthRaw = lengthMatch ? (lengthMatch[1] || lengthMatch[2]) : null;
+  const widthMatch = src.match(/\b(?:Larg(?:eur)?|W)\s*[:=]?\s*(\d+(?:[.,]\d+)?)/i);
+  const thickMatch = src.match(/\b(?:ep|ép(?:aisseur)?|thk)\s*[:=]?\s*(\d+(?:[.,]\d+)?)/i);
+  const pcdMatch = src.match(/\b(?:PCD|entraxe|Ø\s*per[çc]age)\s*[:=]?\s*(\d+(?:[.,]\d+)?)/i);
+  const threadMatch = src.match(/\b(Tr\s*\d+\s*[x×]\s*\d+(?:\s*P\(\d+\))?(?:\s*\d+-START)?|M\d+(?:\s*[x×]\s*\d+(?:[.,]\d+)?)?)/i);
+  const tolerances = [...src.matchAll(/(?:±\s*\d+(?:[.,]\d+)?|\+\d+[.,]\d+\/\d+|\b(?:H|h|g|f|k|m|n|p|js|JS|G|F|K|N|P)\d{1,2}\b|Ra\s*\d+(?:[.,]\d+)?)/g)]
     .map(m => m[0])
     .slice(0, 8);
 
@@ -102,7 +105,7 @@ function extractLocalDimensions(text = '', filename = '') {
     ? uniqueDiams[1]
     : (partType === 'bague' || partType === 'ecrou_complexe' ? Math.round(outerDiameter * 0.5) : partType === 'bride' ? Math.round(outerDiameter * 0.35) : 0);
 
-  const length = lengthMatch ? parseFloat(lengthMatch[1].replace(',', '.')) : (partType === 'ecrou_complexe' ? 230 : partType === 'bride' ? 20 : partType === 'bague' ? 40 : 120);
+  const length = lengthRaw ? parseFloat(lengthRaw.replace(',', '.')) : (partType === 'ecrou_complexe' ? 230 : partType === 'bride' ? 20 : partType === 'bague' ? 40 : 120);
   const width = widthMatch ? parseFloat(widthMatch[1].replace(',', '.')) : 80;
   const thickness = thickMatch ? parseFloat(thickMatch[1].replace(',', '.')) : 20;
   const holeCount = holesMatch ? parseInt(holesMatch[1], 10) : (partType === 'bride' || partType === 'ecrou_complexe' ? 6 : partType === 'plaque' ? 4 : 0);
