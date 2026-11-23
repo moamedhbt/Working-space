@@ -328,7 +328,41 @@ async function run() {
     assert.strictEqual(savedOf.cadSpec.features[0].diameter, 120.003);
     assert.strictEqual(savedOf.beChat.length, 1);
 
-    console.log('✅ TOUS LES TESTS DE SMOKE ONT RÉUSSI (18/18) !');
+    // 19. Multi-Provider AI Vault (Qwen Officiel + OpenRouter: save 2, switch active, disable/enable, delete)
+    const p1 = await req('/api/admin/ai-profiles', 'POST', {
+      label: 'Qwen Officiel Pro',
+      provider: 'qwen',
+      model: 'qwen3.8-max',
+      apiKey: 'sk-qwen-secret-test-999999'
+    }, dirToken);
+    assert.strictEqual(p1.status, 200);
+    assert.strictEqual(p1.data.aiSettings.resolvedProvider, 'qwen');
+    assert.ok(!JSON.stringify(p1.data).includes('sk-qwen-secret-test-999999'));
+
+    const p2 = await req('/api/admin/ai-profiles', 'POST', {
+      label: 'OpenRouter Secours',
+      provider: 'openrouter',
+      model: 'qwen/qwen3.8-27b:free',
+      apiKey: 'sk-or-v1-secret-test-888888'
+    }, dirToken);
+    assert.strictEqual(p2.status, 200);
+    assert.strictEqual(p2.data.aiSettings.profiles.length, 2);
+    assert.strictEqual(p2.data.aiSettings.resolvedProvider, 'openrouter');
+
+    const sw1 = await req(`/api/admin/ai-profiles/${p1.data.profileId}/activate`, 'POST', {}, dirToken);
+    assert.strictEqual(sw1.status, 200);
+    assert.strictEqual(sw1.data.aiSettings.resolvedProvider, 'qwen');
+
+    const dis1 = await req(`/api/admin/ai-profiles/${p1.data.profileId}/toggle`, 'POST', { enabled: false }, dirToken);
+    assert.strictEqual(dis1.status, 200);
+    assert.strictEqual(dis1.data.aiSettings.resolvedProvider, 'openrouter');
+
+    await req(`/api/admin/ai-profiles/${p1.data.profileId}`, 'DELETE', null, dirToken);
+    const del2 = await req(`/api/admin/ai-profiles/${p2.data.profileId}`, 'DELETE', null, dirToken);
+    assert.strictEqual(del2.status, 200);
+    assert.strictEqual(del2.data.aiSettings.profiles.length, 0);
+
+    console.log('✅ TOUS LES TESTS DE SMOKE ONT RÉUSSI (19/19) !');
   } finally {
     proc.kill('SIGTERM');
     for (const f of [tmpDb, `${tmpDb}-wal`, `${tmpDb}-shm`]) {

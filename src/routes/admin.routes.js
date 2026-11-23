@@ -16,6 +16,10 @@ const {
   saveSettings,
   getAiSettingsPublic,
   saveAiSettings,
+  upsertAiProfile,
+  setActiveAiProfile,
+  toggleAiProfile,
+  deleteAiProfile,
   syncPieceFromOperations,
   getEnrichedPieces,
   getEnrichedPannes,
@@ -60,9 +64,9 @@ router.put('/admin/ai-settings', auth, requireRole('directeur'), (req, res) => {
 
 router.post('/admin/ai-settings/test', auth, requireRole('directeur'), async (req, res) => {
   try {
-    const { provider, apiKey, model, baseUrl } = req.body || {};
-    const hasOverride = provider !== undefined || apiKey !== undefined || model !== undefined || baseUrl !== undefined;
-    const result = await testAiConnection(hasOverride ? { provider, apiKey, model, baseUrl } : null);
+    const { profileId, provider, apiKey, model, baseUrl } = req.body || {};
+    const hasOverride = profileId || provider !== undefined || apiKey !== undefined || model !== undefined || baseUrl !== undefined;
+    const result = await testAiConnection(hasOverride ? { profileId, provider, apiKey, model, baseUrl } : null);
     res.json(result);
   } catch (err) {
     res.status(400).json({ ok: false, error: err.message || 'Échec du test IA' });
@@ -71,13 +75,44 @@ router.post('/admin/ai-settings/test', auth, requireRole('directeur'), async (re
 
 router.post('/admin/ai-settings/models', auth, requireRole('directeur'), async (req, res) => {
   try {
-    const { provider, apiKey, baseUrl } = req.body || {};
-    const hasOverride = provider !== undefined || apiKey !== undefined || baseUrl !== undefined;
-    const result = await listAvailableModels(hasOverride ? { provider, apiKey, baseUrl } : null);
+    const { profileId, provider, apiKey, baseUrl } = req.body || {};
+    const hasOverride = profileId || provider !== undefined || apiKey !== undefined || baseUrl !== undefined;
+    const result = await listAvailableModels(hasOverride ? { profileId, provider, apiKey, baseUrl } : null);
     res.json(result);
   } catch (err) {
     res.status(400).json({ ok: false, models: [], error: err.message || 'Impossible de lister les modèles' });
   }
+});
+
+router.post('/admin/ai-profiles', auth, requireRole('directeur'), (req, res) => {
+  const { id, label, provider, apiKey, model, baseUrl, enabled = true, setActive = true } = req.body || {};
+  if (!id && !String(apiKey || '').trim() && provider !== 'custom') {
+    return res.status(400).json({ error: 'Clé API requise pour enregistrer ce fournisseur.' });
+  }
+  const saved = upsertAiProfile({ id, label, provider, apiKey, model, baseUrl, enabled, setActive });
+  logAudit(req.user, id ? 'PROFIL IA MODIFIÉ' : 'PROFIL IA AJOUTÉ', `${saved.label} (${saved.provider}${saved.model ? ' · ' + saved.model : ''})`);
+  res.json({ ok: true, profileId: saved.id, aiSettings: getAiSettingsPublic() });
+});
+
+router.post('/admin/ai-profiles/:id/activate', auth, requireRole('directeur'), (req, res) => {
+  const p = setActiveAiProfile(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Profil IA introuvable' });
+  logAudit(req.user, 'PROFIL IA ACTIVÉ', `${p.label} (${p.provider})`);
+  res.json({ ok: true, aiSettings: getAiSettingsPublic() });
+});
+
+router.post('/admin/ai-profiles/:id/toggle', auth, requireRole('directeur'), (req, res) => {
+  const enabled = Boolean(req.body?.enabled);
+  const p = toggleAiProfile(req.params.id, enabled);
+  if (!p) return res.status(404).json({ error: 'Profil IA introuvable' });
+  logAudit(req.user, enabled ? 'PROFIL IA ACTIVÉ' : 'PROFIL IA DÉSACTIVÉ', `${p.label} (${p.provider})`);
+  res.json({ ok: true, aiSettings: getAiSettingsPublic() });
+});
+
+router.delete('/admin/ai-profiles/:id', auth, requireRole('directeur'), (req, res) => {
+  deleteAiProfile(req.params.id);
+  logAudit(req.user, 'PROFIL IA SUPPRIMÉ', req.params.id);
+  res.json({ ok: true, aiSettings: getAiSettingsPublic() });
 });
 
 router.post('/users', auth, requireRole('directeur'), (req, res) => {

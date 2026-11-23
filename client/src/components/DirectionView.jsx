@@ -64,12 +64,14 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
   const [editingUserId, setEditingUserId] = useState(null);
   const [editUserForm, setEditUserForm] = useState({ nom: '', role: 'operateur', password: '', actif: true });
 
-  // Directeur AI Provider Settings
+  // Directeur Multi-Provider AI Vault Settings
   const [aiMeta, setAiMeta] = useState(null);
-  const [aiForm, setAiForm] = useState({ provider: 'auto', apiKey: '', model: '', baseUrl: '' });
+  const [editingProfileId, setEditingProfileId] = useState(null);
+  const [aiForm, setAiForm] = useState({ label: '', provider: 'qwen', apiKey: '', model: 'qwen3.8-flash', baseUrl: '' });
   const [showAiKey, setShowAiKey] = useState(false);
   const [savingAi, setSavingAi] = useState(false);
   const [testingAi, setTestingAi] = useState(false);
+  const [testingProfileId, setTestingProfileId] = useState('');
   const [loadingAiModels, setLoadingAiModels] = useState(false);
   const [liveAiModels, setLiveAiModels] = useState([]);
   const [aiTestResult, setAiTestResult] = useState(null);
@@ -78,12 +80,6 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
     try {
       const data = await api('/api/admin/ai-settings');
       setAiMeta(data);
-      setAiForm({
-        provider: data.provider || 'auto',
-        apiKey: '',
-        model: data.model || '',
-        baseUrl: data.baseUrl || ''
-      });
     } catch {}
   }
 
@@ -93,20 +89,43 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
     }
   }, [activePanel, user?.role]);
 
-  async function saveAiConfig(clearKey = false) {
+  function resetAiForm() {
+    setEditingProfileId(null);
+    setLiveAiModels([]);
+    setAiForm({ label: '', provider: 'qwen', apiKey: '', model: 'qwen3.8-flash', baseUrl: '' });
+  }
+
+  function startEditAiProfile(p) {
+    setEditingProfileId(p.id);
+    setLiveAiModels([]);
+    setAiTestResult(null);
+    setAiForm({
+      label: p.label || '',
+      provider: p.provider || 'qwen',
+      apiKey: '',
+      model: p.model || '',
+      baseUrl: p.baseUrl || ''
+    });
+  }
+
+  async function saveAiProfile() {
     setSavingAi(true);
     setAiTestResult(null);
     try {
       const payload = {
+        id: editingProfileId || undefined,
+        label: aiForm.label.trim() || undefined,
         provider: aiForm.provider,
-        model: aiForm.model,
-        baseUrl: aiForm.baseUrl,
-        ...(clearKey ? { clearKey: true } : aiForm.apiKey.trim() ? { apiKey: aiForm.apiKey.trim() } : {})
+        model: aiForm.model.trim(),
+        baseUrl: aiForm.baseUrl.trim(),
+        enabled: true,
+        setActive: true,
+        ...(aiForm.apiKey.trim() ? { apiKey: aiForm.apiKey.trim() } : {})
       };
-      const res = await api('/api/admin/ai-settings', 'PUT', payload);
+      const res = await api('/api/admin/ai-profiles', 'POST', payload);
       setAiMeta(res.aiSettings);
-      setAiForm(f => ({ ...f, apiKey: '' }));
-      showToast(clearKey ? 'Clé IA supprimée (mode hors-ligne ou ENV).' : 'Configuration IA enregistrée et active immédiatement !');
+      showToast(editingProfileId ? 'Fournisseur IA mis à jour !' : 'Nouveau fournisseur IA enregistré et activé !');
+      resetAiForm();
       reload();
     } catch (e) {
       showToast(e.message, 'err');
@@ -115,16 +134,55 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
     }
   }
 
-  async function testAiConfig() {
-    setTestingAi(true);
+  async function activateAiProfile(id) {
+    try {
+      const res = await api(`/api/admin/ai-profiles/${id}/activate`, 'POST');
+      setAiMeta(res.aiSettings);
+      showToast('Fournisseur IA activé immédiatement pour le BE !');
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  async function toggleAiProfileStatus(id, enabled) {
+    try {
+      const res = await api(`/api/admin/ai-profiles/${id}/toggle`, 'POST', { enabled });
+      setAiMeta(res.aiSettings);
+      showToast(enabled ? 'Fournisseur réactivé.' : 'Fournisseur désactivé.');
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  async function removeAiProfile(p) {
+    if (!window.confirm(`Supprimer le fournisseur IA "${p.label}" ?`)) return;
+    try {
+      const res = await api(`/api/admin/ai-profiles/${p.id}`, 'DELETE');
+      setAiMeta(res.aiSettings);
+      if (editingProfileId === p.id) resetAiForm();
+      showToast('Fournisseur IA supprimé.');
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  async function testAiConfig(profileId = null) {
+    if (profileId) setTestingProfileId(profileId);
+    else setTestingAi(true);
     setAiTestResult(null);
     try {
-      const payload = {
-        provider: aiForm.provider,
-        model: aiForm.model,
-        baseUrl: aiForm.baseUrl,
-        ...(aiForm.apiKey.trim() ? { apiKey: aiForm.apiKey.trim() } : {})
-      };
+      const payload = profileId
+        ? { profileId }
+        : {
+            profileId: editingProfileId || undefined,
+            provider: aiForm.provider,
+            model: aiForm.model,
+            baseUrl: aiForm.baseUrl,
+            ...(aiForm.apiKey.trim() ? { apiKey: aiForm.apiKey.trim() } : {})
+          };
       const res = await api('/api/admin/ai-settings/test', 'POST', payload);
       setAiTestResult(res);
       if (res.ok) showToast(`Connexion IA réussie (${res.provider} / ${res.model} en ${res.latencyMs} ms)`);
@@ -134,6 +192,7 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
       showToast(e.message, 'err');
     } finally {
       setTestingAi(false);
+      setTestingProfileId('');
     }
   }
 
@@ -141,6 +200,7 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
     setLoadingAiModels(true);
     try {
       const payload = {
+        profileId: editingProfileId || undefined,
         provider: aiForm.provider,
         baseUrl: aiForm.baseUrl,
         ...(aiForm.apiKey.trim() ? { apiKey: aiForm.apiKey.trim() } : {})
@@ -1301,15 +1361,15 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
       {/* PANEL 6: ADMIN */}
       {activePanel === 'admin' && (
         <div className="space-y-4">
-          {/* AI PROVIDER CONFIGURATION CARD (DIRECTEUR ONLY) */}
-          <div className="cyber-card p-4 border-purple-500/30 space-y-3">
+          {/* MULTI-PROVIDER AI VAULT CARD (DIRECTEUR ONLY) */}
+          <div className="cyber-card p-4 border-purple-500/30 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-purple-400" />
                 <div>
-                  <h3 className="font-semibold text-sm text-white">Configuration IA — Lecture Plans 2D & Studio 3D BE</h3>
+                  <h3 className="font-semibold text-sm text-white">Fournisseurs IA — Qwen Officiel, OpenRouter, Gemini, OpenAI, Claude…</h3>
                   <p className="text-[11px] text-slate-400">
-                    Choisissez votre fournisseur IA quand vous voulez (sans modifier Render). Utilisé automatiquement par le Bureau d'Études pour lire les photos/PDF 2D et affiner le 3D.
+                    Enregistrez plusieurs clés API (ex. Qwen Officiel + OpenRouter) et activez ou désactivez celle de votre choix en 1 clic.
                   </p>
                 </div>
               </div>
@@ -1321,158 +1381,256 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
                   : 'bg-slate-800 border-slate-700 text-slate-300'
               }`}>
                 {aiMeta?.source === 'database'
-                  ? `Actif (${aiMeta.resolvedProvider} · Paramètres)`
+                  ? `Actif : ${aiMeta.label || aiMeta.resolvedProvider}${aiMeta.model ? ` (${aiMeta.model})` : ''}`
                   : aiMeta?.source === 'env'
-                  ? `Actif (${aiMeta.resolvedProvider} · Serveur ENV)`
-                  : 'Mode local hors-ligne'}
+                  ? `Actif : ${aiMeta.resolvedProvider} (ENV)`
+                  : 'Aucun provider actif (hors-ligne)'}
               </span>
             </div>
 
-            <div className="grid md:grid-cols-3 gap-3 text-xs">
-              <div>
-                <label className="text-[11px] text-slate-400 block mb-1">Fournisseur IA (Provider)</label>
-                <select
-                  value={aiForm.provider}
-                  onChange={e => {
-                    const nextProv = e.target.value;
-                    const meta = (aiMeta?.availableProviders || []).find(p => p.id === nextProv);
-                    setAiForm(f => ({
-                      ...f,
-                      provider: nextProv,
-                      model: meta?.defaultModel || ''
-                    }));
-                  }}
-                  className="w-full p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white"
-                >
-                  {(aiMeta?.availableProviders || [
-                    { id: 'auto', label: 'Automatique (détection selon clé)' },
-                    { id: 'gemini', label: 'Google Gemini (Recommandé — Gratuit/Éco)' },
-                    { id: 'openai', label: 'OpenAI (GPT-4o / GPT-4o-mini)' },
-                    { id: 'anthropic', label: 'Anthropic Claude (Sonnet 4)' },
-                    { id: 'openrouter', label: 'OpenRouter (1 clé → tous les modèles)' },
-                    { id: 'groq', label: 'Groq (Vision rapide)' },
-                    { id: 'custom', label: 'Endpoint personnalisé (Compatible OpenAI / Ollama)' }
-                  ]).map(p => (
-                    <option key={p.id} value={p.id}>{p.label}</option>
-                  ))}
-                </select>
-                {(() => {
-                  const sel = (aiMeta?.availableProviders || []).find(p => p.id === aiForm.provider);
-                  return sel?.note ? <div className="text-[10px] text-slate-400 mt-1">{sel.note}</div> : null;
-                })()}
-              </div>
-
-              <div>
-                <label className="text-[11px] text-slate-400 block mb-1 flex items-center justify-between">
-                  <span>Modèle <span className="text-slate-500">(vide = défaut)</span></span>
-                  <button
-                    type="button"
-                    disabled={loadingAiModels}
-                    onClick={fetchLiveAiModels}
-                    className="text-[10px] text-purple-300 hover:text-purple-200 underline cursor-pointer"
-                  >
-                    {loadingAiModels ? 'Chargement...' : 'Lister mes modèles'}
-                  </button>
-                </label>
-                <input
-                  value={aiForm.model}
-                  onChange={e => setAiForm({ ...aiForm, model: e.target.value })}
-                  placeholder={
-                    aiForm.provider === 'gemini' ? 'gemini-3.8-flash' :
-                    aiForm.provider === 'openai' ? 'gpt-4o-mini' :
-                    aiForm.provider === 'anthropic' ? 'claude-sonnet-4-20250514' :
-                    aiForm.provider === 'openrouter' ? 'google/gemini-3.8-flash' :
-                    aiForm.provider === 'groq' ? 'meta-llama/llama-4-scout-17b-16e-instruct' :
-                    'Auto / modèle par défaut'
-                  }
-                  className="w-full p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white font-mono-num"
-                />
-                {liveAiModels.length > 0 && (
-                  <select
-                    value={liveAiModels.includes(aiForm.model) ? aiForm.model : ''}
-                    onChange={e => e.target.value && setAiForm(f => ({ ...f, model: e.target.value }))}
-                    className="w-full mt-1.5 p-1.5 rounded bg-[#0B0F14] border border-purple-500/40 text-purple-200 text-[11px] font-mono-num"
-                  >
-                    <option value="">— Choisir parmi {liveAiModels.length} modèles détectés —</option>
-                    {liveAiModels.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                )}
-              </div>
-
-              <div>
-                <label className="text-[11px] text-slate-400 block mb-1 flex items-center justify-between">
-                  <span className="flex items-center gap-1"><KeyRound className="w-3 h-3 text-purple-400" /> Clé API secrète</span>
-                  {aiMeta?.hasApiKey && (
-                    <span className="text-[10px] text-emerald-400 font-mono-num">Enregistrée : {aiMeta.maskedKey}</span>
-                  )}
-                </label>
-                <div className="flex gap-1.5">
-                  <input
-                    type={showAiKey ? 'text' : 'password'}
-                    value={aiForm.apiKey}
-                    onChange={e => setAiForm({ ...aiForm, apiKey: e.target.value })}
-                    placeholder={aiMeta?.hasApiKey ? 'Laisser vide pour garder la clé actuelle' : 'Collez votre clé API (AIza..., sk-..., etc.)'}
-                    className="flex-1 min-w-0 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white font-mono-num"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowAiKey(v => !v)}
-                    className="px-2.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-slate-400 hover:text-white cursor-pointer"
-                    title={showAiKey ? 'Masquer' : 'Afficher'}
-                  >
-                    {showAiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  </button>
+            {/* SAVED PROVIDERS LIST (1-CLICK ACTIVATE / DEACTIVATE / TEST / EDIT / DELETE) */}
+            {(aiMeta?.profiles || []).length > 0 && (
+              <div className="space-y-2">
+                <div className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">
+                  Fournisseurs enregistrés ({aiMeta.profiles.length})
                 </div>
-              </div>
-            </div>
+                <div className="grid md:grid-cols-2 gap-2.5">
+                  {aiMeta.profiles.map(p => (
+                    <div
+                      key={p.id}
+                      className={`p-3 rounded-[6px] border text-xs space-y-2 transition ${
+                        p.isActive
+                          ? 'bg-emerald-950/20 border-emerald-500/50'
+                          : p.enabled
+                          ? 'bg-[#0B0F14] border-[#1E2A38]'
+                          : 'bg-[#0B0F14]/60 border-slate-800 opacity-70'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-semibold text-white flex items-center gap-1.5 flex-wrap">
+                            <span>{p.label}</span>
+                            {p.isActive && (
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 text-[9px] font-bold">
+                                ACTIF
+                              </span>
+                            )}
+                            {!p.enabled && (
+                              <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400 text-[9px]">
+                                DÉSACTIVÉ
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-400 font-mono-num truncate mt-0.5">
+                            {p.provider} · {p.model || 'modèle par défaut'} · {p.maskedKey || 'sans clé'}
+                          </div>
+                        </div>
+                      </div>
 
-            {aiForm.provider === 'custom' && (
-              <div className="text-xs">
-                <label className="text-[11px] text-slate-400 block mb-1">URL de base de l'API compatible OpenAI</label>
-                <input
-                  value={aiForm.baseUrl}
-                  onChange={e => setAiForm({ ...aiForm, baseUrl: e.target.value })}
-                  placeholder="Ex: http://localhost:11434/v1 ou https://api.mistral.ai/v1"
-                  className="w-full p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-white font-mono-num"
-                />
+                      <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-[#1E2A38]/70">
+                        {!p.isActive ? (
+                          <button
+                            type="button"
+                            onClick={() => activateAiProfile(p.id)}
+                            className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold cursor-pointer"
+                          >
+                            Activer
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => toggleAiProfileStatus(p.id, false)}
+                            className="px-2.5 py-1 rounded bg-amber-500/15 border border-amber-500/40 text-amber-300 hover:bg-amber-500/25 text-[11px] font-semibold cursor-pointer"
+                          >
+                            Désactiver
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={testingProfileId === p.id}
+                          onClick={() => testAiConfig(p.id)}
+                          className="px-2 py-1 rounded bg-[#111821] border border-[#1E2A38] hover:border-purple-400 text-purple-300 text-[11px] flex items-center gap-1 cursor-pointer"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${testingProfileId === p.id ? 'animate-spin' : ''}`} /> Tester
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => startEditAiProfile(p)}
+                          className="px-2 py-1 rounded bg-[#111821] border border-[#1E2A38] hover:border-[#22D3EE] text-slate-300 text-[11px] flex items-center gap-1 cursor-pointer"
+                        >
+                          <Edit3 className="w-3 h-3" /> Modifier
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeAiProfile(p)}
+                          className="ml-auto px-2 py-1 rounded bg-red-500/10 border border-red-500/30 hover:border-red-400 text-red-300 text-[11px] cursor-pointer"
+                          title="Supprimer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={savingAi}
-                  onClick={() => saveAiConfig(false)}
-                  className="px-3.5 py-2 rounded-[6px] bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Check className="w-3.5 h-3.5" /> {savingAi ? 'Enregistrement...' : 'Enregistrer la configuration IA'}
-                </button>
-                <button
-                  type="button"
-                  disabled={testingAi}
-                  onClick={testAiConfig}
-                  className="px-3 py-2 rounded-[6px] bg-[#0B0F14] border border-purple-500/40 hover:border-purple-400 text-purple-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${testingAi ? 'animate-spin' : ''}`} /> {testingAi ? 'Test en cours...' : 'Tester la connexion IA'}
-                </button>
-                {aiMeta?.hasApiKey && aiMeta?.source === 'database' && (
-                  <button
-                    type="button"
-                    disabled={savingAi}
-                    onClick={() => {
-                      if (window.confirm('Supprimer la clé API enregistrée ? Le système repassera en mode local hors-ligne.')) {
-                        saveAiConfig(true);
-                      }
-                    }}
-                    className="px-2.5 py-2 rounded-[6px] bg-red-500/10 border border-red-500/30 hover:border-red-400 text-red-300 text-xs flex items-center gap-1 cursor-pointer"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" /> Effacer la clé
+            {/* ADD OR EDIT PROVIDER FORM */}
+            <div className="p-3 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-semibold text-purple-300">
+                  {editingProfileId ? 'Modifier le fournisseur IA sélectionné' : '+ Ajouter un fournisseur IA (Qwen Officiel, OpenRouter, Gemini…)'}
+                </div>
+                {editingProfileId && (
+                  <button type="button" onClick={resetAiForm} className="text-[11px] text-slate-400 hover:text-white cursor-pointer">
+                    Annuler la modification
                   </button>
                 )}
               </div>
-              <div className="text-[10px] text-slate-500">
-                La clé est stockée uniquement côté serveur (SQLite) et jamais exposée aux autres rôles.
+
+              <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                <div>
+                  <label className="text-[11px] text-slate-400 block mb-1">Nom du profil <span className="text-slate-500">(ex: Qwen Pro)</span></label>
+                  <input
+                    value={aiForm.label}
+                    onChange={e => setAiForm({ ...aiForm, label: e.target.value })}
+                    placeholder="Ex: Qwen Officiel / OpenRouter"
+                    className="w-full p-2 rounded-[6px] bg-[#111821] border border-[#1E2A38] text-white"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-slate-400 block mb-1">Fournisseur IA (Provider)</label>
+                  <select
+                    value={aiForm.provider}
+                    onChange={e => {
+                      const nextProv = e.target.value;
+                      const meta = (aiMeta?.availableProviders || []).find(p => p.id === nextProv);
+                      setLiveAiModels([]);
+                      setAiForm(f => ({
+                        ...f,
+                        provider: nextProv,
+                        model: meta?.defaultModel || '',
+                        baseUrl: nextProv === 'custom' ? f.baseUrl : ''
+                      }));
+                    }}
+                    className="w-full p-2 rounded-[6px] bg-[#111821] border border-[#1E2A38] text-white"
+                  >
+                    {(aiMeta?.availableProviders || [
+                      { id: 'qwen', label: 'Alibaba Qwen Officiel (International / Singapour)' },
+                      { id: 'qwen_us', label: 'Alibaba Qwen Officiel (Région US / Virginie)' },
+                      { id: 'qwen_cn', label: 'Alibaba Qwen Officiel (Région Chine / Pékin)' },
+                      { id: 'openrouter', label: 'OpenRouter (1 clé → tous les modèles)' },
+                      { id: 'gemini', label: 'Google Gemini (AI Studio)' },
+                      { id: 'openai', label: 'OpenAI (GPT-4o / GPT-4o-mini)' },
+                      { id: 'anthropic', label: 'Anthropic Claude (Sonnet 4)' },
+                      { id: 'groq', label: 'Groq (Vision rapide)' },
+                      { id: 'custom', label: 'Endpoint personnalisé (Compatible OpenAI / Ollama)' }
+                    ]).map(p => (
+                      <option key={p.id} value={p.id}>{p.label}</option>
+                    ))}
+                  </select>
+                  {(() => {
+                    const sel = (aiMeta?.availableProviders || []).find(p => p.id === aiForm.provider);
+                    return sel?.note ? <div className="text-[10px] text-slate-400 mt-1">{sel.note}</div> : null;
+                  })()}
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-slate-400 block mb-1 flex items-center justify-between">
+                    <span>Modèle</span>
+                    <button
+                      type="button"
+                      disabled={loadingAiModels}
+                      onClick={fetchLiveAiModels}
+                      className="text-[10px] text-purple-300 hover:text-purple-200 underline cursor-pointer"
+                    >
+                      {loadingAiModels ? 'Chargement...' : 'Lister mes modèles'}
+                    </button>
+                  </label>
+                  <input
+                    value={aiForm.model}
+                    onChange={e => setAiForm({ ...aiForm, model: e.target.value })}
+                    placeholder={
+                      aiForm.provider.startsWith('qwen') ? 'qwen3.8-flash ou qwen3.8-max' :
+                      aiForm.provider === 'gemini' ? 'gemini-3.8-flash' :
+                      aiForm.provider === 'openai' ? 'gpt-4o-mini' :
+                      aiForm.provider === 'anthropic' ? 'claude-sonnet-4-20250514' :
+                      aiForm.provider === 'openrouter' ? 'qwen/qwen3.8-27b:free' :
+                      'Modèle par défaut'
+                    }
+                    className="w-full p-2 rounded-[6px] bg-[#111821] border border-[#1E2A38] text-white font-mono-num"
+                  />
+                  {liveAiModels.length > 0 && (
+                    <select
+                      value={liveAiModels.includes(aiForm.model) ? aiForm.model : ''}
+                      onChange={e => e.target.value && setAiForm(f => ({ ...f, model: e.target.value }))}
+                      className="w-full mt-1.5 p-1.5 rounded bg-[#111821] border border-purple-500/40 text-purple-200 text-[11px] font-mono-num"
+                    >
+                      <option value="">— Choisir parmi {liveAiModels.length} modèles —</option>
+                      {liveAiModels.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                  )}
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-slate-400 block mb-1 flex items-center gap-1">
+                    <KeyRound className="w-3 h-3 text-purple-400" /> Clé API secrète
+                  </label>
+                  <div className="flex gap-1.5">
+                    <input
+                      type={showAiKey ? 'text' : 'password'}
+                      value={aiForm.apiKey}
+                      onChange={e => setAiForm({ ...aiForm, apiKey: e.target.value })}
+                      placeholder={editingProfileId ? 'Laisser vide pour garder la clé' : 'Collez votre clé API (sk-..., AIza...)'}
+                      className="flex-1 min-w-0 p-2 rounded-[6px] bg-[#111821] border border-[#1E2A38] text-white font-mono-num"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowAiKey(v => !v)}
+                      className="px-2.5 rounded-[6px] bg-[#111821] border border-[#1E2A38] text-slate-400 hover:text-white cursor-pointer"
+                      title={showAiKey ? 'Masquer' : 'Afficher'}
+                    >
+                      {showAiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {aiForm.provider === 'custom' && (
+                <div className="text-xs">
+                  <label className="text-[11px] text-slate-400 block mb-1">URL de base de l'API compatible OpenAI</label>
+                  <input
+                    value={aiForm.baseUrl}
+                    onChange={e => setAiForm({ ...aiForm, baseUrl: e.target.value })}
+                    placeholder="Ex: http://localhost:11434/v1 ou https://api.mistral.ai/v1"
+                    className="w-full p-2 rounded-[6px] bg-[#111821] border border-[#1E2A38] text-white font-mono-num"
+                  />
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={savingAi}
+                    onClick={saveAiProfile}
+                    className="px-3.5 py-2 rounded-[6px] bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Check className="w-3.5 h-3.5" /> {savingAi ? 'Enregistrement...' : (editingProfileId ? 'Mettre à jour ce fournisseur' : 'Enregistrer & Activer')}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={testingAi}
+                    onClick={() => testAiConfig(null)}
+                    className="px-3 py-2 rounded-[6px] bg-[#111821] border border-purple-500/40 hover:border-purple-400 text-purple-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${testingAi ? 'animate-spin' : ''}`} /> {testingAi ? 'Test en cours...' : 'Tester cette clé'}
+                  </button>
+                </div>
+                <div className="text-[10px] text-slate-500">
+                  Toutes les clés sont stockées uniquement côté serveur (SQLite) et masquées pour les autres rôles.
+                </div>
               </div>
             </div>
 

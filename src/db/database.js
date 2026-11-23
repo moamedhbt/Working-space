@@ -73,13 +73,16 @@ function saveSettings({ workDays, shiftStart, shiftEnd }) {
 }
 
 const AI_PROVIDERS_META = [
-  { id: 'auto', label: 'Automatique (détection selon clé)', defaultModel: '', note: 'Choisit automatiquement le provider actif' },
-  { id: 'gemini', label: 'Google Gemini (Recommandé — Gratuit/Éco + PDF & photos 2D)', defaultModel: 'gemini-3.8-flash', note: 'Lit directement images JPG/PNG et PDF nativement' },
-  { id: 'openai', label: 'OpenAI (GPT-4o / GPT-4o-mini)', defaultModel: 'gpt-4o-mini', note: 'Très fiable sur plans mécaniques et JSON structuré' },
-  { id: 'anthropic', label: 'Anthropic Claude (Sonnet 4)', defaultModel: 'claude-sonnet-4-20250514', note: 'Excellente compréhension technique & CAO' },
-  { id: 'openrouter', label: 'OpenRouter (1 clé → tous les modèles)', defaultModel: 'google/gemini-3.8-flash', note: 'Permet de changer Gemini/Claude/GPT/Qwen sans changer de compte' },
-  { id: 'groq', label: 'Groq (Vision ultra-rapide)', defaultModel: 'meta-llama/llama-4-scout-17b-16e-instruct', note: 'Rapide, quota gratuit généreux' },
-  { id: 'custom', label: 'Endpoint personnalisé (Compatible OpenAI / Ollama)', defaultModel: 'llava', note: 'Serveur local Ollama, LM Studio, Mistral, DeepSeek, etc.' }
+  { id: 'qwen', label: 'Alibaba Qwen Officiel (International / Singapour)', defaultModel: 'qwen3.8-flash', defaultBaseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', note: 'API officielle Alibaba Cloud Model Studio (qwen3.8-flash, qwen3.8-max, qwen-vl-max)' },
+  { id: 'qwen_us', label: 'Alibaba Qwen Officiel (Région US / Virginie)', defaultModel: 'qwen3.8-flash', defaultBaseUrl: 'https://dashscope-us.aliyuncs.com/compatible-mode/v1', note: 'Clé Alibaba Cloud créée en région US (Virginie)' },
+  { id: 'qwen_cn', label: 'Alibaba Qwen Officiel (Région Chine / Pékin)', defaultModel: 'qwen3.8-flash', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', note: 'Clé Alibaba Cloud créée en région Chine continentale' },
+  { id: 'openrouter', label: 'OpenRouter (1 clé → tous les modèles)', defaultModel: 'qwen/qwen3.8-27b:free', defaultBaseUrl: '', note: 'Permet de tester Qwen, Gemini, Claude, GPT ou des modèles :free avec une seule clé' },
+  { id: 'gemini', label: 'Google Gemini (AI Studio)', defaultModel: 'gemini-3.8-flash', defaultBaseUrl: '', note: 'Lit directement images JPG/PNG et PDF nativement' },
+  { id: 'openai', label: 'OpenAI (GPT-4o / GPT-4o-mini)', defaultModel: 'gpt-4o-mini', defaultBaseUrl: '', note: 'Très fiable sur plans mécaniques et JSON structuré' },
+  { id: 'anthropic', label: 'Anthropic Claude (Sonnet 4)', defaultModel: 'claude-sonnet-4-20250514', defaultBaseUrl: '', note: 'Excellente compréhension technique & CAO' },
+  { id: 'groq', label: 'Groq (Vision ultra-rapide)', defaultModel: 'meta-llama/llama-4-scout-17b-16e-instruct', defaultBaseUrl: '', note: 'Rapide, quota gratuit généreux' },
+  { id: 'custom', label: 'Endpoint personnalisé (Compatible OpenAI / Ollama)', defaultModel: 'llava', defaultBaseUrl: '', note: 'Serveur local Ollama, LM Studio, Mistral, DeepSeek, etc.' },
+  { id: 'auto', label: 'Automatique (détection selon clé)', defaultModel: '', defaultBaseUrl: '', note: 'Détecte Gemini (AIza), Claude (sk-ant), OpenRouter (sk-or), Groq (gsk_) ou OpenAI' }
 ];
 
 function maskSecretKey(k) {
@@ -89,65 +92,237 @@ function maskSecretKey(k) {
   return `${s.slice(0, 4)}••••${s.slice(-4)}`;
 }
 
-function getAiSettings() {
+function resolveProviderId(provider, apiKey = '') {
+  let p = String(provider || 'auto').trim();
+  if (p === 'auto') {
+    if (!apiKey) return 'offline';
+    if (apiKey.startsWith('AIza')) return 'gemini';
+    if (apiKey.startsWith('sk-ant-')) return 'anthropic';
+    if (apiKey.startsWith('sk-or-')) return 'openrouter';
+    if (apiKey.startsWith('gsk_')) return 'groq';
+    return 'openai';
+  }
+  return p;
+}
+
+function readAiProfilesState() {
   const rows = queryAll("SELECT key, value FROM atelier_settings WHERE key LIKE 'ai_%'");
   const map = {};
   for (const r of rows) map[r.key] = r.value;
 
-  const dbProvider = (map.ai_provider || 'auto').trim();
-  const dbApiKey = (map.ai_api_key || '').trim();
-  const dbModel = (map.ai_model || '').trim();
-  const dbBaseUrl = (map.ai_base_url || '').trim();
-
-  if (dbApiKey || (dbProvider === 'custom' && dbBaseUrl)) {
-    let resolvedProvider = dbProvider;
-    if (resolvedProvider === 'auto') {
-      if (dbApiKey.startsWith('AIza')) resolvedProvider = 'gemini';
-      else if (dbApiKey.startsWith('sk-ant-')) resolvedProvider = 'anthropic';
-      else if (dbApiKey.startsWith('sk-or-')) resolvedProvider = 'openrouter';
-      else if (dbApiKey.startsWith('gsk_')) resolvedProvider = 'groq';
-      else resolvedProvider = 'openai';
+  let profiles = [];
+  let hasProfilesKey = Object.prototype.hasOwnProperty.call(map, 'ai_profiles');
+  if (hasProfilesKey) {
+    try {
+      const parsed = JSON.parse(map.ai_profiles || '[]');
+      if (Array.isArray(parsed)) profiles = parsed;
+    } catch {}
+  } else {
+    // One-time transparent migration of legacy single-key settings into a saved profile
+    const legacyKey = (map.ai_api_key || '').trim();
+    const legacyProvider = (map.ai_provider || 'auto').trim();
+    const legacyModel = (map.ai_model || '').trim();
+    const legacyBaseUrl = (map.ai_base_url || '').trim();
+    if (legacyKey || (legacyProvider === 'custom' && legacyBaseUrl)) {
+      const meta = AI_PROVIDERS_META.find(m => m.id === legacyProvider);
+      profiles = [{
+        id: 'aip_default',
+        label: meta ? meta.label.split(' (')[0] : 'Configuration IA #1',
+        provider: legacyProvider,
+        apiKey: legacyKey,
+        model: legacyModel,
+        baseUrl: legacyBaseUrl,
+        enabled: true,
+        createdAt: new Date().toISOString().slice(0, 16).replace('T', ' ')
+      }];
     }
+  }
+
+  let activeId = (map.ai_active_profile_id || '').trim();
+  if (activeId && !profiles.some(p => p.id === activeId)) {
+    activeId = '';
+  }
+  if (!activeId && profiles.length > 0) {
+    const firstEnabled = profiles.find(p => p.enabled !== false);
+    if (firstEnabled) activeId = firstEnabled.id;
+  }
+  return { profiles, activeId, map };
+}
+
+function writeAiProfilesState(profiles, activeId) {
+  transaction(() => {
+    runSql('INSERT OR REPLACE INTO atelier_settings (key, value) VALUES (?, ?)', ['ai_profiles', JSON.stringify(profiles)]);
+    runSql('INSERT OR REPLACE INTO atelier_settings (key, value) VALUES (?, ?)', ['ai_active_profile_id', activeId || '']);
+  });
+}
+
+function getAiProfileById(id) {
+  const { profiles } = readAiProfilesState();
+  return profiles.find(p => p.id === id) || null;
+}
+
+function upsertAiProfile({ id, label, provider, apiKey, model, baseUrl, enabled = true, setActive = true }) {
+  const allowed = new Set(AI_PROVIDERS_META.map(p => p.id));
+  const { profiles, activeId } = readAiProfilesState();
+  const cleanProvider = allowed.has(String(provider || '').trim()) ? String(provider).trim() : 'qwen';
+  const meta = AI_PROVIDERS_META.find(m => m.id === cleanProvider);
+
+  const existingIdx = id ? profiles.findIndex(p => p.id === id) : -1;
+  const profileId = existingIdx >= 0 ? profiles[existingIdx].id : `aip_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  const prev = existingIdx >= 0 ? profiles[existingIdx] : null;
+
+  const finalKey = apiKey !== undefined && String(apiKey).trim() !== ''
+    ? String(apiKey).trim()
+    : (prev?.apiKey || '');
+  const finalLabel = String(label || '').trim() || prev?.label || `${meta ? meta.label.split(' (')[0] : cleanProvider}${model ? ` (${model})` : ''}`;
+  const finalModel = model !== undefined ? String(model).trim() : (prev?.model || meta?.defaultModel || '');
+  const finalBaseUrl = baseUrl !== undefined
+    ? String(baseUrl).trim()
+    : (prev?.baseUrl || meta?.defaultBaseUrl || '');
+
+  const nextProfile = {
+    id: profileId,
+    label: finalLabel,
+    provider: cleanProvider,
+    apiKey: finalKey,
+    model: finalModel,
+    baseUrl: finalBaseUrl,
+    enabled: Boolean(enabled),
+    createdAt: prev?.createdAt || new Date().toISOString().slice(0, 16).replace('T', ' ')
+  };
+
+  const nextProfiles = [...profiles];
+  if (existingIdx >= 0) nextProfiles[existingIdx] = nextProfile;
+  else nextProfiles.push(nextProfile);
+
+  let nextActiveId = activeId;
+  if (setActive && nextProfile.enabled) {
+    nextActiveId = profileId;
+  } else if (nextActiveId === profileId && !nextProfile.enabled) {
+    const fallback = nextProfiles.find(p => p.enabled);
+    nextActiveId = fallback ? fallback.id : '';
+  }
+
+  writeAiProfilesState(nextProfiles, nextActiveId);
+  return nextProfile;
+}
+
+function setActiveAiProfile(id) {
+  const { profiles } = readAiProfilesState();
+  const idx = profiles.findIndex(p => p.id === id);
+  if (idx < 0) return null;
+  const nextProfiles = profiles.map(p => (p.id === id ? { ...p, enabled: true } : p));
+  writeAiProfilesState(nextProfiles, id);
+  return nextProfiles[idx];
+}
+
+function toggleAiProfile(id, enabled) {
+  const { profiles, activeId } = readAiProfilesState();
+  const idx = profiles.findIndex(p => p.id === id);
+  if (idx < 0) return null;
+  const isEn = Boolean(enabled);
+  const nextProfiles = profiles.map(p => (p.id === id ? { ...p, enabled: isEn } : p));
+  let nextActiveId = activeId;
+  if (isEn && !nextActiveId) {
+    nextActiveId = id;
+  } else if (!isEn && nextActiveId === id) {
+    const fallback = nextProfiles.find(p => p.enabled);
+    nextActiveId = fallback ? fallback.id : '';
+  }
+  writeAiProfilesState(nextProfiles, nextActiveId);
+  return nextProfiles[idx];
+}
+
+function deleteAiProfile(id) {
+  const { profiles, activeId } = readAiProfilesState();
+  const nextProfiles = profiles.filter(p => p.id !== id);
+  let nextActiveId = activeId === id ? '' : activeId;
+  if (!nextActiveId) {
+    const fallback = nextProfiles.find(p => p.enabled);
+    nextActiveId = fallback ? fallback.id : '';
+  }
+  writeAiProfilesState(nextProfiles, nextActiveId);
+  // Also clear legacy keys if no profiles left so deleted keys don't resurrect
+  if (nextProfiles.length === 0) {
+    runSql("DELETE FROM atelier_settings WHERE key IN ('ai_api_key', 'ai_provider', 'ai_model', 'ai_base_url')");
+  }
+  return true;
+}
+
+function getAiSettings() {
+  const { profiles, activeId, map } = readAiProfilesState();
+  const activeProfile =
+    profiles.find(p => p.id === activeId && p.enabled !== false) ||
+    profiles.find(p => p.enabled !== false) ||
+    null;
+
+  if (activeProfile && (activeProfile.apiKey || (activeProfile.provider === 'custom' && activeProfile.baseUrl))) {
+    const resolvedProvider = resolveProviderId(activeProfile.provider, activeProfile.apiKey);
     return {
-      provider: dbProvider,
+      profileId: activeProfile.id,
+      label: activeProfile.label,
+      provider: activeProfile.provider,
       resolvedProvider,
-      apiKey: dbApiKey,
-      model: dbModel,
-      baseUrl: dbBaseUrl,
+      apiKey: activeProfile.apiKey,
+      model: activeProfile.model || '',
+      baseUrl: activeProfile.baseUrl || '',
       source: 'database'
     };
   }
 
-  // Fallback to environment variables if no DB key configured
+  // If user saved profiles but deliberately disabled ALL of them, stay offline instead of falling back unexpectedly
+  if (profiles.length > 0 && profiles.every(p => p.enabled === false)) {
+    return {
+      profileId: '',
+      label: '',
+      provider: 'auto',
+      resolvedProvider: 'offline',
+      apiKey: '',
+      model: '',
+      baseUrl: '',
+      source: 'offline'
+    };
+  }
+
+  // Fallback to environment variables if no DB profile active
+  const dbModel = (map.ai_model || '').trim();
+  if (process.env.DASHSCOPE_API_KEY) {
+    return { profileId: '', label: 'Qwen (ENV)', provider: 'qwen', resolvedProvider: 'qwen', apiKey: process.env.DASHSCOPE_API_KEY, model: dbModel || 'qwen3.8-flash', baseUrl: '', source: 'env' };
+  }
   if (process.env.GEMINI_API_KEY) {
-    return { provider: 'gemini', resolvedProvider: 'gemini', apiKey: process.env.GEMINI_API_KEY, model: dbModel || 'gemini-3.8-flash', baseUrl: '', source: 'env' };
+    return { profileId: '', label: 'Gemini (ENV)', provider: 'gemini', resolvedProvider: 'gemini', apiKey: process.env.GEMINI_API_KEY, model: dbModel || 'gemini-3.8-flash', baseUrl: '', source: 'env' };
   }
   if (process.env.OPENAI_API_KEY) {
-    return { provider: 'openai', resolvedProvider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: dbModel || 'gpt-4o-mini', baseUrl: '', source: 'env' };
+    return { profileId: '', label: 'OpenAI (ENV)', provider: 'openai', resolvedProvider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: dbModel || 'gpt-4o-mini', baseUrl: '', source: 'env' };
   }
   if (process.env.ANTHROPIC_API_KEY) {
-    return { provider: 'anthropic', resolvedProvider: 'anthropic', apiKey: process.env.ANTHROPIC_API_KEY, model: dbModel || 'claude-sonnet-4-20250514', baseUrl: '', source: 'env' };
+    return { profileId: '', label: 'Anthropic (ENV)', provider: 'anthropic', resolvedProvider: 'anthropic', apiKey: process.env.ANTHROPIC_API_KEY, model: dbModel || 'claude-sonnet-4-20250514', baseUrl: '', source: 'env' };
   }
   if (process.env.OPENROUTER_API_KEY) {
-    return { provider: 'openrouter', resolvedProvider: 'openrouter', apiKey: process.env.OPENROUTER_API_KEY, model: dbModel || 'google/gemini-3.8-flash', baseUrl: '', source: 'env' };
+    return { profileId: '', label: 'OpenRouter (ENV)', provider: 'openrouter', resolvedProvider: 'openrouter', apiKey: process.env.OPENROUTER_API_KEY, model: dbModel || 'qwen/qwen3.8-27b:free', baseUrl: '', source: 'env' };
   }
   if (process.env.GROQ_API_KEY) {
-    return { provider: 'groq', resolvedProvider: 'groq', apiKey: process.env.GROQ_API_KEY, model: dbModel || 'meta-llama/llama-4-scout-17b-16e-instruct', baseUrl: '', source: 'env' };
+    return { profileId: '', label: 'Groq (ENV)', provider: 'groq', resolvedProvider: 'groq', apiKey: process.env.GROQ_API_KEY, model: dbModel || 'meta-llama/llama-4-scout-17b-16e-instruct', baseUrl: '', source: 'env' };
   }
 
   return {
-    provider: dbProvider || 'auto',
+    profileId: '',
+    label: '',
+    provider: 'auto',
     resolvedProvider: 'offline',
     apiKey: '',
-    model: dbModel,
-    baseUrl: dbBaseUrl,
+    model: '',
+    baseUrl: '',
     source: 'offline'
   };
 }
 
 function getAiSettingsPublic() {
   const cfg = getAiSettings();
+  const { profiles, activeId } = readAiProfilesState();
   return {
+    profileId: cfg.profileId || '',
+    label: cfg.label || '',
     provider: cfg.provider,
     resolvedProvider: cfg.resolvedProvider,
     model: cfg.model,
@@ -155,28 +330,45 @@ function getAiSettingsPublic() {
     hasApiKey: !!cfg.apiKey,
     maskedKey: maskSecretKey(cfg.apiKey),
     source: cfg.source,
+    activeProfileId: activeId || '',
+    profiles: profiles.map(p => ({
+      id: p.id,
+      label: p.label,
+      provider: p.provider,
+      resolvedProvider: resolveProviderId(p.provider, p.apiKey),
+      model: p.model || '',
+      baseUrl: p.baseUrl || '',
+      enabled: p.enabled !== false,
+      isActive: p.id === cfg.profileId && p.enabled !== false,
+      hasApiKey: !!p.apiKey,
+      maskedKey: maskSecretKey(p.apiKey),
+      createdAt: p.createdAt || ''
+    })),
     availableProviders: AI_PROVIDERS_META
   };
 }
 
+// Backward-compatible single-save endpoint (updates active profile or clears all)
 function saveAiSettings({ provider, apiKey, model, baseUrl, clearKey }) {
-  const allowed = new Set(AI_PROVIDERS_META.map(p => p.id));
-  transaction(() => {
-    if (provider !== undefined) {
-      const clean = allowed.has(String(provider).trim()) ? String(provider).trim() : 'auto';
-      runSql('INSERT OR REPLACE INTO atelier_settings (key, value) VALUES (?, ?)', ['ai_provider', clean]);
+  if (clearKey) {
+    const { profiles, activeId } = readAiProfilesState();
+    if (activeId) {
+      deleteAiProfile(activeId);
+    } else if (profiles.length > 0) {
+      deleteAiProfile(profiles[0].id);
     }
-    if (clearKey) {
-      runSql("DELETE FROM atelier_settings WHERE key = 'ai_api_key'");
-    } else if (apiKey !== undefined && String(apiKey).trim() !== '') {
-      runSql('INSERT OR REPLACE INTO atelier_settings (key, value) VALUES (?, ?)', ['ai_api_key', String(apiKey).trim()]);
-    }
-    if (model !== undefined) {
-      runSql('INSERT OR REPLACE INTO atelier_settings (key, value) VALUES (?, ?)', ['ai_model', String(model).trim()]);
-    }
-    if (baseUrl !== undefined) {
-      runSql('INSERT OR REPLACE INTO atelier_settings (key, value) VALUES (?, ?)', ['ai_base_url', String(baseUrl).trim()]);
-    }
+    runSql("DELETE FROM atelier_settings WHERE key IN ('ai_api_key', 'ai_provider', 'ai_model', 'ai_base_url')");
+    return;
+  }
+  const { activeId } = readAiProfilesState();
+  upsertAiProfile({
+    id: activeId || undefined,
+    provider: provider || 'auto',
+    apiKey,
+    model,
+    baseUrl,
+    enabled: true,
+    setActive: true
   });
 }
 
@@ -1074,6 +1266,11 @@ module.exports = {
   getAiSettings,
   getAiSettingsPublic,
   saveAiSettings,
+  getAiProfileById,
+  upsertAiProfile,
+  setActiveAiProfile,
+  toggleAiProfile,
+  deleteAiProfile,
   getNextOfId,
   nextRevisionLabel,
   computeOpPlannedMin,

@@ -1,5 +1,5 @@
 const path = require('path');
-const { getAiSettings } = require('../db/database');
+const { getAiSettings, getAiProfileById } = require('../db/database');
 
 const MATERIALS_REGEX = [
   /CuZn\d+[A-Za-z0-9]*/i,
@@ -225,16 +225,17 @@ function extractJsonFromText(txt) {
 }
 
 function defaultModelForProvider(provider) {
+  if (provider === 'qwen' || provider === 'qwen_us' || provider === 'qwen_cn') return 'qwen3.8-flash';
   if (provider === 'gemini') return 'gemini-3.8-flash';
   if (provider === 'openai') return 'gpt-4o-mini';
   if (provider === 'anthropic') return 'claude-sonnet-4-20250514';
-  if (provider === 'openrouter') return 'google/gemini-3.8-flash';
+  if (provider === 'openrouter') return 'qwen/qwen3.8-27b:free';
   if (provider === 'groq') return 'meta-llama/llama-4-scout-17b-16e-instruct';
   return 'gpt-4o-mini';
 }
 
 function resolveRuntimeAiConfig(override = null) {
-  const saved = getAiSettings();
+  const saved = override?.profileId ? (getAiProfileById(override.profileId) || getAiSettings()) : getAiSettings();
   if (!override) return saved;
   const provider = override.provider !== undefined ? String(override.provider).trim() : saved.provider;
   const apiKey = override.apiKey !== undefined && String(override.apiKey).trim() !== ''
@@ -363,11 +364,17 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
     return { provider, model, text: txt, data: expectJson ? extractJsonFromText(txt) : null };
   }
 
-  // OpenAI / OpenRouter / Groq / Custom OpenAI-compatible
+  // OpenAI / Alibaba Qwen (DashScope) / OpenRouter / Groq / Custom OpenAI-compatible
   let endpoint = 'https://api.openai.com/v1/chat/completions';
   const headers = { 'Content-Type': 'application/json' };
   if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
-  if (provider === 'openrouter') {
+  if (provider === 'qwen') {
+    endpoint = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions';
+  } else if (provider === 'qwen_us') {
+    endpoint = 'https://dashscope-us.aliyuncs.com/compatible-mode/v1/chat/completions';
+  } else if (provider === 'qwen_cn') {
+    endpoint = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
+  } else if (provider === 'openrouter') {
     endpoint = 'https://openrouter.ai/api/v1/chat/completions';
     headers['HTTP-Referer'] = 'https://atelier-manager.local';
     headers['X-Title'] = 'Atelier Manager Pro';
@@ -425,6 +432,25 @@ async function listAvailableModels(overrideConfig = null) {
         return b.localeCompare(a);
       });
     return { ok: true, provider, models: models.slice(0, 25) };
+  }
+  if (provider === 'qwen' || provider === 'qwen_us' || provider === 'qwen_cn') {
+    const base =
+      provider === 'qwen_us' ? 'https://dashscope-us.aliyuncs.com/compatible-mode/v1' :
+      provider === 'qwen_cn' ? 'https://dashscope.aliyuncs.com/compatible-mode/v1' :
+      'https://dashscope-intl.aliyuncs.com/compatible-mode/v1';
+    try {
+      const res = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${cfg.apiKey}` } });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(json.data) && json.data.length > 0) {
+        const live = json.data.map(m => m.id).filter(Boolean);
+        return { ok: true, provider, models: live.slice(0, 40) };
+      }
+    } catch {}
+    return {
+      ok: true,
+      provider,
+      models: ['qwen3.8-flash', 'qwen3.8-max', 'qwen3.8-omni-flash', 'qwen-vl-max', 'qwen-vl-plus', 'qwen2.5-vl-72b-instruct']
+    };
   }
   if (provider === 'anthropic') {
     return {
