@@ -2,11 +2,13 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const {
+  UPLOADS_DIR,
   queryAll,
   queryOne,
   runSql,
   transaction,
   logAudit,
+  logPieceEvent,
   getSettings,
   getNextOfId,
   nextRevisionLabel,
@@ -14,13 +16,14 @@ const {
   syncPieceFromOperations,
   getEnrichedPieces,
   getEnrichedPannes,
+  getEnrichedStops,
   getMaintenanceLogs
 } = require('../db/database');
 const { analyzeScheduleAndAI } = require('../services/scheduler');
+const { analyzePlanDocument } = require('../services/planAnalyzer');
 const { auth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
-const UPLOADS_DIR = path.join(__dirname, '../../uploads');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 const ALLOWED_UPLOAD_EXTS = new Set([
@@ -101,6 +104,7 @@ function runOperationAction(op, piece, action, body, reqUser) {
       syncPieceFromOperations(piece.id);
     });
     logAudit(reqUser, isResume ? 'REPRISE' : 'DÉMARRAGE', `${piece.id} · ${op.libelle}`);
+    logPieceEvent(piece.id, reqUser, isResume ? 'reprise' : 'demarrage', isResume ? `Reprise : ${op.libelle}` : `Démarrage : ${op.libelle}`, '');
     return { status: 200, ok: true };
   }
 
@@ -196,6 +200,13 @@ function runOperationAction(op, piece, action, body, reqUser) {
       'OPÉRATION TERMINÉE',
       `${piece.id} · ${op.libelle} (${qBonne} bonnes${qRebut > 0 ? `, ${qRebut} rebuts` : ''} en ${finalMins} min)`
     );
+    logPieceEvent(
+      piece.id,
+      reqUser,
+      'op_terminee',
+      `Opération terminée : ${op.libelle}`,
+      `${qBonne} bonnes${qRebut > 0 ? `, ${qRebut} rebuts (${motifRebut || '—'})` : ''} · ${finalMins} min`
+    );
     return { status: 200, ok: true, tempsReelMin: finalMins };
   }
 
@@ -207,6 +218,7 @@ router.get('/state', auth, (req, res) => {
   const machines = queryAll('SELECT * FROM machines ORDER BY nom');
   const pieces = getEnrichedPieces();
   const pannes = getEnrichedPannes();
+  const stops = getEnrichedStops();
   const settings = getSettings();
   const maintenanceLogs = ['directeur', 'chef'].includes(req.user.role) ? getMaintenanceLogs() : [];
   const auditLogs = ['directeur', 'chef'].includes(req.user.role)
@@ -215,12 +227,23 @@ router.get('/state', auth, (req, res) => {
 
   const analysis = analyzeScheduleAndAI(pieces, machines, users, pannes, settings);
 
+  // Add stop cause breakdown to analytics
+  const stopsByCat = { panne: 0, outil: 0, matiere: 0, plan_be: 0, pause: 0 };
+  for (const s of stops) {
+    if (stopsByCat[s.categorie] !== undefined) {
+      stopsByCat[s.categorie] += (s.dureeMin || 0);
+    }
+  }
+  analysis.analytics.stopsByCategoryMin = stopsByCat;
+  analysis.analytics.openStopsCount = stops.filter(s => s.statut === 'Ouvert').length;
+
   res.json({
     currentUser: req.user,
     users,
     machines,
     pieces,
     pannes,
+    stops,
     settings,
     maintenanceLogs,
     auditLogs,
@@ -230,7 +253,7 @@ router.get('/state', auth, (req, res) => {
   });
 });
 
-router.post('/pieces', auth, requireRole('directeur', 'chef'), (req, res) => {
+router.post('/pieces', auth, requireRole('directeur', 'chef', 'be'), (req, res) => {
   const b = req.body || {};
   if (!b.nom || !String(b.nom).trim()) {
     return res.status(400).json({ error: 'Le nom de la pièce est requis' });
@@ -246,25 +269,51 @@ router.post('/pieces', auth, requireRole('directeur', 'chef'), (req, res) => {
   const tempsReglageMin = Math.max(0, parseInt(b.tempsReglageMin ?? 15, 10) || 0);
   const tempsUnitaireMin = Math.max(0, Number(b.tempsUnitaireMin ?? 0) || 0);
   const tempsPrevuMin = computeOpPlannedMin(tempsReglageMin, tempsUnitaireMin, quantitePrevue, b.tempsPrevuMin || 120);
-  const chuteDispo = b.chuteDispo ? 1 : 0;
-  const achatFait = b.matiereDispo ? 1 : 0;
+  const estReprise = !!b.estRepriseEnCours;
+  const chuteDispo = estReprise ? 1 : (b.chuteDispo ? 1 : 0);
+  const achatFait = estReprise ? 1 : (b.matiereDispo ? 1 : 0);
   const urgence = ['Critique', 'Urgent', 'Normal'].includes(b.urgence) ? b.urgence : 'Normal';
   const delai = b.delai || new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
-  const statut = b.matiereDispo === false ? 'À acheter' : 'À planifier';
+  const validationDirection = req.user.role === 'directeur' ? 1 : 0;
+  const beNonRequis = b.beNonRequis ? 1 : 0;
+  const beValide = estReprise ? 1 : 0;
+  const chefValide = estReprise ? 1 : 0;
+  const planningValide = (estReprise && validationDirection === 1) ? 1 : 0;
+
+  const qDeja = estReprise ? Math.min(quantitePrevue, Math.max(0, parseInt(b.quantiteDejaRealisee || 0, 10) || 0)) : 0;
+  const tDeja = estReprise ? Math.max(0, parseInt(b.tempsDejaPasseMin || 0, 10) || 0) : 0;
+  const repriseStatut = ['En cours', 'Prêt atelier', 'En pause', 'À clôturer'].includes(b.statutInitial) ? b.statutInitial : 'En cours';
+
+  let statut = 'À planifier';
+  if (validationDirection === 0) statut = 'À valider';
+  else if (estReprise) statut = repriseStatut;
+  else if (b.matiereDispo === false) statut = 'À acheter';
+
+  const opInitialStatut =
+    validationDirection === 0 ? 'En attente' :
+    !estReprise ? 'En attente' :
+    repriseStatut === 'À clôturer' ? 'Terminée' :
+    repriseStatut === 'En cours' ? 'En cours' :
+    repriseStatut === 'En pause' ? 'En pause' : 'En attente';
+
   const maxOrder = queryOne('SELECT COALESCE(MAX(ordrePlanning), 0) AS m FROM pieces').m;
+  const nowStr = new Date().toLocaleString('fr-FR');
 
   transaction(() => {
     runSql(
       `INSERT INTO pieces (
-        id, nom, client, quantitePrevue, delai, urgence, statut,
+        id, nom, client, quantitePrevue, quantiteRealisee, delai, urgence, statut,
         machineId, operateurId, matiere, chuteDispo, achatFait, fournisseur, outils,
-        tempsPrevuMin, ordrePlanning, createdAt
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        tempsPrevuMin, tempsReelMin, startedAt, planningValide, ordrePlanning,
+        typeMachine, createdById, createdBy, createdByRole,
+        validationDirection, beValide, beNonRequis, chefValide, estRepriseEnCours, createdAt
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         id,
         String(b.nom).trim(),
         (b.client || 'Client Standard').trim(),
         quantitePrevue,
+        qDeja,
         delai,
         urgence,
         statut,
@@ -276,8 +325,20 @@ router.post('/pieces', auth, requireRole('directeur', 'chef'), (req, res) => {
         (b.fournisseur || 'À définir').trim(),
         (b.outils || 'À définir').trim(),
         tempsPrevuMin,
+        tDeja,
+        opInitialStatut === 'En cours' ? Date.now() : 0,
+        planningValide,
         maxOrder + 1,
-        new Date().toLocaleString('fr-FR')
+        (b.typeMachine || '').trim(),
+        req.user.id,
+        req.user.nom,
+        req.user.role,
+        validationDirection,
+        beValide,
+        beNonRequis,
+        chefValide,
+        estReprise ? 1 : 0,
+        nowStr
       ]
     );
 
@@ -291,9 +352,13 @@ router.post('/pieces', auth, requireRole('directeur', 'chef'), (req, res) => {
       const reg = Math.max(0, parseInt(op.tempsReglageMin ?? tempsReglageMin, 10) || 0);
       const unit = Math.max(0, Number(op.tempsUnitaireMin ?? tempsUnitaireMin) || 0);
       const planned = computeOpPlannedMin(reg, unit, quantitePrevue, op.tempsPrevuMin || tempsPrevuMin);
+      const isFirst = idx === 0;
       runSql(
-        `INSERT INTO operations (id, pieceId, ordre, libelle, machineId, operateurId, tempsReglageMin, tempsUnitaireMin, tempsPrevuMin, statut)
-         VALUES (?,?,?,?,?,?,?,?,?,'En attente')`,
+        `INSERT INTO operations (
+          id, pieceId, ordre, libelle, machineId, operateurId,
+          tempsReglageMin, tempsUnitaireMin, tempsPrevuMin, tempsReelMin,
+          startedAt, statut, quantiteBonne
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
           `op_${id}_${(idx + 1) * 10}_${Math.floor(Math.random() * 1000)}`,
           id,
@@ -303,16 +368,49 @@ router.post('/pieces', auth, requireRole('directeur', 'chef'), (req, res) => {
           opUserId,
           reg,
           unit,
-          planned
+          planned,
+          isFirst ? tDeja : 0,
+          isFirst && opInitialStatut === 'En cours' ? Date.now() : 0,
+          isFirst ? opInitialStatut : 'En attente',
+          isFirst ? qDeja : 0
         ]
       );
     });
 
+    // Save optional client drawing (photo or PDF) in /uploads/<OF-ID>/client/
+    if (b.clientFile && b.clientFile.filename && b.clientFile.base64) {
+      const safeName = path.basename(b.clientFile.filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+      const ext = path.extname(safeName).toLowerCase();
+      if (ALLOWED_UPLOAD_EXTS.has(ext)) {
+        const dir = path.join(UPLOADS_DIR, id, 'client');
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        const raw = String(b.clientFile.base64).includes(',') ? String(b.clientFile.base64).split(',')[1] : String(b.clientFile.base64);
+        const buf = Buffer.from(raw, 'base64');
+        const storedName = `${Date.now()}_Client_${safeName}`;
+        fs.writeFileSync(path.join(dir, storedName), buf);
+        const url = `/uploads/${id}/client/${storedName}`;
+        runSql(
+          `INSERT INTO be_files (id, pieceId, categorie, revision, filename, url, sizeBytes, notes, isActive, uploadedById, uploadedBy, createdAt)
+           VALUES (?,?,?,?,?,?,?,?,1,?,?,?)`,
+          [`bef_${Date.now()}_cli`, id, 'client', 'Plan Client', safeName, url, buf.length, 'Fourni à la création', req.user.id, req.user.nom, nowStr]
+        );
+      }
+    }
+
     syncPieceFromOperations(id);
   });
 
-  logAudit(req.user, 'OF CRÉÉ', `${id} — ${String(b.nom).trim()} (${quantitePrevue} pcs)`);
-  res.status(201).json({ ok: true, id });
+  logAudit(req.user, estReprise ? 'REPRISE OF EN COURS' : 'OF CRÉÉ', `${id} — ${String(b.nom).trim()} (${quantitePrevue} pcs)${validationDirection === 0 ? ' [en attente validation Direction]' : ''}`);
+  logPieceEvent(
+    id,
+    req.user,
+    estReprise ? 'reprise_of' : 'creation',
+    estReprise ? `Reprise d'OF déjà en cours (${qDeja}/${quantitePrevue} pcs)` : `Création de l'OF (${quantitePrevue} pcs)`,
+    validationDirection === 0
+      ? `Créé par ${req.user.nom} (${req.user.role}) — en attente de validation Directeur`
+      : `Validé Direction · Délai ${delai}`
+  );
+  res.status(201).json({ ok: true, id, validationDirection: !!validationDirection });
 });
 
 router.post('/upload', auth, (req, res) => {
@@ -326,25 +424,28 @@ router.post('/upload', auth, (req, res) => {
   }
 
   const safeId = String(pieceId).replace(/[^a-zA-Z0-9_-]/g, '');
-  const dir = path.join(UPLOADS_DIR, safeId);
+  const dir = path.join(UPLOADS_DIR, safeId, 'photos');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const raw = String(base64).includes(',') ? String(base64).split(',')[1] : String(base64);
   const buf = Buffer.from(raw, 'base64');
   const stampedName = `${Date.now()}_${safeName}`;
   fs.writeFileSync(path.join(dir, stampedName), buf);
-  res.json({ ok: true, url: `/uploads/${safeId}/${stampedName}`, sizeBytes: buf.length });
+  res.json({ ok: true, url: `/uploads/${safeId}/photos/${stampedName}`, sizeBytes: buf.length });
 });
 
-// --- REAL BE FILES WITH REVISIONS ---
+// --- REAL BE & CLIENT FILES WITH REVISIONS ---
 
-router.post('/pieces/:id/be-files', auth, requireRole('directeur', 'be'), (req, res) => {
+router.post('/pieces/:id/be-files', auth, requireRole('directeur', 'be', 'chef'), (req, res) => {
   const { id } = req.params;
   const piece = queryOne('SELECT * FROM pieces WHERE id = ?', [id]);
   if (!piece) return res.status(404).json({ error: 'OF introuvable' });
 
   const { categorie, filename, base64, notes = '' } = req.body || {};
-  if (!['plan', 'cnc', '3d'].includes(categorie)) {
-    return res.status(400).json({ error: 'Catégorie invalide (plan, cnc, 3d)' });
+  if (!['client', 'plan', 'cnc', '3d'].includes(categorie)) {
+    return res.status(400).json({ error: 'Catégorie invalide (client, plan, cnc, 3d)' });
+  }
+  if (req.user.role === 'chef' && categorie !== 'client') {
+    return res.status(403).json({ error: 'Seul le BE ou le Directeur peut déposer des fichiers BE' });
   }
   if (!filename || !base64) {
     return res.status(400).json({ error: 'Fichier requis' });
@@ -357,7 +458,8 @@ router.post('/pieces/:id/be-files', auth, requireRole('directeur', 'be'), (req, 
   }
 
   const safeId = String(id).replace(/[^a-zA-Z0-9_-]/g, '');
-  const dir = path.join(UPLOADS_DIR, safeId, 'be');
+  const subFolder = categorie === 'client' ? 'client' : 'be';
+  const dir = path.join(UPLOADS_DIR, safeId, subFolder);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const raw = String(base64).includes(',') ? String(base64).split(',')[1] : String(base64);
   const buf = Buffer.from(raw, 'base64');
@@ -365,7 +467,7 @@ router.post('/pieces/:id/be-files', auth, requireRole('directeur', 'be'), (req, 
   const revSlug = revision.replace(/\s+/g, '');
   const storedName = `${Date.now()}_${revSlug}_${safeName}`;
   fs.writeFileSync(path.join(dir, storedName), buf);
-  const url = `/uploads/${safeId}/be/${storedName}`;
+  const url = `/uploads/${safeId}/${subFolder}/${storedName}`;
   const fileId = `bef_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 
   transaction(() => {
@@ -381,7 +483,221 @@ router.post('/pieces/:id/be-files', auth, requireRole('directeur', 'be'), (req, 
   });
 
   logAudit(req.user, 'FICHIER BE PUBLIÉ', `${id} · ${categorie.toUpperCase()} ${revision} — ${safeName}`);
+  logPieceEvent(id, req.user, 'fichier', `Fichier ${categorie.toUpperCase()} déposé (${revision})`, `${safeName}${notes ? ` · ${notes}` : ''}`);
   res.status(201).json({ ok: true, id: fileId, revision, url, filename: safeName });
+});
+
+// --- VALIDATION WORKFLOW (DIRECTION -> BE + CHEF EN PARALLÈLE -> OPÉRATEUR) ---
+
+router.post('/pieces/:id/validate-direction', auth, requireRole('directeur'), (req, res) => {
+  const { id } = req.params;
+  const { action = 'approve', motif = '' } = req.body || {};
+  const piece = queryOne('SELECT * FROM pieces WHERE id = ?', [id]);
+  if (!piece) return res.status(404).json({ error: 'OF introuvable' });
+
+  if (action === 'reject') {
+    runSql("UPDATE pieces SET validationDirection = 0, statut = 'Refusé' WHERE id = ?", [id]);
+    logAudit(req.user, 'OF REFUSÉ', `${id} refusé${motif ? ` : ${motif}` : ''}`);
+    logPieceEvent(id, req.user, 'refus_direction', 'OF refusé par la Direction', motif || '');
+    return res.json({ ok: true, statut: 'Refusé' });
+  }
+
+  transaction(() => {
+    const nextStatut = piece.estRepriseEnCours
+      ? 'En cours'
+      : (!piece.chuteDispo && !piece.achatFait ? 'À acheter' : 'À planifier');
+    const planVal = piece.estRepriseEnCours ? 1 : piece.planningValide;
+    runSql(
+      'UPDATE pieces SET validationDirection = 1, statut = ?, planningValide = ? WHERE id = ?',
+      [nextStatut, planVal, id]
+    );
+    syncPieceFromOperations(id);
+  });
+
+  logAudit(req.user, 'OF VALIDÉ DIRECTION', `${id} validé par le Directeur`);
+  logPieceEvent(id, req.user, 'validation_direction', 'Validé par la Direction', 'OF autorisé pour BE & Atelier');
+  res.json({ ok: true });
+});
+
+router.post('/pieces/:id/be-validate', auth, requireRole('be', 'directeur'), (req, res) => {
+  const { id } = req.params;
+  const { nonRequis = false } = req.body || {};
+  const piece = queryOne('SELECT * FROM pieces WHERE id = ?', [id]);
+  if (!piece) return res.status(404).json({ error: 'OF introuvable' });
+
+  transaction(() => {
+    runSql(
+      'UPDATE pieces SET beValide = ?, beNonRequis = ? WHERE id = ?',
+      [nonRequis ? 0 : 1, nonRequis ? 1 : 0, id]
+    );
+    const updated = queryOne('SELECT * FROM pieces WHERE id = ?', [id]);
+    if (updated.validationDirection && updated.chefValide && (updated.chuteDispo || updated.achatFait)) {
+      runSql("UPDATE pieces SET planningValide = 1, statut = 'Prêt atelier' WHERE id = ? AND statut IN ('À planifier', 'À acheter')", [id]);
+    }
+    syncPieceFromOperations(id);
+  });
+
+  const label = nonRequis ? 'Pas d’étude BE requise' : 'Dossier BE validé (Plans / 3D / CNC)';
+  logAudit(req.user, 'BE VALIDÉ', `${id} — ${label}`);
+  logPieceEvent(id, req.user, 'be_valide', label, '');
+  res.json({ ok: true });
+});
+
+router.post('/pieces/:id/chef-validate', auth, requireRole('chef', 'directeur'), (req, res) => {
+  const { id } = req.params;
+  const piece = queryOne('SELECT * FROM pieces WHERE id = ?', [id]);
+  if (!piece) return res.status(404).json({ error: 'OF introuvable' });
+
+  transaction(() => {
+    runSql('UPDATE pieces SET chefValide = 1 WHERE id = ?', [id]);
+    const updated = queryOne('SELECT * FROM pieces WHERE id = ?', [id]);
+    if (updated.validationDirection && (updated.beValide || updated.beNonRequis) && (updated.chuteDispo || updated.achatFait)) {
+      runSql("UPDATE pieces SET planningValide = 1, statut = 'Prêt atelier' WHERE id = ? AND statut IN ('À planifier', 'À acheter')", [id]);
+    }
+    syncPieceFromOperations(id);
+  });
+
+  logAudit(req.user, 'CHEF VALIDÉ', `${id} — Matière, outillage & distribution validés`);
+  logPieceEvent(id, req.user, 'chef_valide', 'Matière, outillage & affectation validés (Chef)', `Matière : ${piece.matiere || '—'} · Outillage : ${piece.outils || '—'}`);
+  res.json({ ok: true });
+});
+
+// --- QUALIFIED OPERATOR STOPS WITH TARGETED ROLE ALERTS ---
+
+router.post('/operations/:opId/stop', auth, (req, res) => {
+  const { opId } = req.params;
+  const { categorie = 'pause', motif = '' } = req.body || {};
+  const op = queryOne('SELECT * FROM operations WHERE id = ?', [opId]);
+  if (!op) return res.status(404).json({ error: 'Opération introuvable' });
+  const piece = queryOne('SELECT * FROM pieces WHERE id = ?', [op.pieceId]);
+  if (!piece) return res.status(404).json({ error: 'OF introuvable' });
+
+  const canOperate = ['directeur', 'chef'].includes(req.user.role) || op.operateurId === req.user.id;
+  if (!canOperate) return res.status(403).json({ error: 'Cette opération est affectée à un autre opérateur' });
+
+  const ALLOWED_CATS = ['panne', 'outil', 'matiere', 'plan_be', 'pause'];
+  const cat = ALLOWED_CATS.includes(categorie) ? categorie : 'pause';
+  const cibleMap = {
+    panne: 'chef',
+    outil: 'chef',
+    matiere: 'directeur',
+    plan_be: 'be',
+    pause: 'none'
+  };
+  const labelMap = {
+    panne: 'Panne machine',
+    outil: 'Manque outil / plaquette',
+    matiere: 'Manque matière / brut',
+    plan_be: 'Problème plan / programme BE',
+    pause: 'Pause / Fin de poste'
+  };
+  const cibleRole = cibleMap[cat];
+  const now = Date.now();
+  const nowStr = new Date().toLocaleString('fr-FR');
+  const elapsedSegment = op.startedAt > 0 ? Math.max(1, Math.round((now - op.startedAt) / 60000)) : 0;
+  const newTotal = (op.tempsReelMin || 0) + (op.statut === 'En cours' ? elapsedSegment : 0);
+  const stopId = `stp_${now}_${Math.floor(Math.random() * 1000)}`;
+  const cleanMotif = String(motif || '').trim() || labelMap[cat];
+
+  transaction(() => {
+    const nextOpStatut = cat === 'panne' ? 'Panne machine' : 'En pause';
+    runSql(
+      'UPDATE operations SET statut = ?, tempsReelMin = ?, startedAt = 0 WHERE id = ?',
+      [nextOpStatut, newTotal, op.id]
+    );
+    if (op.statut === 'En cours' && elapsedSegment > 0) {
+      incrementMachineHours(op.machineId, elapsedSegment);
+    }
+
+    runSql(
+      `INSERT INTO operation_stops (
+        id, pieceId, operationId, machineId, operateurId, operateurNom,
+        categorie, cibleRole, motif, statut, dureeMin, createdAtMs, createdAt
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [
+        stopId, piece.id, op.id, op.machineId, req.user.id, req.user.nom,
+        cat, cibleRole, cleanMotif, cat === 'pause' ? 'Résolu' : 'Ouvert', 0, now, nowStr
+      ]
+    );
+
+    if (cat === 'panne') {
+      const panneId = `pan_${now}_${Math.floor(Math.random() * 1000)}`;
+      runSql(
+        `INSERT INTO pannes (id, machineId, pieceId, operationId, declareParId, declarePar, motif, statut, dureeArretMin, createdAtMs, createdAt)
+         VALUES (?,?,?,?,?,?,?,'Ouverte',0,?,?)`,
+        [panneId, op.machineId, piece.id, op.id, req.user.id, req.user.nom, cleanMotif, now, nowStr]
+      );
+      if (op.machineId) runSql('UPDATE machines SET enPanne = 1 WHERE id = ?', [op.machineId]);
+    }
+
+    syncPieceFromOperations(piece.id);
+  });
+
+  logAudit(req.user, `ARRÊT (${labelMap[cat].toUpperCase()})`, `${piece.id} · ${op.libelle} — ${cleanMotif}`);
+  logPieceEvent(piece.id, req.user, `arret_${cat}`, `${labelMap[cat]} (${op.libelle})`, cleanMotif);
+  res.json({ ok: true, stopId, categorie: cat, cibleRole });
+});
+
+router.post('/stops/:id/resolve', auth, requireRole('directeur', 'chef', 'be'), (req, res) => {
+  const { id } = req.params;
+  const stop = queryOne('SELECT * FROM operation_stops WHERE id = ?', [id]);
+  if (!stop) return res.status(404).json({ error: 'Arrêt introuvable' });
+
+  const dureeMin = stop.createdAtMs > 0 ? Math.max(1, Math.round((Date.now() - stop.createdAtMs) / 60000)) : 10;
+  const nowStr = new Date().toLocaleString('fr-FR');
+
+  transaction(() => {
+    runSql(
+      "UPDATE operation_stops SET statut = 'Résolu', dureeMin = ?, resolvedAt = ?, resolvedBy = ? WHERE id = ?",
+      [dureeMin, nowStr, req.user.nom, id]
+    );
+
+    if (stop.categorie === 'panne') {
+      runSql(
+        "UPDATE pannes SET statut = 'Résolue', dureeArretMin = ?, resolvedAt = ? WHERE pieceId = ? AND operationId = ? AND statut = 'Ouverte'",
+        [dureeMin, nowStr, stop.pieceId, stop.operationId]
+      );
+      if (stop.machineId) {
+        const remaining = queryOne("SELECT COUNT(*) AS c FROM pannes WHERE machineId = ? AND statut = 'Ouverte'", [stop.machineId]).c;
+        if (remaining === 0) runSql('UPDATE machines SET enPanne = 0 WHERE id = ?', [stop.machineId]);
+      }
+      if (stop.operationId) {
+        runSql("UPDATE operations SET statut = 'En pause' WHERE id = ? AND statut = 'Panne machine'", [stop.operationId]);
+      }
+      syncPieceFromOperations(stop.pieceId);
+    }
+  });
+
+  logAudit(req.user, 'ARRÊT RÉSOLU', `${stop.pieceId} · ${stop.categorie} résolu (${dureeMin} min)`);
+  logPieceEvent(stop.pieceId, req.user, 'arret_resolu', `Blocage résolu (${stop.categorie})`, `${stop.motif} · durée ${dureeMin} min`);
+  res.json({ ok: true, dureeMin });
+});
+
+// --- AI 2D PLAN ANALYZER FOR BE ---
+
+router.post('/be/analyze-plan', auth, requireRole('directeur', 'be', 'chef'), async (req, res) => {
+  try {
+    const { fileId, filename, base64, notes = '' } = req.body || {};
+    let buf = null;
+    let name = filename || 'plan.pdf';
+
+    if (fileId) {
+      const f = queryOne('SELECT * FROM be_files WHERE id = ?', [fileId]);
+      if (!f) return res.status(404).json({ error: 'Fichier introuvable' });
+      const rel = String(f.url || '').replace(/^\/uploads\//, '');
+      const fullPath = path.join(UPLOADS_DIR, rel);
+      if (fs.existsSync(fullPath)) buf = fs.readFileSync(fullPath);
+      name = f.filename;
+    } else if (base64) {
+      const raw = String(base64).includes(',') ? String(base64).split(',')[1] : String(base64);
+      buf = Buffer.from(raw, 'base64');
+    }
+
+    const result = await analyzePlanDocument({ buffer: buf, filename: name, notes });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: 'Erreur analyse plan : ' + err.message });
+  }
 });
 
 router.get('/be-files/:fileId/text', auth, (req, res) => {
@@ -668,6 +984,7 @@ router.post('/pieces/:id/:action', auth, (req, res) => {
       syncPieceFromOperations(id);
     });
     logAudit(req.user, 'ACHAT VALIDÉ', `Matière validée pour ${id}`);
+    logPieceEvent(id, req.user, 'achat_valide', 'Achat matière validé (Direction)', p.matiere || '');
     return res.json({ ok: true });
   }
 
@@ -681,6 +998,7 @@ router.post('/pieces/:id/:action', auth, (req, res) => {
       [prixFinal, prixEstime, notesQualite, new Date().toLocaleString('fr-FR'), id]
     );
     logAudit(req.user, 'CLÔTURE', `Dossier ${id} clôturé${prixFinal > 0 ? ` · Prix final : ${prixFinal.toLocaleString('fr-FR')} DZD` : ''}`);
+    logPieceEvent(id, req.user, 'cloture', 'Dossier clôturé (Direction)', prixFinal > 0 ? `Prix final : ${prixFinal.toLocaleString('fr-FR')} DZD` : '');
     return res.json({ ok: true });
   }
 
@@ -689,6 +1007,7 @@ router.post('/pieces/:id/:action', auth, (req, res) => {
     const archived = b.archived !== undefined ? (b.archived ? 1 : 0) : (p.archived ? 0 : 1);
     runSql('UPDATE pieces SET archived = ? WHERE id = ?', [archived, id]);
     logAudit(req.user, archived ? 'OF ARCHIVÉ' : 'OF DÉSARCHIVÉ', id);
+    logPieceEvent(id, req.user, 'archive', archived ? 'OF archivé' : 'OF restauré des archives', '');
     return res.json({ ok: true, archived: !!archived });
   }
 

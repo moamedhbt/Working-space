@@ -258,7 +258,7 @@ export default function App() {
             <DirectionView state={state} user={user} reload={reload} activePanel={tab} search={search} />
           )}
           {tab === 'chef' && <ChefView state={state} user={user} reload={reload} search={search} />}
-          {tab === 'be' && <BeView state={state} reload={reload} />}
+          {tab === 'be' && <BeView state={state} user={user} reload={reload} />}
           {tab === 'operateur' && <OperateurView state={state} user={user} reload={reload} />}
           {tab === 'tv' && <TvView state={state} />}
         </main>

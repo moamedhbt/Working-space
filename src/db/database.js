@@ -4,7 +4,8 @@ const crypto = require('crypto');
 const Database = require('better-sqlite3');
 
 const DB_FILE = process.env.DB_FILE || path.join(__dirname, '../../atelier.db');
-const BACKUP_DIR = path.join(__dirname, '../../backups');
+const BACKUP_DIR = process.env.BACKUP_DIR || path.join(__dirname, '../../backups');
+const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(__dirname, '../../uploads');
 let db;
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
@@ -128,6 +129,66 @@ function logAudit(user, action, details) {
   );
 }
 
+function logPieceEvent(pieceId, user, eventType, title, details = '') {
+  if (!pieceId) return;
+  runSql(
+    `INSERT INTO piece_events (id, pieceId, userId, userNom, userRole, eventType, title, details, createdAt, createdAtMs)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    [
+      'evt_' + Date.now() + '_' + Math.floor(Math.random() * 100000),
+      pieceId,
+      user?.id || null,
+      user?.nom || 'Système',
+      user?.role || 'system',
+      eventType || 'info',
+      title,
+      details,
+      new Date().toLocaleString('fr-FR'),
+      Date.now()
+    ]
+  );
+}
+
+async function restoreDBFromBuffer(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 100) {
+    throw new Error('Fichier de sauvegarde invalide');
+  }
+  const header = buffer.subarray(0, 16).toString('utf8');
+  if (!header.startsWith('SQLite format 3')) {
+    throw new Error('Le fichier envoyé n’est pas une base SQLite (.db) valide');
+  }
+
+  const tmpPath = path.join(BACKUP_DIR, `restore_check_${Date.now()}.db`);
+  if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  fs.writeFileSync(tmpPath, buffer);
+
+  let testDb;
+  try {
+    testDb = new Database(tmpPath, { readonly: true });
+    const tables = testDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => r.name);
+    if (!tables.includes('users') || !tables.includes('pieces')) {
+      throw new Error('Base SQLite incompatible (tables users/pieces manquantes)');
+    }
+  } finally {
+    if (testDb) testDb.close();
+  }
+
+  // Backup current DB before swapping
+  try { await backupDB('pre_restore'); } catch {}
+
+  if (db) {
+    db.close();
+    db = null;
+  }
+  for (const suffix of ['-wal', '-shm']) {
+    try { if (fs.existsSync(DB_FILE + suffix)) fs.unlinkSync(DB_FILE + suffix); } catch {}
+  }
+  fs.copyFileSync(tmpPath, DB_FILE);
+  try { fs.unlinkSync(tmpPath); } catch {}
+
+  await initDB();
+}
+
 async function backupDB(tag = 'auto') {
   if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -177,8 +238,10 @@ function syncPieceFromOperations(pieceId) {
   const currentOp = runningOp || panneOp || pausedOp || nextPendingOp || lastOp;
 
   let statut = piece.statut;
-  if (piece.statut !== 'Clôturé') {
-    if (!piece.chuteDispo && !piece.achatFait && !anyStarted) {
+  if (piece.statut !== 'Clôturé' && piece.statut !== 'Refusé') {
+    if (piece.validationDirection === 0) {
+      statut = 'À valider';
+    } else if (!piece.chuteDispo && !piece.achatFait && !anyStarted) {
       statut = 'À acheter';
     } else if (panneOp) {
       statut = 'Panne machine';
@@ -191,6 +254,8 @@ function syncPieceFromOperations(pieceId) {
     } else if (anyStarted) {
       statut = 'Prêt atelier';
     } else if (piece.statut === 'À acheter' && (piece.chuteDispo || piece.achatFait)) {
+      statut = 'Prêt atelier';
+    } else if ((piece.beValide || piece.beNonRequis) && piece.chefValide && (piece.chuteDispo || piece.achatFait)) {
       statut = 'Prêt atelier';
     }
   }
@@ -271,6 +336,18 @@ function getEnrichedPieces(whereClause = '', params = []) {
      ORDER BY f.isActive DESC, f.rowid DESC`
   );
 
+  const allEvents = queryAll(
+    `SELECT * FROM piece_events ORDER BY createdAtMs DESC, rowid DESC`
+  );
+
+  const allStops = queryAll(
+    `SELECT s.*, m.nom AS machineNom, o.libelle AS operationLibelle
+     FROM operation_stops s
+     LEFT JOIN machines m ON m.id = s.machineId
+     LEFT JOIN operations o ON o.id = s.operationId
+     ORDER BY CASE WHEN s.statut = 'Ouvert' THEN 0 ELSE 1 END, s.createdAtMs DESC`
+  );
+
   const opsByPiece = new Map();
   for (const op of allOps) {
     if (!opsByPiece.has(op.pieceId)) opsByPiece.set(op.pieceId, []);
@@ -294,9 +371,23 @@ function getEnrichedPieces(whereClause = '', params = []) {
     });
   }
 
+  const eventsByPiece = new Map();
+  for (const ev of allEvents) {
+    if (!eventsByPiece.has(ev.pieceId)) eventsByPiece.set(ev.pieceId, []);
+    eventsByPiece.get(ev.pieceId).push(ev);
+  }
+
+  const stopsByPiece = new Map();
+  for (const st of allStops) {
+    if (!stopsByPiece.has(st.pieceId)) stopsByPiece.set(st.pieceId, []);
+    stopsByPiece.get(st.pieceId).push(st);
+  }
+
   return pieces.map(p => {
     const operations = opsByPiece.get(p.id) || [];
     const beFiles = filesByPiece.get(p.id) || [];
+    const events = eventsByPiece.get(p.id) || [];
+    const stops = stopsByPiece.get(p.id) || [];
     const opsTerminees = operations.filter(o => o.statut === 'Terminée').length;
     const opsTotal = operations.length;
     const totalReglageMin = operations.reduce((s, o) => s + (o.tempsReglageMin || 0), 0);
@@ -317,6 +408,7 @@ function getEnrichedPieces(whereClause = '', params = []) {
       progressPct = Math.min(100, Math.round(((p.quantiteRealisee || 0) / (p.quantitePrevue || 1)) * 100));
     }
 
+    const activeClient = beFiles.find(f => f.categorie === 'client' && f.isActive) || null;
     const activePlan = beFiles.find(f => f.categorie === 'plan' && f.isActive) || null;
     const activeCnc = beFiles.find(f => f.categorie === 'cnc' && f.isActive) || null;
     const active3d = beFiles.find(f => f.categorie === '3d' && f.isActive) || null;
@@ -331,15 +423,24 @@ function getEnrichedPieces(whereClause = '', params = []) {
       achatFait: !!p.achatFait,
       planningValide: !!p.planningValide,
       archived: !!p.archived,
+      validationDirection: p.validationDirection !== 0,
+      beValide: !!p.beValide,
+      beNonRequis: !!p.beNonRequis,
+      chefValide: !!p.chefValide,
+      estRepriseEnCours: !!p.estRepriseEnCours,
       be: {
         nomFichier: activePlan?.filename || p.beNomFichier || '',
         programme: activeCnc?.filename || p.beProgramme || '',
         dessin3d: active3d?.filename || p.beDessin3d || '',
+        clientFile: activeClient,
         planFile: activePlan,
         cncFile: activeCnc,
         model3dFile: active3d
       },
       beFiles,
+      events,
+      stops,
+      openStopsCount: stops.filter(s => s.statut === 'Ouvert').length,
       operations,
       opsTerminees,
       opsTotal,
@@ -347,6 +448,18 @@ function getEnrichedPieces(whereClause = '', params = []) {
       progressPct
     };
   });
+}
+
+function getEnrichedStops() {
+  return queryAll(
+    `SELECT s.*, m.nom AS machineNom, p.nom AS pieceNom, o.libelle AS operationLibelle
+     FROM operation_stops s
+     LEFT JOIN machines m ON m.id = s.machineId
+     LEFT JOIN pieces p ON p.id = s.pieceId
+     LEFT JOIN operations o ON o.id = s.operationId
+     ORDER BY CASE WHEN s.statut = 'Ouvert' THEN 0 ELSE 1 END, s.createdAtMs DESC
+     LIMIT 150`
+  );
 }
 
 function getEnrichedPannes() {
@@ -458,6 +571,15 @@ function createSchema() {
       prixFinal REAL DEFAULT 0,
       notesQualite TEXT DEFAULT '',
       archived INTEGER DEFAULT 0,
+      typeMachine TEXT DEFAULT '',
+      createdById TEXT,
+      createdBy TEXT DEFAULT '',
+      createdByRole TEXT DEFAULT '',
+      validationDirection INTEGER DEFAULT 1,
+      beValide INTEGER DEFAULT 0,
+      beNonRequis INTEGER DEFAULT 0,
+      chefValide INTEGER DEFAULT 0,
+      estRepriseEnCours INTEGER DEFAULT 0,
       createdAt TEXT,
       closedAt TEXT
     );
@@ -529,6 +651,37 @@ function createSchema() {
       createdAt TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS piece_events (
+      id TEXT PRIMARY KEY,
+      pieceId TEXT NOT NULL REFERENCES pieces(id) ON DELETE CASCADE,
+      userId TEXT,
+      userNom TEXT,
+      userRole TEXT,
+      eventType TEXT DEFAULT 'info',
+      title TEXT NOT NULL,
+      details TEXT DEFAULT '',
+      createdAt TEXT,
+      createdAtMs INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS operation_stops (
+      id TEXT PRIMARY KEY,
+      pieceId TEXT NOT NULL REFERENCES pieces(id) ON DELETE CASCADE,
+      operationId TEXT REFERENCES operations(id) ON DELETE CASCADE,
+      machineId TEXT REFERENCES machines(id) ON DELETE SET NULL,
+      operateurId TEXT REFERENCES users(id) ON DELETE SET NULL,
+      operateurNom TEXT DEFAULT '',
+      categorie TEXT NOT NULL,
+      cibleRole TEXT DEFAULT 'chef',
+      motif TEXT DEFAULT '',
+      statut TEXT DEFAULT 'Ouvert',
+      dureeMin INTEGER DEFAULT 0,
+      createdAtMs INTEGER DEFAULT 0,
+      createdAt TEXT,
+      resolvedAt TEXT,
+      resolvedBy TEXT
+    );
+
     CREATE INDEX IF NOT EXISTS idx_pieces_machine ON pieces(machineId);
     CREATE INDEX IF NOT EXISTS idx_pieces_operateur ON pieces(operateurId);
     CREATE INDEX IF NOT EXISTS idx_operations_piece ON operations(pieceId);
@@ -536,6 +689,9 @@ function createSchema() {
     CREATE INDEX IF NOT EXISTS idx_operations_machine ON operations(machineId);
     CREATE INDEX IF NOT EXISTS idx_be_files_piece ON be_files(pieceId);
     CREATE INDEX IF NOT EXISTS idx_pannes_statut ON pannes(statut);
+    CREATE INDEX IF NOT EXISTS idx_piece_events_piece ON piece_events(pieceId);
+    CREATE INDEX IF NOT EXISTS idx_operation_stops_piece ON operation_stops(pieceId);
+    CREATE INDEX IF NOT EXISTS idx_operation_stops_statut ON operation_stops(statut);
   `);
 }
 
@@ -575,6 +731,15 @@ function migrateLegacySchemaIfNeeded() {
       ['prixFinal', 'REAL DEFAULT 0'],
       ['notesQualite', "TEXT DEFAULT ''"],
       ['archived', 'INTEGER DEFAULT 0'],
+      ['typeMachine', "TEXT DEFAULT ''"],
+      ['createdById', 'TEXT'],
+      ['createdBy', "TEXT DEFAULT ''"],
+      ['createdByRole', "TEXT DEFAULT ''"],
+      ['validationDirection', 'INTEGER DEFAULT 1'],
+      ['beValide', 'INTEGER DEFAULT 0'],
+      ['beNonRequis', 'INTEGER DEFAULT 0'],
+      ['chefValide', 'INTEGER DEFAULT 0'],
+      ['estRepriseEnCours', 'INTEGER DEFAULT 0'],
       ['createdAt', 'TEXT'],
       ['closedAt', 'TEXT']
     ];
@@ -768,6 +933,9 @@ async function initDB() {
 }
 
 module.exports = {
+  DB_FILE,
+  BACKUP_DIR,
+  UPLOADS_DIR,
   initDB,
   getDB,
   queryAll,
@@ -776,14 +944,17 @@ module.exports = {
   transaction,
   hashPassword,
   logAudit,
+  logPieceEvent,
   getSettings,
   saveSettings,
   getNextOfId,
   nextRevisionLabel,
   computeOpPlannedMin,
   backupDB,
+  restoreDBFromBuffer,
   syncPieceFromOperations,
   getEnrichedPieces,
   getEnrichedPannes,
+  getEnrichedStops,
   getMaintenanceLogs
 };

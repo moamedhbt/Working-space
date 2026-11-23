@@ -1,31 +1,14 @@
 import React, { useState } from 'react';
 import {
-  Save, Upload, Download, CheckSquare, FileText, Code2, Box,
-  History, Eye, Trash2, X
+  Save, Upload, FileText, Code2, Box, History, Eye, Trash2, X,
+  Plus, CheckCircle2, AlertTriangle, Clock
 } from 'lucide-react';
 import { api } from '../api';
 import MaterialCalculator from './MaterialCalculator';
 import ModelViewer3D from './ModelViewer3D';
-
-function generateBoxSTL(L, W, H) {
-  const x = L / 2, y = W / 2, z = H / 2;
-  const tris = [
-    [[-x,-y,z],[x,-y,z],[x,y,z]], [[-x,-y,z],[x,y,z],[-x,y,z]],
-    [[-x,-y,-z],[x,y,-z],[x,-y,-z]], [[-x,-y,-z],[-x,y,-z],[x,y,-z]],
-    [[-x,y,-z],[-x,y,z],[x,y,z]], [[-x,y,-z],[x,y,z],[x,y,-z]],
-    [[-x,-y,-z],[x,-y,z],[-x,-y,z]], [[-x,-y,-z],[x,-y,-z],[x,-y,z]],
-    [[x,-y,-z],[x,y,z],[x,-y,z]], [[x,-y,-z],[x,y,-z],[x,y,z]],
-    [[-x,-y,-z],[-x,-y,z],[-x,y,z]], [[-x,-y,-z],[-x,y,z],[-x,y,-z]]
-  ];
-  let stl = 'solid piece\n';
-  tris.forEach(t => {
-    stl += '  facet normal 0 0 0\n    outer loop\n';
-    t.forEach(v => { stl += `      vertex ${v[0]} ${v[1]} ${v[2]}\n`; });
-    stl += '    endloop\n  endfacet\n';
-  });
-  stl += 'endsolid piece\n';
-  return stl;
-}
+import ParametricBuilder3D from './ParametricBuilder3D';
+import CreateOfModal from './CreateOfModal';
+import TimelineModal from './TimelineModal';
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -36,29 +19,24 @@ function fileToBase64(file) {
   });
 }
 
-export default function BeView({ state, reload }) {
-  const [dims, setDims] = useState({ longueur: 120, largeur: 60, hauteur: 40 });
-  const [appliedDims, setAppliedDims] = useState({ longueur: 120, largeur: 60, hauteur: 40 });
-  const [verified, setVerified] = useState(false);
+export default function BeView({ state, user, reload }) {
+  const activePieces = (state.pieces || []).filter(p => !p.archived && p.statut !== 'Refusé');
+  const [selectedPieceId, setSelectedPieceId] = useState('');
   const [viewerFile, setViewerFile] = useState({ url: null, name: '' });
   const [notesByKey, setNotesByKey] = useState({});
   const [uploadingKey, setUploadingKey] = useState('');
   const [historyOpen, setHistoryOpen] = useState({});
   const [codeModal, setCodeModal] = useState(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [timelinePiece, setTimelinePiece] = useState(null);
   const [toast, setToast] = useState({ type: 'ok', text: '' });
+
+  const selectedPiece = activePieces.find(p => p.id === selectedPieceId) || activePieces[0] || null;
+  const openBeStops = (state.stops || []).filter(s => s.statut === 'Ouvert' && s.cibleRole === 'be');
 
   function notify(text, type = 'ok') {
     setToast({ type, text });
     setTimeout(() => setToast({ type: 'ok', text: '' }), 4000);
-  }
-
-  function downloadSTL() {
-    if (!verified) return notify('Cochez "Cotes vérifiées par le BE" avant le téléchargement.', 'err');
-    const stl = generateBoxSTL(dims.longueur, dims.largeur, dims.hauteur);
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([stl], { type: 'application/octet-stream' }));
-    a.download = `piece_${dims.longueur}x${dims.largeur}x${dims.hauteur}.stl`;
-    a.click();
   }
 
   async function uploadBeFile(pieceId, categorie, file) {
@@ -83,6 +61,43 @@ export default function BeView({ state, reload }) {
       notify(e.message, 'err');
     } finally {
       setUploadingKey('');
+    }
+  }
+
+  async function publishParametric3D({ filename, base64, notes }) {
+    if (!selectedPiece) return;
+    try {
+      const res = await api(`/api/pieces/${selectedPiece.id}/be-files`, 'POST', {
+        categorie: '3d',
+        filename,
+        base64,
+        notes
+      });
+      notify(`3D ${res.revision} publié sur ${selectedPiece.id} (${res.filename}).`);
+      setViewerFile({ url: res.url, name: `${selectedPiece.id} · ${res.filename} (${res.revision})` });
+      reload();
+    } catch (e) {
+      notify(e.message, 'err');
+    }
+  }
+
+  async function validateBe(pieceId, nonRequis = false) {
+    try {
+      await api(`/api/pieces/${pieceId}/be-validate`, 'POST', { nonRequis });
+      notify(nonRequis ? `${pieceId} marqué sans étude BE requise.` : `Dossier BE validé pour ${pieceId} !`);
+      reload();
+    } catch (e) {
+      notify(e.message, 'err');
+    }
+  }
+
+  async function resolveStop(stopId) {
+    try {
+      await api(`/api/stops/${stopId}/resolve`, 'POST');
+      notify('Alerte plan/programme résolue.');
+      reload();
+    } catch (e) {
+      notify(e.message, 'err');
     }
   }
 
@@ -123,7 +138,7 @@ export default function BeView({ state, reload }) {
   }
 
   const slots = [
-    { key: 'plan', label: 'Plan PDF / Dessin 2D', accept: '.pdf,.png,.jpg,.jpeg,.webp,.dxf', Icon: FileText },
+    { key: 'plan', label: 'Plan 2D (PDF / Image)', accept: '.pdf,.png,.jpg,.jpeg,.webp,.dxf', Icon: FileText },
     { key: 'cnc', label: 'Programme CNC (.nc / .tap)', accept: '.nc,.tap,.gcode,.txt', Icon: Code2 },
     { key: '3d', label: 'Modèle 3D (.STL / .STEP)', accept: '.stl,.step,.stp', Icon: Box }
   ];
@@ -137,6 +152,52 @@ export default function BeView({ state, reload }) {
             : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
         }`}>
           {toast.text}
+        </div>
+      )}
+
+      <CreateOfModal
+        open={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        state={state}
+        user={user}
+        onCreated={res => {
+          notify(res.validationDirection ? `OF ${res.id} créé.` : `OF ${res.id} créé et envoyé au Directeur pour validation.`);
+          reload();
+        }}
+      />
+      <TimelineModal piece={timelinePiece} onClose={() => setTimelinePiece(null)} />
+
+      {/* HEADER BAR */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h1 className="text-lg font-semibold text-white">Bureau d'Études & Méthodes 3D</h1>
+          <p className="text-xs text-slate-400">Plans clients, lecture IA 2D, modeleur 3D paramétrique exact (.STL/.STEP) et gestion d'indices.</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowCreateModal(true)}
+          className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] hover:bg-cyan-300 text-[#0B0F14] text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+        >
+          <Plus className="w-3.5 h-3.5" /> Nouvelle pièce
+        </button>
+      </div>
+
+      {/* TARGETED BE ALERTS (OPERATOR REPORTED PLAN / CNC ISSUE) */}
+      {openBeStops.length > 0 && (
+        <div className="p-3.5 rounded-[6px] bg-purple-500/15 border border-purple-500/40 space-y-2 text-xs">
+          <div className="font-semibold text-purple-300 flex items-center gap-1.5">
+            <AlertTriangle className="w-4 h-4" /> Alertes Atelier pour le BE ({openBeStops.length})
+          </div>
+          {openBeStops.map(s => (
+            <div key={s.id} className="flex flex-wrap items-center justify-between gap-2 bg-[#0B0F14]/70 p-2 rounded border border-purple-500/20">
+              <span>
+                <strong className="font-mono-num text-[#22D3EE]">{s.pieceId}</strong> · {s.operationLibelle} — {s.motif} <span className="text-slate-400">({s.operateurNom})</span>
+              </span>
+              <button type="button" onClick={() => resolveStop(s.id)} className="px-2.5 py-1 rounded bg-emerald-600 text-white font-semibold cursor-pointer">
+                Marquer corrigé
+              </button>
+            </div>
+          ))}
         </div>
       )}
 
@@ -158,54 +219,48 @@ export default function BeView({ state, reload }) {
         </div>
       )}
 
-      {/* 3D VIEWER + PROPERTIES */}
+      {/* PARAMETRIC 3D CAD BUILDER + AI 2D PLAN ANALYZER */}
+      <div className="space-y-2">
+        {activePieces.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-slate-400">OF actif dans le modeleur 3D :</span>
+            <select
+              value={selectedPiece?.id || ''}
+              onChange={e => setSelectedPieceId(e.target.value)}
+              className="p-1.5 rounded bg-[#0B0F14] border border-[#1E2A38] text-white font-mono-num"
+            >
+              {activePieces.map(p => <option key={p.id} value={p.id}>{p.id} — {p.nom}</option>)}
+            </select>
+          </div>
+        )}
+        <ParametricBuilder3D piece={selectedPiece} onPublishToOf={publishParametric3D} />
+      </div>
+
+      {/* 3D VIEWER FOR UPLOADED .STEP / .STL + MATERIAL CALCULATOR */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         <div className="lg:col-span-8">
           <ModelViewer3D
-            dims={appliedDims}
             fileUrl={viewerFile.url}
             fileName={viewerFile.name}
             allowUpload
+            title="Inspecteur 3D (.STEP / .STL uploadés)"
           />
         </div>
-
-        <div className="lg:col-span-4 space-y-4">
-          <div className="cyber-card p-4 space-y-3 text-xs">
-            <div className="font-semibold text-sm text-white">Générateur Brut 3D & Validation BE</div>
-            <div className="grid grid-cols-3 gap-2">
-              <div><label className="text-[10px] text-slate-400">L (mm)</label><input type="number" value={dims.longueur} onChange={e => setDims({ ...dims, longueur: +e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" /></div>
-              <div><label className="text-[10px] text-slate-400">l (mm)</label><input type="number" value={dims.largeur} onChange={e => setDims({ ...dims, largeur: +e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" /></div>
-              <div><label className="text-[10px] text-slate-400">H (mm)</label><input type="number" value={dims.hauteur} onChange={e => setDims({ ...dims, hauteur: +e.target.value })} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" /></div>
-            </div>
-            <button
-              type="button"
-              onClick={() => { setViewerFile({ url: null, name: '' }); setAppliedDims({ ...dims }); }}
-              className="w-full py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] font-medium cursor-pointer"
-            >
-              Mettre à jour le modèle 3D
-            </button>
-            <label className="flex items-center gap-2 cursor-pointer text-slate-300 pt-1">
-              <input type="checkbox" checked={verified} onChange={e => setVerified(e.target.checked)} className="accent-[#22D3EE]" />
-              <CheckSquare className="w-3.5 h-3.5 text-[#22D3EE]" /> Cotes vérifiées par le BE (obligatoire)
-            </label>
-            <button type="button" onClick={downloadSTL} className={`w-full py-2 rounded-[6px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer ${verified ? 'bg-[#22D3EE] text-[#0B0F14]' : 'bg-slate-800 text-slate-500'}`}>
-              <Download className="w-3.5 h-3.5" /> Télécharger .STL
-            </button>
-          </div>
-
+        <div className="lg:col-span-4">
           <MaterialCalculator />
         </div>
       </div>
 
-      {/* DOSSIERS TECHNIQUES BE (VRAIS FICHIERS + REVISIONS) */}
+      {/* DOSSIERS TECHNIQUES BE (VRAIS FICHIERS + REVISIONS + VALIDATION BE) */}
       <div className="cyber-card p-4 space-y-4">
         <div>
-          <h2 className="font-semibold text-sm text-white">Dossiers Techniques BE — Plans PDF, Programmes CNC & 3D (avec Révisions)</h2>
-          <p className="text-xs text-slate-400">Chaque fichier publié crée une nouvelle révision active (Rev A, Rev B…) immédiatement consultable sur le poste Opérateur.</p>
+          <h2 className="font-semibold text-sm text-white">Dossiers Techniques BE — Plans Client, Plans 2D, CNC & 3D</h2>
+          <p className="text-xs text-slate-400">Chaque fichier publié est rattaché à l'OF (Rev A, Rev B…) et visible sur le poste Opérateur.</p>
         </div>
 
-        {state.pieces.filter(p => !p.archived).map(p => {
+        {activePieces.map(p => {
           const files = p.beFiles || [];
+          const clientFile = p.be?.clientFile;
           const showHist = !!historyOpen[p.id];
 
           return (
@@ -215,19 +270,67 @@ export default function BeView({ state, reload }) {
                   <span className="font-mono-num text-[#22D3EE]">{p.id}</span> · <span className="text-white">{p.nom}</span>
                   <span className="text-slate-400 text-xs font-normal ml-2">({p.client})</span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setTimelinePiece(p)}
+                    className="px-2 py-1 rounded bg-[#111821] border border-[#1E2A38] hover:border-[#22D3EE] text-slate-300 text-[11px] flex items-center gap-1 cursor-pointer"
+                  >
+                    <Clock className="w-3.5 h-3.5 text-[#22D3EE]" /> Dossier
+                  </button>
                   {files.length > 0 && (
                     <button
                       type="button"
                       onClick={() => setHistoryOpen(prev => ({ ...prev, [p.id]: !prev[p.id] }))}
-                      className="px-2 py-1 rounded bg-[#111821] border border-[#1E2A38] hover:border-[#22D3EE] text-slate-300 text-[11px] flex items-center gap-1 cursor-pointer"
+                      className="px-2 py-1 rounded bg-[#111821] border border-[#1E2A38] text-slate-300 text-[11px] flex items-center gap-1 cursor-pointer"
                     >
-                      <History className="w-3.5 h-3.5" /> Historique ({files.length})
+                      <History className="w-3.5 h-3.5" /> Révisions ({files.length})
                     </button>
                   )}
-                  <span className="text-[11px] text-[#22D3EE]">{p.urgence} · {p.statut}</span>
+                  {p.beValide || p.beNonRequis ? (
+                    <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> {p.beNonRequis ? 'BE non requis' : 'BE validé'}
+                    </span>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => validateBe(p.id, false)}
+                        className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" /> Valider Dossier BE
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => validateBe(p.id, true)}
+                        className="px-2 py-1 rounded bg-[#111821] border border-[#1E2A38] text-slate-300 text-[10px] cursor-pointer"
+                      >
+                        Sans BE
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
+
+              {clientFile && (
+                <div className="p-2 rounded bg-cyan-950/20 border border-[#22D3EE]/30 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                  <span className="text-slate-200">
+                    📎 <strong className="text-[#22D3EE]">Plan Client fourni :</strong> {clientFile.filename}
+                  </span>
+                  <div className="flex gap-1.5">
+                    <a href={clientFile.url} target="_blank" rel="noreferrer" className="px-2 py-0.5 rounded bg-[#22D3EE] text-[#0B0F14] font-semibold">
+                      Ouvrir Plan Client
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => { setSelectedPieceId(p.id); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                      className="px-2 py-0.5 rounded bg-[#111821] border border-[#22D3EE]/40 text-[#22D3EE] cursor-pointer"
+                    >
+                      Modéliser en 3D
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* 3 FILE UPLOAD SLOTS */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
@@ -268,10 +371,7 @@ export default function BeView({ state, reload }) {
                             {key === '3d' && (
                               <button
                                 type="button"
-                                onClick={() => {
-                                  setViewerFile({ url: activeFile.url, name: `${p.id} · ${activeFile.filename} (${activeFile.revision})` });
-                                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                                }}
+                                onClick={() => setViewerFile({ url: activeFile.url, name: `${p.id} · ${activeFile.filename} (${activeFile.revision})` })}
                                 className="px-2 py-0.5 rounded bg-[#22D3EE]/15 text-[#22D3EE] text-[10px] flex items-center gap-1 cursor-pointer"
                               >
                                 <Box className="w-3 h-3" /> Voir en 3D
@@ -290,7 +390,7 @@ export default function BeView({ state, reload }) {
                         <input
                           value={notesByKey[upKey] || ''}
                           onChange={e => setNotesByKey(prev => ({ ...prev, [upKey]: e.target.value }))}
-                          placeholder="Note révision (optionnel, ex: tolérance H7)"
+                          placeholder="Note révision (optionnel)"
                           className="w-full p-1.5 rounded bg-[#0B0F14] border border-[#1E2A38] text-[11px]"
                         />
                         <label className="w-full py-1.5 rounded bg-[#22D3EE]/15 hover:bg-[#22D3EE] text-[#22D3EE] hover:text-[#0B0F14] border border-[#22D3EE]/40 font-semibold text-[11px] flex items-center justify-center gap-1.5 cursor-pointer transition">
@@ -304,7 +404,6 @@ export default function BeView({ state, reload }) {
                 })}
               </div>
 
-              {/* REVISION HISTORY */}
               {showHist && files.length > 0 && (
                 <div className="bg-[#111821] border border-[#1E2A38] rounded p-2.5 space-y-1.5">
                   <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Historique des révisions</div>
@@ -315,11 +414,10 @@ export default function BeView({ state, reload }) {
                           {f.categorie.toUpperCase()} · {f.revision}{f.isActive ? ' (ACTIVE)' : ''}
                         </span>
                         <a href={f.url} target="_blank" rel="noreferrer" className="text-slate-200 hover:text-[#22D3EE] truncate font-mono-num">{f.filename}</a>
-                        {f.notes && <span className="text-slate-400 truncate">— {f.notes}</span>}
                       </div>
                       <div className="flex items-center gap-2 shrink-0 text-[10px] text-slate-500">
                         <span>{f.uploadedBy} · {f.createdAt}</span>
-                        <button type="button" onClick={() => deleteRevision(f.id)} className="text-red-400 hover:text-red-300 cursor-pointer" title="Supprimer">
+                        <button type="button" onClick={() => deleteRevision(f.id)} className="text-red-400 hover:text-red-300 cursor-pointer">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
@@ -328,7 +426,6 @@ export default function BeView({ state, reload }) {
                 </div>
               )}
 
-              {/* QUICK TEXT REFERENCES (COMPATIBILITY) */}
               <form onSubmit={e => saveBE(p.id, e)} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2 pt-2 border-t border-[#1E2A38]">
                 <input name="nomFichier" defaultValue={p.be.nomFichier} placeholder="Référence plan" className="p-1.5 rounded-[6px] bg-[#111821] border border-[#1E2A38]" />
                 <input name="programme" defaultValue={p.be.programme} placeholder="Réf. Programme CNC" className="p-1.5 rounded-[6px] bg-[#111821] border border-[#1E2A38] font-mono-num" />

@@ -550,9 +550,162 @@ function analyzeScheduleAndAI(pieces, machines, users, pannes, settings) {
   };
 }
 
+function tokenize(str = '') {
+  return String(str)
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(' ')
+    .filter(w => w.length >= 3 && !['pour', 'avec', 'piece', 'standard', 'client'].includes(w));
+}
+
+function estimateNewOfAI(payload, pieces, machines, settings) {
+  const qty = Math.max(1, Number(payload.quantitePrevue) || 1);
+  const typeReq = String(payload.typeMachine || '').trim().toLowerCase();
+  const nomTokens = tokenize(payload.nom || '');
+  const matTokens = tokenize(payload.matiere || '');
+
+  // Filter candidate machines by type or requested machineId
+  const activeMachines = (machines || []).filter(m => m.actif);
+  let matchingMachines = activeMachines.filter(m => !m.enPanne);
+  if (payload.machineId) {
+    const exact = activeMachines.find(m => m.id === payload.machineId);
+    if (exact) matchingMachines = [exact, ...matchingMachines.filter(m => m.id !== exact.id)];
+  } else if (typeReq) {
+    const byType = matchingMachines.filter(m => (m.type || '').toLowerCase().includes(typeReq));
+    if (byType.length > 0) matchingMachines = byType;
+  }
+  if (matchingMachines.length === 0) matchingMachines = activeMachines;
+
+  // Compute current active load (minutes) per machine
+  const loadByMachine = new Map();
+  for (const m of activeMachines) loadByMachine.set(m.id, 0);
+  for (const p of pieces) {
+    if (p.statut === 'Clôturé' || p.statut === 'Refusé' || p.archived) continue;
+    for (const o of (p.operations || [])) {
+      if (o.estSousTraitance || o.statut === 'Terminée' || !o.machineId) continue;
+      loadByMachine.set(o.machineId, (loadByMachine.get(o.machineId) || 0) + (o.tempsPrevuMin || 60));
+    }
+  }
+
+  // Pick recommended machine (if user explicitly selected machineId, keep it; else pick least loaded matching machine)
+  let recommendedMachine = payload.machineId
+    ? activeMachines.find(m => m.id === payload.machineId)
+    : [...matchingMachines].sort((a, b) => (loadByMachine.get(a.id) || 0) - (loadByMachine.get(b.id) || 0))[0];
+  if (!recommendedMachine) recommendedMachine = activeMachines[0] || null;
+
+  // Search historical pieces for similarity
+  const scored = [];
+  for (const p of pieces) {
+    if (p.statut === 'Refusé') continue;
+    const pTokens = tokenize(p.nom || '');
+    const pMatTokens = tokenize(p.matiere || '');
+    let score = 0;
+    for (const t of nomTokens) {
+      if (pTokens.includes(t)) score += 3;
+      else if (pTokens.some(pt => pt.includes(t) || t.includes(pt))) score += 1.5;
+    }
+    for (const mt of matTokens) {
+      if (pMatTokens.includes(mt)) score += 1.5;
+    }
+    const pType = (p.machineType || p.typeMachine || '').toLowerCase();
+    if (typeReq && pType.includes(typeReq)) score += 2;
+    else if (recommendedMachine && p.machineId === recommendedMachine.id) score += 1;
+
+    // Bonus if piece has real finished production times!
+    const hasReal = (p.tempsReelMin || 0) > 0 && (p.statut === 'Clôturé' || p.statut === 'À clôturer' || p.opsTerminees > 0);
+    if (score >= 2 || (nomTokens.length === 0 && typeReq && pType.includes(typeReq))) {
+      scored.push({ piece: p, score: score + (hasReal ? 1.5 : 0), hasReal });
+    }
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const topSimilar = scored.slice(0, 3);
+
+  let tempsReglageMin = 20;
+  let tempsUnitaireMin = 6;
+  let confidence = 'Standard';
+
+  if (topSimilar.length > 0) {
+    let regSum = 0;
+    let unitSum = 0;
+    let count = 0;
+    for (const item of topSimilar) {
+      const p = item.piece;
+      const ops = (p.operations || []).filter(o => !o.estSousTraitance);
+      const reg = ops.reduce((s, o) => s + (o.tempsReglageMin || 0), 0) || 20;
+      const pQty = Math.max(1, p.quantitePrevue || 1);
+      const effectiveTotal = item.hasReal && p.tempsReelMin > 0 ? p.tempsReelMin : (p.tempsPrevuMin || 90);
+      const unit = Math.max(1, Number(((Math.max(10, effectiveTotal - reg)) / pQty).toFixed(1)));
+      regSum += reg;
+      unitSum += unit;
+      count++;
+    }
+    tempsReglageMin = Math.round(regSum / count);
+    tempsUnitaireMin = Number((unitSum / count).toFixed(1));
+    confidence = topSimilar.some(s => s.hasReal) ? 'Élevée (temps réels)' : 'Moyenne (historique)';
+  } else {
+    if (typeReq.includes('fraisage')) { tempsReglageMin = 30; tempsUnitaireMin = 8; }
+    else if (typeReq.includes('tournage cnc')) { tempsReglageMin = 25; tempsUnitaireMin = 6; }
+    else if (typeReq.includes('manuel') || typeReq.includes('conventionnel')) { tempsReglageMin = 15; tempsUnitaireMin = 5; }
+    else if (typeReq.includes('contr')) { tempsReglageMin = 10; tempsUnitaireMin = 2; }
+  }
+
+  const totalMin = Math.max(10, Math.round(tempsReglageMin + tempsUnitaireMin * qty));
+  const totalHours = Number((totalMin / 60).toFixed(1));
+
+  // Project completion date on recommended machine using workshop calendar
+  const shiftStartMin = timeToMin(settings?.shiftStart || '08:00', 480);
+  const shiftEndMin = timeToMin(settings?.shiftEnd || '17:00', 1020);
+  const shiftDur = Math.max(60, shiftEndMin - shiftStartMin);
+  const workDays = Array.isArray(settings?.workDays) && settings.workDays.length > 0 ? settings.workDays : [0, 1, 2, 3, 4];
+
+  const existingLoadMin = recommendedMachine ? (loadByMachine.get(recommendedMachine.id) || 0) : 0;
+  const totalDaysNeeded = Math.max(1, Math.ceil((existingLoadMin + totalMin) / shiftDur));
+
+  const cursor = new Date();
+  let counted = 0;
+  let guard = 0;
+  while (counted < totalDaysNeeded && guard < 90) {
+    if (workDays.includes(cursor.getDay())) counted++;
+    if (counted < totalDaysNeeded) cursor.setDate(cursor.getDate() + 1);
+    guard++;
+  }
+  const projectedEndDate = cursor.toISOString().slice(0, 10);
+  const delai = payload.delai || '';
+  const deadlineOk = !delai || projectedEndDate <= delai;
+
+  const similarList = topSimilar.map(s => ({
+    id: s.piece.id,
+    nom: s.piece.nom,
+    quantitePrevue: s.piece.quantitePrevue,
+    tempsReelMin: s.piece.tempsReelMin,
+    tempsPrevuMin: s.piece.tempsPrevuMin
+  }));
+
+  const message = topSimilar.length > 0
+    ? `Estimé à ${totalHours}h (${tempsReglageMin}m régl. + ${tempsUnitaireMin}m/pc) basé sur ${topSimilar.length} pièce(s) similaire(s). Fin prévue le ${projectedEndDate} sur ${recommendedMachine?.nom || 'atelier'}.`
+    : `Aucune pièce similaire en historique — estimation standard ${totalHours}h (${tempsReglageMin}m régl. + ${tempsUnitaireMin}m/pc). Fin prévue le ${projectedEndDate} sur ${recommendedMachine?.nom || 'atelier'}.`;
+
+  return {
+    recommendedMachineId: recommendedMachine?.id || '',
+    recommendedMachineNom: recommendedMachine?.nom || 'À affecter',
+    existingLoadHours: Number((existingLoadMin / 60).toFixed(1)),
+    tempsReglageMin,
+    tempsUnitaireMin,
+    totalMin,
+    totalHours,
+    projectedEndDate,
+    deadlineOk,
+    confidence,
+    similarPieces: similarList,
+    message
+  };
+}
+
 module.exports = {
   PRIO_RANK,
   timeToMin,
   minToTime,
-  analyzeScheduleAndAI
+  analyzeScheduleAndAI,
+  estimateNewOfAI
 };

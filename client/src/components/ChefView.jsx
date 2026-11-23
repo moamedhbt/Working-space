@@ -1,15 +1,19 @@
 import React, { useState } from 'react';
 import {
   Bot, CheckCircle, Cpu, Plus, AlertTriangle, ChevronDown, ChevronUp,
-  Power, Trash2, Wrench, Layers, Edit3, Check, X, Truck, ShieldAlert
+  Power, Trash2, Wrench, Layers, Edit3, Check, X, Truck, ShieldAlert, Clock
 } from 'lucide-react';
 import { api } from '../api';
 import MaterialCalculator from './MaterialCalculator';
 import ChefPlanningTab from './ChefPlanningTab';
+import CreateOfModal from './CreateOfModal';
+import TimelineModal from './TimelineModal';
 
 export default function ChefView({ state, user, reload, search = '' }) {
   const [tab, setTab] = useState('dashboard');
   const [expanded, setExpanded] = useState({});
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [timelinePiece, setTimelinePiece] = useState(null);
   const [mNom, setMNom] = useState('');
   const [mType, setMType] = useState('');
   const [mTaux, setMTaux] = useState(2500);
@@ -50,6 +54,26 @@ export default function ChefView({ state, user, reload, search = '' }) {
     try {
       await api('/api/planning/validate', 'POST');
       showToast("Planning validé et publié sur l'écran TV.");
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  async function validateChefOf(pieceId) {
+    try {
+      await api(`/api/pieces/${pieceId}/chef-validate`, 'POST');
+      showToast(`Matière, outillage & affectation validés pour ${pieceId}.`);
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  async function resolveStop(stopId) {
+    try {
+      await api(`/api/stops/${stopId}/resolve`, 'POST');
+      showToast('Blocage atelier marqué comme résolu.');
       reload();
     } catch (e) {
       showToast(e.message, 'err');
@@ -234,6 +258,18 @@ export default function ChefView({ state, user, reload, search = '' }) {
         </div>
       )}
 
+      <CreateOfModal
+        open={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        state={state}
+        user={user}
+        onCreated={res => {
+          showToast(res.validationDirection ? `OF ${res.id} créé.` : `OF ${res.id} créé et envoyé au Directeur pour validation.`);
+          reload();
+        }}
+      />
+      <TimelineModal piece={timelinePiece} onClose={() => setTimelinePiece(null)} />
+
       {/* 5-TAB BAR */}
       <div className="grid grid-cols-5 gap-1 bg-[#111821] border border-[#1E2A38] rounded-[6px] p-1 text-[11px] font-medium">
         {[
@@ -267,6 +303,9 @@ export default function ChefView({ state, user, reload, search = '' }) {
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
+              <button onClick={() => setShowCreateModal(true)} className="px-3 py-1.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer">
+                <Plus className="w-3.5 h-3.5" /> Nouvelle pièce
+              </button>
               <button onClick={optimizeAI} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-xs font-medium text-slate-200 cursor-pointer">
                 Ordonnancer par IA
               </button>
@@ -298,6 +337,27 @@ export default function ChefView({ state, user, reload, search = '' }) {
             </div>
           )}
         </div>
+
+        {/* OPEN QUALIFIED STOPS FOR CHEF (OUTIL / MATIERE) */}
+        {(state.stops || []).filter(s => s.statut === 'Ouvert' && ['outil', 'matiere'].includes(s.categorie)).length > 0 && (
+          <div className="bg-amber-500/10 border border-amber-500/40 rounded-[6px] p-4 space-y-2 text-xs">
+            <div className="font-semibold text-amber-300 flex items-center gap-1.5">
+              <AlertTriangle className="w-4 h-4" /> Blocages Opérateurs (Outillage / Matière)
+            </div>
+            {(state.stops || []).filter(s => s.statut === 'Ouvert' && ['outil', 'matiere'].includes(s.categorie)).map(s => (
+              <div key={s.id} className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded bg-[#0B0F14] border border-amber-500/30">
+                <div>
+                  <span className="uppercase font-semibold text-amber-300">{s.categorie}</span>
+                  <span className="font-mono-num text-[#22D3EE] ml-2">{s.pieceId}</span>
+                  <span className="text-slate-300 ml-1.5">— {s.motif} ({s.operateurNom})</span>
+                </div>
+                <button type="button" onClick={() => resolveStop(s.id)} className="px-3 py-1 rounded bg-emerald-600 text-white font-semibold cursor-pointer">
+                  Résolu
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* ACTIVE BREAKDOWNS PANEL */}
         {openPannes.length > 0 && (
@@ -467,9 +527,23 @@ export default function ChefView({ state, user, reload, search = '' }) {
                       <label className="flex items-center gap-2 cursor-pointer text-slate-300">
                         <input type="checkbox" name="chuteDispo" defaultChecked={p.chuteDispo} className="accent-[#22D3EE]" /> Chute disponible en stock (sinon achat)
                       </label>
-                      <button type="submit" className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] hover:bg-cyan-300 text-[#0B0F14] font-semibold cursor-pointer">
-                        Enregistrer OF
-                      </button>
+                      <div className="flex flex-wrap gap-2 items-center">
+                        <button type="button" onClick={() => setTimelinePiece(p)} className="px-2.5 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-slate-300 flex items-center gap-1 cursor-pointer">
+                          <Clock className="w-3.5 h-3.5 text-[#22D3EE]" /> Dossier
+                        </button>
+                        {!p.chefValide ? (
+                          <button type="button" onClick={() => validateChefOf(p.id)} className="px-3 py-1.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer">
+                            Valider Matière & Distribution
+                          </button>
+                        ) : (
+                          <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11px] font-medium">
+                            Chef validé ✓
+                          </span>
+                        )}
+                        <button type="submit" className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] hover:bg-cyan-300 text-[#0B0F14] font-semibold cursor-pointer">
+                          Enregistrer OF
+                        </button>
+                      </div>
                     </div>
                   </form>
 

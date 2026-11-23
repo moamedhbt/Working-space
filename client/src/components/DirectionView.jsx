@@ -2,14 +2,19 @@ import React, { useState, useEffect } from 'react';
 import {
   Bot, CheckCircle, Plus, FolderCheck, UserPlus, ShoppingCart,
   FileText, FileSpreadsheet, Archive, Download, X, Database, Edit3, Check,
-  AlertTriangle, Layers, Image, Activity, Wrench, Filter, ShieldAlert, ArchiveRestore
+  AlertTriangle, Layers, Image, Activity, Wrench, Filter, ShieldAlert, ArchiveRestore,
+  Clock, Upload
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import JSZip from 'jszip';
 import { api } from '../api';
+import CreateOfModal from './CreateOfModal';
+import TimelineModal from './TimelineModal';
 
 function statusBadge(statut, urgence) {
+  if (statut === 'À valider') return 'bg-purple-500/15 text-purple-300 border-purple-500/40';
+  if (statut === 'Refusé') return 'bg-slate-800 text-slate-400 border-slate-700';
   if (statut === 'Panne machine') return 'bg-red-500/15 text-red-300 border-red-500/40';
   if (statut === 'Clôturé') return 'bg-slate-700/40 text-slate-300 border-slate-600/50';
   if (urgence === 'Critique') return 'bg-red-500/10 text-red-400 border-red-500/30';
@@ -25,13 +30,14 @@ function nowLinePercent() {
   return Math.max(0, Math.min(100, ((mins - start) / (end - start)) * 100));
 }
 
-export default function DirectionView({ state, reload, activePanel = 'overview', search = '' }) {
+export default function DirectionView({ state, user, reload, activePanel = 'overview', search = '' }) {
   const activeMachines = state.machines.filter(m => m.actif);
   const operators = state.users.filter(u => u.role === 'operateur' && u.actif !== 0);
 
   const [toast, setToast] = useState({ type: 'ok', text: '' });
   const [showNewModal, setShowNewModal] = useState(false);
-  const [showAdvancedNew, setShowAdvancedNew] = useState(false);
+  const [timelinePiece, setTimelinePiece] = useState(null);
+  const [exportingHistory, setExportingHistory] = useState(false);
   const [newPieceForm, setNewPieceForm] = useState({
     nom: '',
     client: '',
@@ -303,6 +309,119 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
     }
   }
 
+  async function validateDirection(pieceId, action = 'approve') {
+    try {
+      await api(`/api/pieces/${pieceId}/validate-direction`, 'POST', { action });
+      showToast(action === 'approve' ? `OF ${pieceId} validé par la Direction.` : `OF ${pieceId} refusé.`);
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  async function resolveStop(stopId) {
+    try {
+      await api(`/api/stops/${stopId}/resolve`, 'POST');
+      showToast('Blocage marqué comme résolu.');
+      reload();
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  async function downloadRawDb() {
+    try {
+      const token = localStorage.getItem('atelier_token') || '';
+      const resp = await fetch('/api/admin/download-db', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!resp.ok) throw new Error('Téléchargement impossible');
+      const blob = await resp.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `atelier_backup_${new Date().toISOString().slice(0, 10)}.db`;
+      a.click();
+      showToast('Base de données atelier.db téléchargée.');
+    } catch (e) {
+      showToast(e.message, 'err');
+    }
+  }
+
+  async function downloadFullHistoryZip() {
+    setExportingHistory(true);
+    try {
+      const data = await api('/api/admin/export-history');
+      const zip = new JSZip();
+      const stamp = new Date().toISOString().slice(0, 10);
+
+      zip.file('historique_complet.json', JSON.stringify(data, null, 2));
+
+      // CSV of all OFs (including archived!)
+      const ofHeaders = ['OF', 'Piece', 'Client', 'Statut', 'Urgence', 'Delai', 'Machine', 'Operateur', 'Qte Bonne', 'Qte Prevue', 'Rebuts', 'Temps Prevu (min)', 'Temps Reel (min)', 'Prix Final (DZD)', 'Archive', 'Cree le', 'Cloture le'];
+      const ofRows = (data.pieces || []).map(p => [
+        p.id, p.nom, p.client, p.statut, p.urgence, p.delai, p.machine, p.operateur,
+        p.quantiteRealisee, p.quantitePrevue, p.quantiteRebut || 0,
+        p.tempsPrevuMin, p.tempsReelMin, p.prixFinal || 0, p.archived ? 'Oui' : 'Non', p.createdAt || '', p.closedAt || ''
+      ]);
+      zip.file('historique_OFs.csv', '\uFEFF' + [ofHeaders, ...ofRows].map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\n'));
+
+      // CSV of stops & breakdowns
+      const stHeaders = ['Date', 'OF', 'Categorie', 'Motif', 'Operateur', 'Machine', 'Statut', 'Duree (min)', 'Resolu par'];
+      const stRows = (data.stops || []).map(s => [
+        s.createdAt, s.pieceId, s.categorie, s.motif, s.operateurNom, s.machineNom || '', s.statut, s.dureeMin || 0, s.resolvedBy || ''
+      ]);
+      zip.file('arrets_et_blocages.csv', '\uFEFF' + [stHeaders, ...stRows].map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\n'));
+
+      // CSV of audit logs
+      const auHeaders = ['Date', 'Utilisateur', 'Role', 'Action', 'Details'];
+      const auRows = (data.auditLogs || []).map(l => [l.createdAt, l.user, l.role, l.action, l.details]);
+      zip.file('journal_audit.csv', '\uFEFF' + [auHeaders, ...auRows].map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\n'));
+
+      // Include hot SQLite DB snapshot too!
+      try {
+        const token = localStorage.getItem('atelier_token') || '';
+        const dbResp = await fetch('/api/admin/download-db', { headers: { Authorization: `Bearer ${token}` } });
+        if (dbResp.ok) {
+          zip.file(`atelier_${stamp}.db`, await dbResp.blob());
+        }
+      } catch {}
+
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(await zip.generateAsync({ type: 'blob' }));
+      a.download = `Atelier_Historique_Complet_${stamp}.zip`;
+      a.click();
+      showToast('Archive complète (.ZIP + base .db + CSV + JSON) téléchargée !');
+    } catch (e) {
+      showToast(e.message, 'err');
+    } finally {
+      setExportingHistory(false);
+    }
+  }
+
+  async function handleRestoreDb(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!window.confirm(`Restaurer la base de données depuis "${file.name}" ? (Une sauvegarde de sécurité sera faite avant.)`)) {
+      e.target.value = '';
+      return;
+    }
+    try {
+      const base64 = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => reject(new Error('Lecture fichier impossible'));
+        r.readAsDataURL(file);
+      });
+      await api('/api/admin/restore-db', 'POST', { base64 });
+      showToast('Base de données restaurée avec succès !');
+      reload();
+    } catch (err) {
+      showToast(err.message, 'err');
+    } finally {
+      e.target.value = '';
+    }
+  }
+
   async function triggerBackup() {
     try {
       const res = await api('/api/admin/backup', 'POST');
@@ -406,16 +525,26 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
     const zip = new JSZip();
     zip.file(`Fiche_${p.id}.pdf`, doc.output('blob'));
     zip.file(`BE_${p.id}_infos.txt`, `Fichier: ${p.be.nomFichier}\nProgramme: ${p.be.programme}\nDessin 3D: ${p.be.dessin3d}\nNotes qualite: ${p.notesQualite || '—'}\n`);
+    const timelineLines = (p.events || []).map(ev => `[${ev.createdAt}] ${ev.userNom} (${ev.userRole}) — ${ev.title}${ev.details ? ` : ${ev.details}` : ''}`);
+    zip.file(`Timeline_${p.id}.txt`, timelineLines.length ? timelineLines.join('\n') : 'Aucun événement enregistré.');
 
-    // Bundle actual active uploaded BE files inside the ZIP!
+    // Bundle all active uploaded files (Plan Client + BE Plan/CNC/3D) & photos inside the ZIP!
     const activeFiles = (p.beFiles || []).filter(f => f.isActive);
     for (const f of activeFiles) {
       try {
         const resp = await fetch(f.url);
         if (resp.ok) {
-          zip.file(`BE/${f.categorie}_${f.revision.replace(/\s+/g, '')}_${f.filename}`, await resp.blob());
+          zip.file(`${f.categorie === 'client' ? 'Client' : 'BE'}/${f.categorie}_${f.revision.replace(/\s+/g, '')}_${f.filename}`, await resp.blob());
         }
       } catch {}
+    }
+    for (const [label, url] of [['photo_debut', p.photoDebut], ['photo_fin', p.photoFin]]) {
+      if (url && String(url).startsWith('/uploads/')) {
+        try {
+          const resp = await fetch(url);
+          if (resp.ok) zip.file(`Photos/${label}_${url.split('/').pop()}`, await resp.blob());
+        } catch {}
+      }
     }
 
     const a = document.createElement('a');
@@ -476,248 +605,20 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
         </div>
       )}
 
-      {/* CREATE OF MODAL — MOBILE-FIRST COMPACT SHEET */}
-      {showNewModal && (
-        <div
-          className="fixed inset-0 z-[70] bg-black/75 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4"
-          onClick={e => { if (e.target === e.currentTarget) setShowNewModal(false); }}
-        >
-          <form
-            onSubmit={submitNewPiece}
-            className="w-full sm:max-w-md max-h-[88dvh] flex flex-col bg-[#111821] border-t sm:border border-[#1E2A38] rounded-t-2xl sm:rounded-lg shadow-2xl overflow-hidden"
-          >
-            {/* STICKY HEADER */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-[#1E2A38] shrink-0">
-              <h3 className="text-sm font-semibold text-white">Nouvelle pièce (OF)</h3>
-              <button
-                type="button"
-                onClick={() => setShowNewModal(false)}
-                className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-white/5 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+      {/* SHARED MOBILE-FIRST CREATE OF MODAL (WITH AI + REPRISE EN COURS) */}
+      <CreateOfModal
+        open={showNewModal}
+        onClose={() => setShowNewModal(false)}
+        state={state}
+        user={user}
+        onCreated={res => {
+          showToast(`Ordre de fabrication ${res.id} créé.`);
+          reload();
+        }}
+      />
 
-            {/* SCROLLABLE COMPACT BODY */}
-            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-              <div>
-                <label className="block text-[11px] text-slate-400 mb-1">Nom de la pièce *</label>
-                <input
-                  required
-                  value={newPieceForm.nom}
-                  onChange={e => setNewPieceForm({ ...newPieceForm, nom: e.target.value })}
-                  placeholder="Ex: Axe d'entraînement Ø60"
-                  className="w-full px-3 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none text-base sm:text-xs text-white"
-                />
-              </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                <div className="col-span-2">
-                  <label className="block text-[11px] text-slate-400 mb-1">Client</label>
-                  <input
-                    value={newPieceForm.client}
-                    onChange={e => setNewPieceForm({ ...newPieceForm, client: e.target.value })}
-                    placeholder="SARL MécaSud"
-                    className="w-full px-3 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none text-base sm:text-xs text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-slate-400 mb-1">Qté *</label>
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    min="1"
-                    required
-                    value={newPieceForm.quantitePrevue}
-                    onChange={e => setNewPieceForm({ ...newPieceForm, quantitePrevue: e.target.value })}
-                    placeholder="10"
-                    className="w-full px-2.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-base sm:text-xs text-white"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div className="min-w-0">
-                  <label className="block text-[11px] text-slate-400 mb-1">Délai</label>
-                  <input
-                    type="date"
-                    value={newPieceForm.delai}
-                    onChange={e => setNewPieceForm({ ...newPieceForm, delai: e.target.value })}
-                    className="w-full min-w-0 max-w-full px-2 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none font-mono-num text-sm sm:text-xs text-white"
-                  />
-                </div>
-                <div className="min-w-0">
-                  <label className="block text-[11px] text-slate-400 mb-1">Matière</label>
-                  <input
-                    value={newPieceForm.matiere}
-                    onChange={e => setNewPieceForm({ ...newPieceForm, matiere: e.target.value })}
-                    placeholder="Acier 42CrMo4"
-                    className="w-full min-w-0 px-2.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none text-base sm:text-xs text-white"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 items-center">
-                <div className="grid grid-cols-3 gap-1">
-                  {[
-                    ['Normal', 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'],
-                    ['Urgent', 'border-amber-500/40 bg-amber-500/15 text-amber-300'],
-                    ['Critique', 'border-red-500/40 bg-red-500/15 text-red-300']
-                  ].map(([u, activeCls]) => (
-                    <button
-                      key={u}
-                      type="button"
-                      onClick={() => setNewPieceForm({ ...newPieceForm, urgence: u })}
-                      className={`py-2 rounded-[6px] border text-[11px] font-medium cursor-pointer ${
-                        newPieceForm.urgence === u ? activeCls : 'border-[#1E2A38] bg-[#0B0F14] text-slate-400'
-                      }`}
-                    >
-                      {u}
-                    </button>
-                  ))}
-                </div>
-                <div className="grid grid-cols-2 gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setNewPieceForm({ ...newPieceForm, chuteDispo: true })}
-                    className={`py-2 rounded-[6px] border text-[11px] font-medium cursor-pointer ${
-                      newPieceForm.chuteDispo
-                        ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
-                        : 'border-[#1E2A38] bg-[#0B0F14] text-slate-400'
-                    }`}
-                  >
-                    En stock
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewPieceForm({ ...newPieceForm, chuteDispo: false })}
-                    className={`py-2 rounded-[6px] border text-[11px] font-medium cursor-pointer ${
-                      !newPieceForm.chuteDispo
-                        ? 'border-amber-500/40 bg-amber-500/15 text-amber-300'
-                        : 'border-[#1E2A38] bg-[#0B0F14] text-slate-400'
-                    }`}
-                  >
-                    À acheter
-                  </button>
-                </div>
-              </div>
-
-              {/* COLLAPSIBLE OPTIONAL WORKSHOP SETTINGS */}
-              <div className="border border-[#1E2A38] rounded-[6px] bg-[#0B0F14]/60">
-                <button
-                  type="button"
-                  onClick={() => setShowAdvancedNew(v => !v)}
-                  className="w-full px-3 py-2 flex items-center justify-between text-xs text-slate-300 cursor-pointer"
-                >
-                  <span>Machine, Opérateur & Temps (optionnel)</span>
-                  <span className="text-[11px] font-mono-num text-[#22D3EE]">
-                    {computedModalMin}m {showAdvancedNew ? '▲' : '▼'}
-                  </span>
-                </button>
-
-                {showAdvancedNew && (
-                  <div className="px-3 pb-3 pt-1 space-y-2.5 border-t border-[#1E2A38]">
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="block text-[10px] text-slate-400 mb-1">Machine</label>
-                        <select value={newPieceForm.machineId} onChange={e => setNewPieceForm({ ...newPieceForm, machineId: e.target.value })} className="w-full px-2 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-base sm:text-xs text-white">
-                          {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-[10px] text-slate-400 mb-1">Opérateur</label>
-                        <select value={newPieceForm.operateurId} onChange={e => setNewPieceForm({ ...newPieceForm, operateurId: e.target.value })} className="w-full px-2 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-base sm:text-xs text-white">
-                          {operators.map(o => <option key={o.id} value={o.id}>{o.nom}</option>)}
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-slate-400">Mode temps :</span>
-                      <div className="inline-flex rounded bg-[#0B0F14] border border-[#1E2A38] p-0.5 text-[10px]">
-                        <button
-                          type="button"
-                          onClick={() => setNewPieceForm({ ...newPieceForm, timeMode: 'detail' })}
-                          className={`px-2 py-0.5 rounded cursor-pointer ${newPieceForm.timeMode === 'detail' ? 'bg-[#22D3EE] text-[#0B0F14] font-semibold' : 'text-slate-400'}`}
-                        >
-                          Réglage + Unit.
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setNewPieceForm({ ...newPieceForm, timeMode: 'total', tempsTotalMin: String(computedModalMin || 60) })}
-                          className={`px-2 py-0.5 rounded cursor-pointer ${newPieceForm.timeMode === 'total' ? 'bg-[#22D3EE] text-[#0B0F14] font-semibold' : 'text-slate-400'}`}
-                        >
-                          Total
-                        </button>
-                      </div>
-                    </div>
-
-                    {newPieceForm.timeMode === 'detail' ? (
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="block text-[10px] text-slate-400 mb-1">Réglage (min)</label>
-                          <input
-                            type="number"
-                            inputMode="numeric"
-                            min="0"
-                            value={newPieceForm.tempsReglageMin}
-                            onChange={e => setNewPieceForm({ ...newPieceForm, tempsReglageMin: e.target.value })}
-                            placeholder="20"
-                            className="w-full px-2.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-base sm:text-xs text-white"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] text-slate-400 mb-1">Par pièce (min)</label>
-                          <input
-                            type="number"
-                            inputMode="decimal"
-                            min="0"
-                            step="0.5"
-                            value={newPieceForm.tempsUnitaireMin}
-                            onChange={e => setNewPieceForm({ ...newPieceForm, tempsUnitaireMin: e.target.value })}
-                            placeholder="6"
-                            className="w-full px-2.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-base sm:text-xs text-white"
-                          />
-                        </div>
-                      </div>
-                    ) : (
-                      <div>
-                        <label className="block text-[10px] text-slate-400 mb-1">Temps total (min)</label>
-                        <input
-                          type="number"
-                          inputMode="numeric"
-                          min="1"
-                          value={newPieceForm.tempsTotalMin}
-                          onChange={e => setNewPieceForm({ ...newPieceForm, tempsTotalMin: e.target.value })}
-                          placeholder="80"
-                          className="w-full px-2.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-base sm:text-xs text-white"
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* STICKY FOOTER */}
-            <div className="flex items-center justify-end gap-2 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] border-t border-[#1E2A38] bg-[#0B0F14]/80 shrink-0">
-              <button
-                type="button"
-                onClick={() => setShowNewModal(false)}
-                className="px-3.5 py-2 rounded-[6px] bg-[#111821] border border-[#1E2A38] text-xs text-slate-300 cursor-pointer"
-              >
-                Annuler
-              </button>
-              <button
-                type="submit"
-                className="flex-1 sm:flex-none px-5 py-2 rounded-[6px] bg-[#22D3EE] hover:bg-cyan-300 text-[#0B0F14] text-xs font-semibold cursor-pointer"
-              >
-                Créer l'OF
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
+      {/* UNIFIED OF DOSSIER & TIMELINE MODAL */}
+      <TimelineModal piece={timelinePiece} onClose={() => setTimelinePiece(null)} />
 
       {/* PANEL 1: OVERVIEW */}
       {activePanel === 'overview' && (
@@ -729,15 +630,53 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                 {new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })} · {activeMachines.length} machine(s) active(s) · TRS estimé <strong className="text-[#22D3EE] font-mono-num">{analytics.trsPct}%</strong>
               </p>
             </div>
-            <div className="flex items-center gap-2">
-              <button onClick={exportPDF} className="px-3 py-1.5 rounded-[6px] bg-[#111821] border border-[#1E2A38] hover:border-slate-600 text-xs font-medium text-slate-200 flex items-center gap-1.5 cursor-pointer">
-                <Download className="w-3.5 h-3.5" /> Exporter PDF
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={downloadFullHistoryZip}
+                disabled={exportingHistory}
+                className="px-3 py-1.5 rounded-[6px] bg-[#111821] border border-[#1E2A38] hover:border-[#22D3EE] text-xs font-medium text-[#22D3EE] flex items-center gap-1.5 cursor-pointer"
+                title="Télécharger toute la base + CSV + JSON en .ZIP"
+              >
+                <Archive className="w-3.5 h-3.5" /> {exportingHistory ? 'Export...' : 'Historique .ZIP'}
               </button>
-              <button onClick={openCreateModal} className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] hover:bg-cyan-300 text-[#0B0F14] text-xs font-semibold flex items-center gap-1.5 cursor-pointer">
+              <button onClick={exportPDF} className="px-3 py-1.5 rounded-[6px] bg-[#111821] border border-[#1E2A38] hover:border-slate-600 text-xs font-medium text-slate-200 flex items-center gap-1.5 cursor-pointer">
+                <Download className="w-3.5 h-3.5" /> PDF
+              </button>
+              <button onClick={() => setShowNewModal(true)} className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] hover:bg-cyan-300 text-[#0B0F14] text-xs font-semibold flex items-center gap-1.5 cursor-pointer">
                 <Plus className="w-3.5 h-3.5" /> Nouvelle pièce
               </button>
             </div>
           </div>
+
+          {/* OFS EN ATTENTE DE VALIDATION DIRECTION (CRÉÉS PAR CHEF OU BE) */}
+          {state.pieces.filter(p => p.statut === 'À valider').length > 0 && (
+            <div className="p-4 rounded-[6px] bg-purple-500/15 border border-purple-500/40 space-y-2.5 text-xs">
+              <div className="font-semibold text-purple-300 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4" /> OFs en attente de votre validation ({state.pieces.filter(p => p.statut === 'À valider').length})
+              </div>
+              {state.pieces.filter(p => p.statut === 'À valider').map(p => (
+                <div key={p.id} className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded bg-[#0B0F14] border border-purple-500/30">
+                  <div>
+                    <span className="font-mono-num text-[#22D3EE] font-semibold">{p.id}</span> · <strong className="text-white">{p.nom}</strong> ({p.quantitePrevue} pcs · {p.client})
+                    <div className="text-[11px] text-slate-400">
+                      Créé par {p.createdBy || 'Atelier'} ({p.createdByRole || '—'}) · Délai {p.delai}{p.estRepriseEnCours ? ' · Reprise en cours' : ''}
+                    </div>
+                  </div>
+                  <div className="flex gap-1.5">
+                    <button type="button" onClick={() => setTimelinePiece(p)} className="px-2.5 py-1 rounded bg-[#111821] border border-[#1E2A38] text-slate-300 cursor-pointer">
+                      Voir
+                    </button>
+                    <button type="button" onClick={() => validateDirection(p.id, 'approve')} className="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer">
+                      Valider
+                    </button>
+                    <button type="button" onClick={() => validateDirection(p.id, 'reject')} className="px-2.5 py-1 rounded bg-red-600/20 border border-red-500/40 text-red-300 cursor-pointer">
+                      Refuser
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* 4 KPI CARDS */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -858,7 +797,9 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                   {filteredPieces.map(p => (
                     <tr key={p.id} className="hover:bg-white/[0.02]">
                       <td className="py-2.5 pr-3 font-mono-num text-slate-200">
-                        {p.id}
+                        <button type="button" onClick={() => setTimelinePiece(p)} className="text-[#22D3EE] hover:underline font-semibold cursor-pointer" title="Voir tout l'historique & dossier">
+                          {p.id}
+                        </button>
                         {p.archived && <span className="ml-1 text-[9px] text-slate-500">(arch.)</span>}
                       </td>
                       <td className="py-2.5 pr-3">
@@ -1236,7 +1177,8 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
                 )}
 
                 <div className="flex flex-wrap gap-2 pt-1">
-                  <button onClick={() => downloadPieceZip(p)} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] flex items-center gap-1.5 cursor-pointer"><Archive className="w-3.5 h-3.5" /> Dossier .ZIP (+ fichiers BE)</button>
+                  <button onClick={() => setTimelinePiece(p)} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-[#22D3EE] flex items-center gap-1.5 cursor-pointer"><Clock className="w-3.5 h-3.5" /> Historique / Timeline</button>
+                  <button onClick={() => downloadPieceZip(p)} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] flex items-center gap-1.5 cursor-pointer"><Archive className="w-3.5 h-3.5" /> Dossier .ZIP (+ BE & Timeline)</button>
                   {p.statut === 'À acheter' && (
                     <button onClick={() => validateBuy(p.id)} className="px-3 py-1.5 rounded-[6px] bg-amber-600 hover:bg-amber-500 text-white flex items-center gap-1.5 cursor-pointer">
                       <ShoppingCart className="w-3.5 h-3.5" /> Valider Achat
@@ -1319,14 +1261,51 @@ export default function DirectionView({ state, reload, activePanel = 'overview',
             </div>
           </div>
 
-          <div className="cyber-card p-4 flex flex-col">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-semibold text-sm">Journal d'Audit & Base de données</h3>
+          <div className="cyber-card p-4 flex flex-col space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="font-semibold text-sm">Sauvegarde, Export Historique & Audit</h3>
               <button type="button" onClick={triggerBackup} className="px-2.5 py-1 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-xs text-[#22D3EE] flex items-center gap-1.5 cursor-pointer">
-                <Database className="w-3.5 h-3.5" /> Sauvegarder DB
+                <Database className="w-3.5 h-3.5" /> Backup Serveur
               </button>
             </div>
-            <div className="space-y-1.5 text-xs max-h-80 overflow-y-auto">
+
+            {/* FULL HISTORY DOWNLOAD & RESTORE PANEL */}
+            <div className="p-3 rounded-[6px] bg-[#0B0F14] border border-[#22D3EE]/30 space-y-2 text-xs">
+              <div className="font-semibold text-[#22D3EE]">Télécharger & Restaurer tout votre historique</div>
+              <p className="text-[11px] text-slate-400">
+                Téléchargez l'archive complète (.ZIP : base SQLite + OFs + arrêts + audit CSV/JSON) sur votre PC ou téléphone. Si Render redémarre, restaurez votre fichier <code className="text-slate-200">.db</code> en 1 clic.
+              </p>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={exportingHistory}
+                  onClick={downloadFullHistoryZip}
+                  className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] text-[#0B0F14] font-semibold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Archive className="w-3.5 h-3.5" /> {exportingHistory ? 'Préparation...' : 'Archive Complète (.ZIP)'}
+                </button>
+                <button
+                  type="button"
+                  onClick={downloadRawDb}
+                  className="px-3 py-1.5 rounded-[6px] bg-[#111821] border border-[#1E2A38] hover:border-[#22D3EE] text-slate-200 flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" /> Base atelier.db
+                </button>
+                <button
+                  type="button"
+                  onClick={exportExcel}
+                  className="px-3 py-1.5 rounded-[6px] bg-[#111821] border border-[#1E2A38] hover:border-[#22D3EE] text-slate-200 flex items-center gap-1.5 cursor-pointer"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" /> Excel / CSV
+                </button>
+                <label className="px-3 py-1.5 rounded-[6px] bg-amber-500/15 border border-amber-500/40 text-amber-300 font-semibold flex items-center gap-1.5 cursor-pointer">
+                  <Upload className="w-3.5 h-3.5" /> Restaurer (.db)
+                  <input type="file" accept=".db" onChange={handleRestoreDb} className="hidden" />
+                </label>
+              </div>
+            </div>
+
+            <div className="space-y-1.5 text-xs max-h-72 overflow-y-auto">
               {(state.auditLogs || []).map(l => (
                 <div key={l.id} className="flex justify-between gap-2 py-1.5 border-b border-[#1E2A38]">
                   <span><strong className="text-[#22D3EE]">{l.user}</strong> ({l.action}) — {l.details}</span>

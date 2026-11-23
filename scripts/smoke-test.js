@@ -203,7 +203,77 @@ async function run() {
     assert.strictEqual((await req('/api/upload', 'POST', { pieceId: c1.data.id, filename: 'evil.html', base64: 'PGgxPmhpPC9oMT4=' }, dirToken)).status, 400);
     assert.strictEqual((await req('/api/admin/backup', 'POST', {}, dirToken)).status, 200);
 
-    console.log('✅ TOUS LES TESTS DE SMOKE ONT RÉUSSI (11/11) !');
+    // 12. Fix 3: Chef creates OF -> À valider -> Direction validates -> BE + Chef validate -> Prêt atelier
+    const loginChef = await req('/api/login', 'POST', { username: 'chef', password: '1234' });
+    const chefToken = loginChef.data.token;
+    const loginBe = await req('/api/login', 'POST', { username: 'be', password: '1234' });
+    const beToken = loginBe.data.token;
+
+    const chefOf = await req('/api/pieces', 'POST', {
+      nom: 'Arbre spécial Ø55', client: 'MécaOran', quantitePrevue: 8,
+      typeMachine: 'Tournage CNC', chuteDispo: true, matiereDispo: true,
+      clientFile: { filename: 'plan_client_D55_L140.pdf', base64: Buffer.from('%PDF-1.4 (D55 L140 42CrMo4)').toString('base64') }
+    }, chefToken);
+    assert.strictEqual(chefOf.status, 201);
+    assert.strictEqual(chefOf.data.validationDirection, false);
+
+    st = await req('/api/state', 'GET', null, dirToken);
+    assert.strictEqual(st.data.pieces.find(p => p.id === chefOf.data.id).statut, 'À valider');
+
+    assert.strictEqual((await req(`/api/pieces/${chefOf.data.id}/validate-direction`, 'POST', { action: 'approve' }, dirToken)).status, 200);
+    assert.strictEqual((await req(`/api/pieces/${chefOf.data.id}/be-validate`, 'POST', { nonRequis: false }, beToken)).status, 200);
+    assert.strictEqual((await req(`/api/pieces/${chefOf.data.id}/chef-validate`, 'POST', {}, chefToken)).status, 200);
+
+    st = await req('/api/state', 'GET', null, dirToken);
+    const readyOf = st.data.pieces.find(p => p.id === chefOf.data.id);
+    assert.strictEqual(readyOf.statut, 'Prêt atelier');
+    assert.strictEqual(readyOf.planningValide, true);
+    assert.ok(readyOf.events.length >= 4, 'Full OF timeline must track every step');
+
+    // 13. Fix 3: Reprise d'OF déjà en cours (travail en parallèle)
+    const repriseOf = await req('/api/pieces', 'POST', {
+      nom: 'Bride en cours atelier', client: 'Client Parallèle', quantitePrevue: 12,
+      estRepriseEnCours: true, statutInitial: 'En cours', quantiteDejaRealisee: 5, tempsDejaPasseMin: 40,
+      machineId: 'm2', operateurId: 'u4'
+    }, dirToken);
+    assert.strictEqual(repriseOf.status, 201);
+    st = await req('/api/state', 'GET', null, dirToken);
+    const repPiece = st.data.pieces.find(p => p.id === repriseOf.data.id);
+    assert.strictEqual(repPiece.statut, 'En cours');
+    assert.strictEqual(repPiece.quantiteRealisee, 5);
+    assert.strictEqual(repPiece.planningValide, true);
+
+    // 14. Fix 3: AI historical estimation + Qualified operator stop (plan_be) + BE resolve + AI 2D plan analyzer
+    const aiEst = await req('/api/planning/estimate-of', 'POST', {
+      nom: 'Arbre transmission Ø45', typeMachine: 'Tournage CNC', quantitePrevue: 10
+    }, dirToken);
+    assert.strictEqual(aiEst.status, 200);
+    assert.ok(aiEst.data.totalMin > 0 && aiEst.data.recommendedMachineId);
+
+    const repOp = repPiece.operations[0];
+    const stopRes = await req(`/api/operations/${repOp.id}/stop`, 'POST', {
+      categorie: 'plan_be', motif: 'Cote Ø45 manquante sur plan'
+    }, karimToken);
+    assert.strictEqual(stopRes.status, 200);
+    assert.strictEqual(stopRes.data.cibleRole, 'be');
+    assert.strictEqual((await req(`/api/stops/${stopRes.data.stopId}/resolve`, 'POST', {}, beToken)).status, 200);
+
+    const planAna = await req('/api/be/analyze-plan', 'POST', {
+      filename: 'Bride_D120_6xD10_42CrMo4.pdf', notes: 'L=25'
+    }, beToken);
+    assert.strictEqual(planAna.status, 200);
+    assert.strictEqual(planAna.data.extracted.partType, 'bride');
+
+    // 15. Fix 3: Full History Export & Raw DB download
+    const exp = await req('/api/admin/export-history', 'GET', null, dirToken);
+    assert.strictEqual(exp.status, 200);
+    assert.ok(Array.isArray(exp.data.pieces) && Array.isArray(exp.data.stops));
+    const dbDl = await fetch(`${BASE}/api/admin/download-db`, { headers: { Authorization: `Bearer ${dirToken}` } });
+    assert.strictEqual(dbDl.status, 200);
+    const dbBuf = Buffer.from(await dbDl.arrayBuffer());
+    assert.ok(dbBuf.subarray(0, 15).toString('utf8').startsWith('SQLite format 3'));
+
+    console.log('✅ TOUS LES TESTS DE SMOKE ONT RÉUSSI (15/15) !');
   } finally {
     proc.kill('SIGTERM');
     for (const f of [tmpDb, `${tmpDb}-wal`, `${tmpDb}-shm`]) {

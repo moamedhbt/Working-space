@@ -10,7 +10,7 @@ const {
   getEnrichedPieces,
   getEnrichedPannes
 } = require('../db/database');
-const { PRIO_RANK, analyzeScheduleAndAI } = require('../services/scheduler');
+const { PRIO_RANK, analyzeScheduleAndAI, estimateNewOfAI } = require('../services/scheduler');
 const { auth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -76,6 +76,14 @@ router.get('/tv', (req, res) => {
   const pieces = getEnrichedPieces("WHERE p.planningValide = 1 AND p.statut != 'Clôturé'");
   const machines = queryAll('SELECT * FROM machines WHERE actif = 1 ORDER BY nom');
   res.json({ pieces, machines });
+});
+
+router.post('/planning/estimate-of', auth, requireRole('directeur', 'chef', 'be'), (req, res) => {
+  const pieces = getEnrichedPieces();
+  const machines = queryAll('SELECT * FROM machines');
+  const settings = getSettings();
+  const result = estimateNewOfAI(req.body || {}, pieces, machines, settings);
+  res.json(result);
 });
 
 router.post('/planning/optimize', auth, requireRole('directeur', 'chef'), (req, res) => {

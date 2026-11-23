@@ -1,15 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import {
   Camera, Play, CheckCircle, Pause, AlertTriangle, RotateCcw, Layers,
-  FileText, Code2, Box, X, Save, Download
+  FileText, Code2, Box, X, Save, Download, Clock
 } from 'lucide-react';
 import { api } from '../api';
 import ModelViewer3D from './ModelViewer3D';
+import TimelineModal from './TimelineModal';
+
+const STOP_REASONS = [
+  { id: 'panne', label: 'Panne machine', target: 'Alerte Chef + Direction', cls: 'bg-red-500/15 border-red-500/40 text-red-300' },
+  { id: 'outil', label: 'Manque outil / plaquette', target: 'Alerte Chef d’atelier', cls: 'bg-amber-500/15 border-amber-500/40 text-amber-300' },
+  { id: 'matiere', label: 'Manque matière / brut', target: 'Alerte Chef + Direction', cls: 'bg-orange-500/15 border-orange-500/40 text-orange-300' },
+  { id: 'plan_be', label: 'Problème plan / prog. CNC', target: 'Alerte Bureau d’Études', cls: 'bg-purple-500/15 border-purple-500/40 text-purple-300' },
+  { id: 'pause', label: 'Pause / Fin de poste', target: 'Pause simple', cls: 'bg-slate-800 border-slate-600 text-slate-200' }
+];
 
 export default function OperateurView({ state, user, reload }) {
   const [busyOpId, setBusyOpId] = useState(null);
-  const [panneOpenId, setPanneOpenId] = useState(null);
-  const [panneMotif, setPanneMotif] = useState('');
+  const [stopModalOp, setStopModalOp] = useState(null); // { piece, op }
+  const [stopCat, setStopCat] = useState('panne');
+  const [stopMotif, setStopMotif] = useState('');
+  const [timelinePiece, setTimelinePiece] = useState(null);
   const [partialByOp, setPartialByOp] = useState({});
   const [feedback, setFeedback] = useState({ type: '', text: '' });
   const [nowMs, setNowMs] = useState(Date.now());
@@ -118,13 +129,18 @@ export default function OperateurView({ state, user, reload }) {
     }
   }
 
-  async function handlePanne(opId) {
-    setBusyOpId(opId);
+  async function submitQualifiedStop() {
+    if (!stopModalOp) return;
+    setBusyOpId(stopModalOp.op.id);
     try {
-      await api(`/api/operations/${opId}/panne`, 'POST', { motif: panneMotif.trim() || 'Panne machine signalée' });
-      setPanneOpenId(null);
-      setPanneMotif('');
-      notify('ok', 'Panne signalée au Chef d’atelier (temps sauvegardé).');
+      await api(`/api/operations/${stopModalOp.op.id}/stop`, 'POST', {
+        categorie: stopCat,
+        motif: stopMotif.trim()
+      });
+      const reason = STOP_REASONS.find(r => r.id === stopCat);
+      setStopModalOp(null);
+      setStopMotif('');
+      notify('ok', `${reason?.label || 'Arrêt'} enregistré — ${reason?.target || ''}`);
       reload();
     } catch (e) {
       notify('err', e.message);
@@ -165,6 +181,60 @@ export default function OperateurView({ state, user, reload }) {
 
   return (
     <div className="max-w-lg mx-auto space-y-4">
+      {/* TIMELINE MODAL */}
+      <TimelineModal piece={timelinePiece} onClose={() => setTimelinePiece(null)} />
+
+      {/* QUALIFIED STOP SHEET (MOBILE-FIRST) */}
+      {stopModalOp && (
+        <div
+          className="fixed inset-0 z-[70] bg-black/80 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={e => { if (e.target === e.currentTarget) setStopModalOp(null); }}
+        >
+          <div className="w-full sm:max-w-md bg-[#111821] border-t sm:border border-[#1E2A38] rounded-t-2xl sm:rounded-lg p-4 space-y-3">
+            <div className="flex items-center justify-between border-b border-[#1E2A38] pb-2">
+              <span className="text-sm font-semibold text-white">Arrêter / Signaler un blocage</span>
+              <button type="button" onClick={() => setStopModalOp(null)} className="text-slate-400 hover:text-white cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              {STOP_REASONS.map(r => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => setStopCat(r.id)}
+                  className={`w-full px-3 py-2.5 rounded-[6px] border text-left flex items-center justify-between cursor-pointer ${
+                    stopCat === r.id ? r.cls + ' ring-1 ring-white/30' : 'bg-[#0B0F14] border-[#1E2A38] text-slate-300'
+                  }`}
+                >
+                  <span className="text-xs font-semibold">{r.label}</span>
+                  <span className="text-[10px] opacity-80">{r.target}</span>
+                </button>
+              ))}
+            </div>
+            <input
+              value={stopMotif}
+              onChange={e => setStopMotif(e.target.value)}
+              placeholder="Précision (ex: Plaquette CNMG cassée, cote Ø45 douteuse...)"
+              className="w-full px-3 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-base sm:text-xs text-white"
+            />
+            <div className="flex gap-2 pt-1 pb-[max(0.25rem,env(safe-area-inset-bottom))]">
+              <button type="button" onClick={() => setStopModalOp(null)} className="px-4 py-2.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-xs text-slate-300 cursor-pointer">
+                Annuler
+              </button>
+              <button
+                type="button"
+                disabled={busyOpId === stopModalOp.op.id}
+                onClick={submitQualifiedStop}
+                className="flex-1 py-2.5 rounded-[6px] bg-red-600 hover:bg-red-500 text-white text-xs font-semibold cursor-pointer"
+              >
+                Confirmer l'arrêt
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* PLAN PDF / IMAGE MODAL */}
       {planModal && (
         <div className="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-3">
@@ -417,10 +487,18 @@ export default function OperateurView({ state, user, reload }) {
                   <button
                     type="button"
                     disabled={isBusy}
-                    onClick={() => { setPanneOpenId(panneOpenId === op.id ? null : op.id); setPanneMotif(''); }}
+                    onClick={() => { setStopModalOp({ piece: p, op }); setStopCat('panne'); setStopMotif(''); }}
                     className="flex-1 py-2 rounded-[6px] bg-red-500/15 border border-red-500/40 text-red-300 text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50"
                   >
-                    <AlertTriangle className="w-3.5 h-3.5" /> Signaler Panne
+                    <AlertTriangle className="w-3.5 h-3.5" /> Arrêt / Blocage
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTimelinePiece(p)}
+                    className="px-2.5 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-slate-300 text-xs flex items-center gap-1 cursor-pointer"
+                    title="Dossier & Historique complet"
+                  >
+                    <Clock className="w-3.5 h-3.5 text-[#22D3EE]" />
                   </button>
                 </div>
 
@@ -454,25 +532,6 @@ export default function OperateurView({ state, user, reload }) {
                     <Save className="w-3 h-3" /> Pointer
                   </button>
                 </div>
-
-                {panneOpenId === op.id && (
-                  <div className="p-3 rounded-[6px] bg-red-950/40 border border-red-500/40 space-y-2 text-xs">
-                    <input
-                      value={panneMotif}
-                      onChange={e => setPanneMotif(e.target.value)}
-                      placeholder="Motif de la panne (ex: Casse outil, alarme broche...)"
-                      className="w-full p-2 rounded bg-[#0B0F14] border border-red-500/40 text-white"
-                    />
-                    <div className="flex gap-2">
-                      <button type="button" disabled={isBusy} onClick={() => handlePanne(op.id)} className="flex-1 py-1.5 rounded bg-red-600 hover:bg-red-500 text-white font-semibold cursor-pointer">
-                        Confirmer la panne
-                      </button>
-                      <button type="button" onClick={() => setPanneOpenId(null)} className="px-3 py-1.5 rounded bg-[#0B0F14] border border-[#1E2A38] text-slate-300 cursor-pointer">
-                        Annuler
-                      </button>
-                    </div>
-                  </div>
-                )}
 
                 <form onSubmit={e => handleFinish(p.id, op.id, e)} className="space-y-2.5 pt-2 border-t border-[#1E2A38]">
                   <div className="grid grid-cols-2 gap-2 text-xs">

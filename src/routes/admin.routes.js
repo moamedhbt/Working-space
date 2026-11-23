@@ -1,15 +1,24 @@
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const {
+  BACKUP_DIR,
   queryOne,
   queryAll,
   runSql,
   transaction,
   hashPassword,
   logAudit,
+  logPieceEvent,
   backupDB,
+  restoreDBFromBuffer,
   getSettings,
   saveSettings,
-  syncPieceFromOperations
+  syncPieceFromOperations,
+  getEnrichedPieces,
+  getEnrichedPannes,
+  getEnrichedStops,
+  getMaintenanceLogs
 } = require('../db/database');
 const { auth, requireRole } = require('../middleware/auth');
 
@@ -225,6 +234,9 @@ router.post('/pannes/:id/resolve', auth, requireRole('directeur', 'chef'), (req,
   });
 
   logAudit(req.user, 'PANNE RÉSOLUE', `Ticket ${id} résolu (${dureeArretMin} min d'arrêt)`);
+  if (panne.pieceId) {
+    logPieceEvent(panne.pieceId, req.user, 'panne_resolue', 'Panne machine résolue', `Durée d'arrêt : ${dureeArretMin} min`);
+  }
   res.json({ ok: true, dureeArretMin });
 });
 
@@ -235,6 +247,54 @@ router.post('/admin/backup', auth, requireRole('directeur'), async (req, res) =>
     res.json({ ok: true, file });
   } catch (err) {
     res.status(500).json({ error: 'Erreur sauvegarde : ' + err.message });
+  }
+});
+
+router.get('/admin/download-db', auth, requireRole('directeur'), async (req, res) => {
+  try {
+    const filename = await backupDB('download');
+    const fullPath = path.join(BACKUP_DIR, filename);
+    logAudit(req.user, 'TÉLÉCHARGEMENT DB', filename);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    const stream = fs.createReadStream(fullPath);
+    stream.pipe(res);
+  } catch (err) {
+    res.status(500).json({ error: 'Erreur téléchargement DB : ' + err.message });
+  }
+});
+
+router.get('/admin/export-history', auth, requireRole('directeur', 'chef'), (req, res) => {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    exportedBy: req.user.nom,
+    settings: getSettings(),
+    users: queryAll('SELECT id, nom, username, role, actif FROM users ORDER BY role, nom'),
+    machines: queryAll('SELECT * FROM machines ORDER BY nom'),
+    pieces: getEnrichedPieces(),
+    pannes: getEnrichedPannes(),
+    stops: getEnrichedStops(),
+    maintenanceLogs: getMaintenanceLogs(),
+    auditLogs: queryAll('SELECT * FROM audit_logs ORDER BY rowid DESC LIMIT 1000')
+  };
+  logAudit(req.user, 'EXPORT HISTORIQUE COMPLET', `${payload.pieces.length} OF(s) exporté(s)`);
+  res.json(payload);
+});
+
+router.post('/admin/restore-db', auth, requireRole('directeur'), async (req, res) => {
+  const { base64 } = req.body || {};
+  if (!base64) return res.status(400).json({ error: 'Fichier .db manquant' });
+  try {
+    const clean = String(base64).includes(',') ? String(base64).split(',')[1] : String(base64);
+    const buf = Buffer.from(clean, 'base64');
+    if (buf.length > 25 * 1024 * 1024) {
+      return res.status(400).json({ error: 'Sauvegarde trop volumineuse (max 25 Mo)' });
+    }
+    await restoreDBFromBuffer(buf);
+    logAudit(req.user, 'RESTAURATION DB', `Base restaurée (${Math.round(buf.length / 1024)} Ko)`);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
