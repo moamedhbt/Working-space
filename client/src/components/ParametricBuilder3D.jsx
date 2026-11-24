@@ -1792,8 +1792,13 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
               )}
 
               {occtResult?.featureWarnings?.length > 0 && (
-                <div className="text-[10px] text-amber-300 bg-amber-950/30 border border-amber-500/35 rounded px-2 py-1">
-                  Briques ignorées : {occtResult.featureWarnings.join(' · ')}
+                <div className="text-[10px] text-amber-200 bg-amber-950/40 border border-amber-500/45 rounded px-2 py-1.5 space-y-0.5">
+                  <div className="font-semibold text-amber-300 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3 shrink-0" /> Contrôle volume avant/après (0 token) :
+                  </div>
+                  <ul className="list-disc pl-4">
+                    {occtResult.featureWarnings.map((fw, fwi) => <li key={fwi}>{fw}</li>)}
+                  </ul>
                 </div>
               )}
 

@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node src/server.js",
     "build": "npm --prefix client run build",
-    "test": "node scripts/smoke-test.js"
+    "test": "node scripts/smoke-test.js",
+    "test:cad": "node scripts/test-cad-bricks.mjs"
   },
   "keywords": [],
   "author": "",
