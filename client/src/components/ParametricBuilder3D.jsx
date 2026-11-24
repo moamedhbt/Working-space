@@ -233,7 +233,9 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
   const [elapsedSec, setElapsedSec] = useState(0);
   const [chatError, setChatError] = useState('');
   const [openThinking, setOpenThinking] = useState({});
-  const [workMode, setWorkMode] = useState('standard'); // 'standard' (fast bricks) | 'complex' (freeform Replicad)
+  const [workMode, setWorkMode] = useState('standard'); // 'standard' (fast bricks) | 'complex' (guided 4-step freeform)
+  const [complexStep, setComplexStep] = useState(0); // 0=idle, 1=reading, 2=confirm, 3=built, 4=compared
+  const [complexBrief, setComplexBrief] = useState(null); // editable reading brief from Step 1
   const [correctionLog, setCorrectionLog] = useState([]); // [{ ts, text }]
 
   // OpenCASCADE / Replicad B-Rep Worker state
@@ -300,6 +302,8 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     setHiddenParts({});
     setOcctResult(null);
     setOcctError('');
+    setComplexStep(0);
+    setComplexBrief(null);
     setValidatedByBe(false);
     setChatError('');
     setErrorMsg('');
@@ -788,6 +792,10 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
         ? sentAttachments.map(a => ({ filename: a.filename, mimeType: a.mimeType, base64: a.base64 }))
         : (shouldIncludeOldPlan ? (uploadedPlan?.attachments || []).map(a => ({ filename: a.filename, mimeType: a.mimeType, base64: a.base64 })) : []);
 
+      // In Complex/Moule mode: when sending a new plan/photo or starting fresh, run Step 1 (Pure Reading) first!
+      const shouldRunReadStep = workMode === 'complex' && (sentAttachments.length > 0 || !hasFeatures);
+      if (shouldRunReadStep) setComplexStep(1);
+
       const res = await api('/api/be/refine-3d', 'POST', {
         pieceId: piece?.id || null,
         includePlan: shouldIncludeOldPlan,
@@ -798,14 +806,20 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
         ficheTechnique: fiche,
         history: updatedHistory.map(m => ({ role: m.role, text: m.text })),
         workMode,
+        complexPhase: shouldRunReadStep ? 'read' : '',
+        validatedBrief: !shouldRunReadStep && workMode === 'complex' ? complexBrief : null,
         prompt: text
       });
 
       if (res.ficheTechnique) setFiche(res.ficheTechnique);
-      if (res.modified && res.cadSpec) {
+      if (res.complexBrief) {
+        setComplexBrief({ ...res.complexBrief, userNote: '' });
+        setComplexStep(2);
+      } else if (res.modified && res.cadSpec) {
         setCadSpec(res.cadSpec);
         setHiddenParts({});
         setValidatedByBe(false);
+        if (workMode === 'complex') setComplexStep(3);
         setTimeout(() => setCameraView(activeView), 450);
       }
       setChatMessages(prev => [
@@ -817,6 +831,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
           modified: Boolean(res.modified),
           mode: res.mode,
           workMode: res.workMode || workMode,
+          complexPhase: res.complexPhase || '',
           elapsedMs: res.elapsedMs || 0,
           model: res.model || '',
           usedVision: Boolean(res.usedVision),
@@ -825,6 +840,65 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
       ]);
     } catch (err) {
       setChatError(err.message);
+      if (workMode === 'complex' && complexStep === 1) setComplexStep(0);
+    } finally {
+      setRefining(false);
+    }
+  }
+
+  // Step 3 of Complex/Moule pipeline: build faithful 3D strictly from user's confirmed reading brief
+  async function handleConfirmComplexBuild() {
+    if (!complexBrief || refining) return;
+    setRefining(true);
+    setChatError('');
+    setComplexStep(3);
+
+    const checkedCount = (complexBrief.formes || []).filter(f => f.checked !== false).length;
+    const confirmMsg = {
+      role: 'user',
+      text: `✅ Fiche confirmée (${checkedCount} formes, ${(complexBrief.cotes || []).length} cotes)${complexBrief.userNote ? ` · ${complexBrief.userNote}` : ''} → Construire la 3D fidèle.`,
+      ts: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+    };
+    const updatedHistory = [...chatMessages, confirmMsg];
+    setChatMessages(updatedHistory);
+
+    try {
+      const res = await api('/api/be/refine-3d', 'POST', {
+        pieceId: piece?.id || null,
+        includePlan: false,
+        attachments: [],
+        cadSpec,
+        ficheTechnique: fiche,
+        history: updatedHistory.slice(-4).map(m => ({ role: m.role, text: m.text })),
+        workMode: 'complex',
+        complexPhase: 'build',
+        validatedBrief: complexBrief,
+        prompt: 'Construis le modèle 3D OpenCASCADE B-Rep exactement selon la fiche validée ci-dessus, sans inventer d’autres éléments.'
+      });
+
+      if (res.ficheTechnique) setFiche(res.ficheTechnique);
+      if (res.cadSpec) {
+        setCadSpec(res.cadSpec);
+        setHiddenParts({});
+        setValidatedByBe(false);
+        setTimeout(() => setCameraView(activeView), 450);
+      }
+      setChatMessages(prev => [
+        ...prev,
+        {
+          role: 'ai',
+          text: res.reply || 'Modèle 3D construit selon votre fiche validée.',
+          modified: Boolean(res.modified),
+          workMode: 'complex',
+          complexPhase: 'build',
+          elapsedMs: res.elapsedMs || 0,
+          model: res.model || '',
+          ts: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+        }
+      ]);
+    } catch (err) {
+      setChatError(err.message);
+      setComplexStep(2);
     } finally {
       setRefining(false);
     }
@@ -992,6 +1066,8 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
         history: updatedHistory.map(m => ({ role: m.role, text: m.text })),
         visualAudit: true,
         workMode,
+        complexPhase: workMode === 'complex' ? 'compare' : '',
+        validatedBrief: workMode === 'complex' ? complexBrief : null,
         prompt: 'Compare attentivement ce rendu 3D en 3 vues (FACE / BOUT / ISO) au plan 2D original. Liste les erreurs visuelles (corps inversé avec gorge, méplat/D-shape manquant, ergots, trous, proportions) et corrige le modèle 3D B-Rep immédiatement.'
       });
 
@@ -1000,6 +1076,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
         setCadSpec(res.cadSpec);
         setHiddenParts({});
         setValidatedByBe(false);
+        if (workMode === 'complex') setComplexStep(4);
         setTimeout(() => setCameraView(activeView), 450);
       }
       setChatMessages(prev => [
@@ -2309,13 +2386,54 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
               {chatMessages.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => { setChatMessages([]); setChatError(''); }}
+                  onClick={() => { setChatMessages([]); setChatError(''); setComplexStep(0); setComplexBrief(null); }}
                   className="px-2 py-1 rounded bg-[#111821] border border-[#1E2A38] text-[10px] text-slate-400 hover:text-red-300 cursor-pointer"
                 >
                   Effacer
                 </button>
               )}
             </div>
+
+            {/* SLIM 4-STEP BAR (ONLY IN COMPLEX / MOULE MODE) */}
+            {workMode === 'complex' && (
+              <div className="px-3 py-1.5 border-b border-purple-500/25 bg-purple-950/20 flex flex-wrap items-center justify-between gap-1.5 text-[10px] shrink-0">
+                <div className="flex items-center gap-1 flex-wrap">
+                  {[
+                    { n: 1, label: '1. Lecture' },
+                    { n: 2, label: '2. Valider' },
+                    { n: 3, label: '3. 3D' },
+                    { n: 4, label: '4. Comparer' }
+                  ].map((st, si) => {
+                    const done = complexStep > st.n;
+                    const active = complexStep === st.n;
+                    return (
+                      <span
+                        key={st.n}
+                        className={`px-1.5 py-0.5 rounded border ${
+                          active
+                            ? 'bg-purple-500/25 border-purple-400/60 text-purple-200 font-semibold'
+                            : done
+                              ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                              : 'bg-[#0B0F14] border-[#1E2A38] text-slate-500'
+                        }`}
+                      >
+                        {done ? '✓ ' : ''}{st.label}
+                      </span>
+                    );
+                  })}
+                </div>
+                {complexStep === 3 && hasFeatures && hasPlanContext && (
+                  <button
+                    type="button"
+                    disabled={refining || buildingOcct}
+                    onClick={handleVisualAudit3DvsPlan}
+                    className="px-2 py-0.5 rounded bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white font-semibold flex items-center gap-1 cursor-pointer"
+                  >
+                    <ScanEye className="w-3 h-3" /> Étape 4 : Comparer & Corriger
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* Chat Messages Scroll Area */}
             <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
@@ -2434,11 +2552,115 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                 );
               })}
 
+              {/* STEP 2/4: EDITABLE READING CONFIRMATION CARD (ONLY IN COMPLEX/MOULE MODE) */}
+              {workMode === 'complex' && complexStep === 2 && complexBrief && !refining && (
+                <div className="p-2.5 rounded-[6px] bg-purple-950/25 border border-purple-400/50 space-y-2 text-[11px]">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-purple-200">
+                      Étape 2/4 — Vérifiez ce que l’IA a lu (0 token)
+                    </span>
+                    <select
+                      value={complexBrief.axePrincipal || 'X'}
+                      onChange={e => setComplexBrief(prev => ({ ...prev, axePrincipal: e.target.value }))}
+                      className="px-1.5 py-0.5 rounded bg-[#0B0F14] border border-purple-500/40 text-purple-200 text-[10px]"
+                      title="Axe principal de construction"
+                    >
+                      <option value="X">Axe X</option>
+                      <option value="Y">Axe Y</option>
+                      <option value="Z">Axe Z</option>
+                    </select>
+                  </div>
+
+                  {complexBrief.resume && (
+                    <div className="text-slate-200 text-[10px]">{complexBrief.resume} · <span className="text-slate-400">{complexBrief.origine}</span></div>
+                  )}
+
+                  {complexBrief.formes?.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="text-[10px] text-slate-400">Décochez tout élément inventé / faux :</div>
+                      <div className="space-y-1 max-h-[115px] overflow-y-auto pr-1">
+                        {complexBrief.formes.map((fm, fi) => (
+                          <label key={fm.id || fi} className="flex items-start gap-1.5 text-[10px] text-slate-200 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={fm.checked !== false}
+                              onChange={e => setComplexBrief(prev => ({
+                                ...prev,
+                                formes: prev.formes.map((x, xi) => (xi === fi ? { ...x, checked: e.target.checked } : x))
+                              }))}
+                              className="mt-0.5 accent-emerald-500"
+                            />
+                            <span className={fm.checked === false ? 'line-through text-slate-500' : ''}>{fm.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {complexBrief.cotes?.length > 0 && (
+                    <div className="grid grid-cols-2 gap-1 max-h-[110px] overflow-y-auto pr-1">
+                      {complexBrief.cotes.map((ct, ci) => (
+                        <div key={ct.key || ci} className="flex items-center justify-between gap-1 px-1.5 py-0.5 rounded bg-[#0B0F14] border border-[#1E2A38] text-[10px]">
+                          <span className="truncate text-slate-300" title={ct.label}>
+                            {ct.status === 'verifier' ? '⚠ ' : ct.status === 'illisible' ? '❓ ' : '✓ '}
+                            {ct.label}
+                          </span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={ct.value}
+                            onChange={e => {
+                              const v = parseFloat(e.target.value);
+                              if (Number.isFinite(v)) {
+                                setComplexBrief(prev => ({
+                                  ...prev,
+                                  cotes: prev.cotes.map((x, xi) => (xi === ci ? { ...x, value: v, status: 'sur' } : x))
+                                }));
+                              }
+                            }}
+                            className="w-16 px-1 py-0.5 rounded bg-[#111821] border border-[#243447] text-right font-mono-num text-white"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <input
+                    type="text"
+                    value={complexBrief.userNote || ''}
+                    onChange={e => setComplexBrief(prev => ({ ...prev, userNote: e.target.value }))}
+                    placeholder="Précision rapide optionnelle avant construction…"
+                    className="w-full px-2 py-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-[10px] text-white focus:border-emerald-400 focus:outline-none"
+                  />
+
+                  <div className="flex items-center justify-between gap-2 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => { setComplexStep(0); setComplexBrief(null); }}
+                      className="px-2 py-1 rounded bg-[#111821] border border-[#1E2A38] text-[10px] text-slate-400 hover:text-white cursor-pointer"
+                    >
+                      Annuler
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleConfirmComplexBuild}
+                      className="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Confirmer & Construire la 3D
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {refining && (
                 <div className="p-2.5 rounded-[6px] bg-sky-950/20 border border-sky-500/20 text-sky-300 text-xs flex items-center justify-between gap-2 animate-pulse">
                   <span>
                     {workMode === 'complex'
-                      ? '🧩 Mode Complexe / Libre : l’IA conçoit le modèle 3D…'
+                      ? (complexStep === 1
+                          ? '🧩 Étape 1/4 : lecture HD du plan sans rien inventer…'
+                          : complexStep === 3
+                            ? '🧩 Étape 3/4 : construction 3D selon votre fiche validée…'
+                            : '🧩 Mode Complexe / Libre : traitement en cours…')
                       : '⚡ Mode Standard : l’IA assemble les briques 3D…'}
                   </span>
                   <span className="font-mono-num text-sky-200 font-semibold">{elapsedSec.toFixed(1)}s</span>

@@ -363,7 +363,7 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
         const candidates = [];
         const suggested = errMsg.match(/use\s+(?:models\/)?([a-z0-9._-]+)/i);
         if (suggested?.[1]) candidates.push(suggested[1]);
-        for (const fb of ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash']) {
+        for (const fb of ['gemini-3.5-flash', 'gemini-3.5-pro', 'gemini-2.5-flash']) {
           if (fb !== attempt.model && !candidates.includes(fb)) candidates.push(fb);
         }
         try {
@@ -983,7 +983,7 @@ function applyLocalCadPrompt(cadSpec, prompt = '') {
   };
 }
 
-async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer = null, filename = 'plan', attachments = [], ficheTechnique = null, errorContext = '', visualAudit = false, workMode = 'standard' }) {
+async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer = null, filename = 'plan', attachments = [], ficheTechnique = null, errorContext = '', visualAudit = false, workMode = 'standard', complexPhase = '', validatedBrief = null }) {
   const startedAt = Date.now();
   const cleanSpec = sanitizeCadSpec(cadSpec);
   const ext = path.extname(filename || '').toLowerCase();
@@ -994,32 +994,34 @@ async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer =
     'image/jpeg';
 
   const isComplexMode = workMode === 'complex';
+  const isComplexRead = isComplexMode && complexPhase === 'read';
+  const isComplexBuild = isComplexMode && complexPhase === 'build';
   const recentHistory = (Array.isArray(history) ? history : [])
     .slice(isComplexMode ? -6 : -4)
     .map(m => `${m.role === 'user' ? 'BE' : 'IA'} : ${String(m.text || '').slice(0, 350)}`)
     .join('\n');
 
   const hasVision = (Array.isArray(attachments) && attachments.some(a => a?.base64)) || (planBuffer && Buffer.isBuffer(planBuffer) && planBuffer.length > 0);
-  const compactFollowUp = !hasVision && !visualAudit && Boolean(ficheTechnique);
+  const compactFollowUp = !hasVision && !visualAudit && !isComplexRead && !isComplexBuild && Boolean(ficheTechnique);
   // Standard = FAST (enable_thinking: false, lean brick prompt, auto image detail)
-  // Complex  = FREEFORM (full OpenCASCADE Replicad code, deep thinking 1600, HD vision)
+  // Complex  = FREEFORM (step-by-step guided OpenCASCADE Replicad, deep thinking 1600, HD vision)
   const useDeepThinking = isComplexMode && !errorContext;
   const imageDetail = isComplexMode || visualAudit ? 'high' : 'auto';
-  const maxTokens = isComplexMode ? 6144 : 2800;
+  const maxTokens = isComplexRead ? 3000 : isComplexMode ? 6144 : 2800;
 
-  const machinesCtx = (isComplexMode && !compactFollowUp) ? getWorkshopMachinesContext() : '';
+  const machinesCtx = (isComplexMode && !compactFollowUp && !isComplexRead) ? getWorkshopMachinesContext() : '';
   const lockedParams = (cleanSpec.params || []).filter(p => p.confidence === 'locked');
   const lockedNote = lockedParams.length > 0
     ? `🔒 COTES VERROUILLÉES (ne pas modifier sauf demande) : ${lockedParams.map(p => `${p.key}=${p.value}${p.unit || 'mm'}`).join(', ')}.\n`
     : '';
 
   const visualAuditNote = visualAudit
-    ? `👁️ CONTRÔLE VISUEL 3D vs PLAN 2D : Compare le rendu 3D (FACE/CÔTÉ/ISO) au plan 2D original, repère toute inversion de volume ou forme manquante, et corrige immédiatement ("modified": true).\n`
+    ? `👁️ ÉTAPE 4 — CONTRÔLE VISUEL 3D vs PLAN 2D : Compare le rendu 3D (FACE/CÔTÉ/ISO) au plan 2D original${validatedBrief ? ' et à la fiche validée' : ''}. Repère toute inversion de volume, élément inventé ou forme manquante, puis corrige immédiatement ("modified": true).\n`
     : '';
 
   let refineInstruction;
   if (!isComplexMode) {
-    // ⚡ MODE STANDARD (RAPIDE · BRIQUES) — ultra-léger, zéro couche inutile, 5-12s !
+    // ⚡ MODE STANDARD (RAPIDE · BRIQUES) — 1 coup direct, zéro lourdeur
     refineInstruction = `Tu es un Ingénieur BE CNC rapide et précis. Réponds en français court et construis la pièce 3D avec les briques standard OpenCASCADE.
 ${lockedNote}${visualAuditNote}Modèle actuel : ${JSON.stringify(cleanSpec)}
 ${recentHistory ? `Historique :\n${recentHistory}\n` : ''}${errorContext ? `Erreur à corriger : ${errorContext}\n` : ''}Demande BE : "${prompt}"
@@ -1045,23 +1047,63 @@ JSON STRICT (aucun texte hors JSON) :
 }
 
 ${ASSEMBLY_BLUEPRINT_DOC}`;
+  } else if (isComplexRead) {
+    // 🧩 ÉTAPE 1 — LECTURE PURE DU PLAN / DEMANDE (AUCUN CODE 3D, INTERDICTION D'INVENTER)
+    refineInstruction = `Tu es un Ingénieur BE CNC senior. ÉTAPE 1/4 : LECTURE PURE & PLAN DE CONSTRUCTION.
+⚠️ NE GÉNÈRE AUCUN CODE 3D MAINTENANT. Lis UNIQUEMENT ce qui est réellement visible sur le plan/photo ou écrit dans la demande.
+INTERDICTION ABSOLUE d'inventer des formes, trous ou cotes qui n'existent pas ! Si une cote est floue ou absente, marque-la "verifier" ou "illisible".
+Définis clairement le repère [0, 0, 0] et l'axe principal pour savoir exactement par où commencer la 3D à l'étape suivante.
+
+Demande BE : "${prompt}"
+
+Retourne STRICTEMENT un JSON valide (aucun texte hors JSON) :
+{
+  "reply": string (résumé court de ce que tu as lu + invite l'ingénieur à vérifier et cliquer Confirmer),
+  "modified": false,
+  "complexBrief": {
+    "resume": string (nom de la pièce ou du moule + fonction en 1 phrase),
+    "axePrincipal": "X"|"Y"|"Z",
+    "origine": string (ex: "Centre du corps [0,0,0], axe de révolution X"),
+    "vues": string (ce qui est réellement visible sur chaque vue sans rien inventer),
+    "formes": [
+      { "id": string, "label": string (description courte d'une forme réelle : corps, cavité, gorge, bossage, trous, inserts, matrice/poinçon...) }
+    ],
+    "cotes": [
+      { "key": string, "label": string, "value": number, "unit": "mm"|"°"|"u", "status": "sur"|"verifier"|"illisible" }
+    ],
+    "ordreConstruction": string[] (3 à 5 étapes simples dans l'ordre : "1. Base centrée en [0,0,0]...", "2. ...", "3. ...")
+  },
+  "ficheTechnique"?: { "client": string, "reference": string, "revision": string, "partName": string, "material": string, "rawStock": string, "criticalTolerances": string[], "specialNotes": string[], "suggestedOperations": [{ "libelle": string, "typeMachine": "Tournage CNC"|"Fraisage CNC"|"Tournage Manuel"|"Contrôle", "tempsReglageMin": number, "tempsUnitaireMin": number }], "summary": string }
+}`;
   } else {
-    // 🧩 MODE COMPLEXE / LIBRE — liberté totale OpenCASCADE (moules, formes spéciales, multi-corps)
+    // 🧩 ÉTAPE 3 (BUILD FIDÈLE) ou ÉTAPE 4 (COMPARAISON) ou RETOUCHE LIBRE
+    const briefBlock = validatedBrief
+      ? `✅ FICHE VALIDÉE PAR L'INGÉNIEUR BE (SOURCE DE VÉRITÉ ABSOLUE — NE RIEN INVENTER EN DEHORS) :
+- Pièce : ${validatedBrief.resume || ''}
+- Repère : Axe principal ${validatedBrief.axePrincipal || 'X'} · Origine : ${validatedBrief.origine || 'Centre [0,0,0]'}
+- Formes VALIDÉES à construire (UNIQUEMENT celles-ci) :
+${(validatedBrief.formes || []).filter(f => f.checked !== false).map((f, i) => `  ${i + 1}. ${f.label}`).join('\n')}
+- Cotes VALIDÉES (valeurs exactes) :
+${(validatedBrief.cotes || []).map(c => `  • ${c.key} (${c.label}) = ${c.value} ${c.unit || 'mm'} [${c.status || 'sur'}]`).join('\n')}
+- Ordre de construction à suivre depuis [0,0,0] :
+${(validatedBrief.ordreConstruction || []).map((s, i) => `  ${i + 1}. ${s}`).join('\n')}
+${validatedBrief.userNote ? `- Note ingénieur : ${validatedBrief.userNote}\n` : ''}`
+      : '';
+
     refineInstruction = `Tu es un Ingénieur BE & Méthodes CNC senior en MODE COMPLEXE / FORME LIBRE (OpenCASCADE Replicad).
-Tu as 100 % de liberté géométrique pour concevoir moules multi-corps, carters, profils courbes, nervures, lofts ou pièces spéciales.
-${machinesCtx ? `${machinesCtx}\n` : ''}${lockedNote}${visualAuditNote}Modèle actuel : ${JSON.stringify(cleanSpec)}
+${isComplexBuild ? 'ÉTAPE 3/4 : CONSTRUCTION 3D FIDÈLE À LA FICHE VALIDÉE. Pars exactement du repère [0,0,0] et suis l’ordre de construction validé. INTERDICTION d’inventer des formes non cochées !' : ''}
+${machinesCtx ? `${machinesCtx}\n` : ''}${briefBlock}${lockedNote}${visualAuditNote}Modèle actuel : ${JSON.stringify(cleanSpec)}
 ${!compactFollowUp && ficheTechnique ? `Fiche actuelle : ${JSON.stringify(ficheTechnique)}\n` : ''}${recentHistory ? `Historique :\n${recentHistory}\n` : ''}${errorContext ? `⚠️ ERREUR OPENCASCADE À CORRIGER :\n${errorContext}\n` : ''}Demande BE : "${prompt}"
 
 RÈGLES :
-1. Produis immédiatement le modèle B-Rep complet ("modified": true, "engine": "replicad", "params": [...], "code": "function main(P) { ... }") dès ce tour.
-2. Si plan/image joint : recoupe toutes les vues (ne jamais inverser corps et gorge), modélise TOUTES les formes visibles sans rien esquiver, marque chaque paramètre "confidence": "high"|"check"|"locked".
-3. Si c'est un moule ou un assemblage, retourne un tableau multi-corps distincts avec couleurs réalistes (ex: Matrice, Poinçon, Pièce, Colonnes).
-4. ${compactFollowUp ? 'NE PAS régénérer ficheTechnique ni thinking.' : 'Remplis "thinking" et "ficheTechnique" si image/plan joint.'}
+1. Produis le modèle B-Rep complet ("modified": true, "engine": "replicad", "params": [...], "code": "function main(P) { ... }") en suivant strictement les cotes validées.
+2. Si c'est un moule ou assemblage, retourne un tableau multi-corps distincts avec couleurs réalistes (ex: Matrice, Poinçon, Pièce, Colonnes).
+3. Marque chaque paramètre "confidence": "locked" si validé par l'ingénieur, "high" si sûr, "check" si à vérifier.
+4. ${compactFollowUp ? 'NE PAS régénérer ficheTechnique ni thinking.' : 'Remplis "ficheTechnique" si pas encore complète.'}
 
 JSON STRICT (aucun texte hors JSON) :
 {
-  ${compactFollowUp ? '' : `"thinking": { "vues_et_fonction": string, "cotes_cles": string[], "alertes_dfm": string[], "points_a_verifier": string[] },`}
-  "reply": string,
+  "reply": string (court et clair),
   "modified": boolean,
   "cadSpec": {
     "engine": "replicad",
@@ -1102,21 +1144,51 @@ ${REPLICAD_FREE_DOC}`;
     });
     const elapsedMs = Date.now() - startedAt;
     const parsed = resp?.data;
-    if (parsed && (parsed.reply || parsed.cadSpec)) {
-      const nextSpec = parsed.cadSpec
+    if (parsed && (parsed.reply || parsed.cadSpec || parsed.complexBrief)) {
+      const nextSpec = (!isComplexRead && parsed.cadSpec)
         ? sanitizeCadSpec({ ...parsed.cadSpec, material: parsed.cadSpec.material || parsed.ficheTechnique?.material || cleanSpec.material || '' }, cleanSpec.name)
         : cleanSpec;
-      const modified = parsed.modified !== undefined ? Boolean(parsed.modified) : JSON.stringify(nextSpec) !== JSON.stringify(cleanSpec);
-      const reply = String(parsed.reply || parsed.changesSummary || (modified ? 'Modèle 3D B-Rep généré.' : 'Bien reçu.'));
+      const modified = isComplexRead
+        ? false
+        : (parsed.modified !== undefined ? Boolean(parsed.modified) : JSON.stringify(nextSpec) !== JSON.stringify(cleanSpec));
+      const reply = String(parsed.reply || parsed.changesSummary || (isComplexRead ? 'Lecture du plan terminée. Vérifiez les données ci-dessous puis cliquez sur Confirmer.' : (modified ? 'Modèle 3D B-Rep généré.' : 'Bien reçu.')));
       const thinking = parsed.thinking && typeof parsed.thinking === 'object' ? {
         vues_et_fonction: String(parsed.thinking.vues_et_fonction || ''),
         cotes_cles: Array.isArray(parsed.thinking.cotes_cles) ? parsed.thinking.cotes_cles : [],
         alertes_dfm: Array.isArray(parsed.thinking.alertes_dfm) ? parsed.thinking.alertes_dfm : [],
         points_a_verifier: Array.isArray(parsed.thinking.points_a_verifier) ? parsed.thinking.points_a_verifier : []
       } : null;
+      const rawBrief = parsed.complexBrief && typeof parsed.complexBrief === 'object' ? parsed.complexBrief : null;
+      const complexBrief = rawBrief ? {
+        resume: String(rawBrief.resume || ''),
+        axePrincipal: ['X', 'Y', 'Z'].includes(String(rawBrief.axePrincipal || '').toUpperCase()) ? String(rawBrief.axePrincipal).toUpperCase() : 'X',
+        origine: String(rawBrief.origine || 'Centre [0, 0, 0]'),
+        vues: String(rawBrief.vues || ''),
+        formes: Array.isArray(rawBrief.formes)
+          ? rawBrief.formes.map((f, i) => ({
+              id: f?.id || `fm_${i + 1}`,
+              label: typeof f === 'string' ? f : String(f?.label || ''),
+              checked: true
+            })).filter(f => f.label)
+          : [],
+        cotes: Array.isArray(rawBrief.cotes)
+          ? rawBrief.cotes.map((c, i) => ({
+              key: String(c?.key || `cote_${i + 1}`),
+              label: String(c?.label || c?.key || `Cote ${i + 1}`),
+              value: Number.isFinite(Number(c?.value)) ? Number(c.value) : 0,
+              unit: String(c?.unit || 'mm'),
+              status: ['sur', 'verifier', 'illisible'].includes(c?.status) ? c.status : 'sur'
+            }))
+          : [],
+        ordreConstruction: Array.isArray(rawBrief.ordreConstruction)
+          ? rawBrief.ordreConstruction.map(s => String(s || '')).filter(Boolean)
+          : []
+      } : null;
       return {
         mode: `${resp.provider}_vision_ai`,
         workMode: isComplexMode ? 'complex' : 'standard',
+        complexPhase: complexPhase || '',
+        complexBrief,
         elapsedMs,
         provider: resp.provider,
         model: resp.model,
