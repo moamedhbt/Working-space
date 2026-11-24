@@ -496,12 +496,15 @@ async function backupDB(tag = 'auto') {
   await getDB().backup(target);
   const files = fs.readdirSync(BACKUP_DIR)
     .filter(f => f.endsWith('.db'))
-    .sort()
-    .reverse();
+    .map(f => ({ name: f, mtime: fs.statSync(path.join(BACKUP_DIR, f)).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime)
+    .map(x => x.name);
+  const createdName = path.basename(target);
   files.slice(20).forEach(f => {
+    if (f === createdName) return;
     try { fs.unlinkSync(path.join(BACKUP_DIR, f)); } catch {}
   });
-  return path.basename(target);
+  return createdName;
 }
 
 function syncPieceFromOperations(pieceId) {

@@ -218,11 +218,12 @@ const VISION_PROMPT = (filename, extraPrompt = '') => {
 Analyse ce plan technique 2D (${filename}) — vues, coupes, cartouche, annotations manuscrites, tolérances géométriques et matière — EN UNE SEULE PASSE COMPLÈTE.
 ${machinesCtx ? `${machinesCtx}\n` : ''}${extraPrompt}
 
-MÉTHODE DE RÉFLEXION (remplis "thinking" EN PREMIER avant d'écrire le code 3D) :
-1. Identifie la fonction mécanique, la matière et recoupe TOUTES les vues (face, côté, coupes) pour comprendre la vraie silhouette 3D.
-2. Liste les cotes clés exactes et repère les éléments rapportés éventuels (inserts, bagues, goupilles).
-3. Fais un diagnostic DFM concret adapté aux machines de l'atelier (rapport L/D, bridage, tolérances serrées, ordre d'usinage, cotes manquantes ou illisibles à confirmer).
-4. Traduis immédiatement cette géométrie en modèle CAO Replicad B-Rep paramétrique exact dans "cadSpec" dès ce premier appel.
+MÉTHODE DE RÉFLEXION RIGOUREUSE (remplis "thinking" EN PREMIER avant d'écrire le code 3D) :
+1. LECTURE CROISÉE DES VUES (ANTI-INVERSION) : Recoupe la vue de face, la vue de côté et les coupes AVANT toute modélisation. Vérifie précisément quels volumes sont EN SAILLIE (corps principal, bossages, manchons) et quels usinages sont EN CREUX (gorges centrales, rainures, méplats, alésages) — NE JAMAIS inverser un gros corps avec une gorge centrale !
+2. MODÉLISATION COMPLÈTE OBLIGATOIRE (INTERDICTION D'ESQUIVER) : Si une vue montre un méplat, un profil en D, des ergots, des manchons, une gorge extérieure, des perçages ou des inserts, TU DOIS TOUS LES MODÉLISER dans \`main(P)\`. Il est STRICTEMENT INTERDIT d'ignorer une forme visible en écrivant "non modélisé, à confirmer".
+3. CONTRÔLE DE COHÉRENCE DES COTES : Relis attentivement chaque chiffre et vérifie les sommes de longueurs (ex: longueur totale = somme des tronçons) et les rayons/diamètres (un rayon R60 = Ø120 ; vérifie les entraxes PCD par rapport aux diamètres intérieur et extérieur).
+4. DIAGNOSTIC DFM CONCRET adapté aux machines de l'atelier (rapport L/D, bridage, tolérances serrées, ordre d'usinage, cotes illisibles à vérifier).
+5. TRADUCTION IMMÉDIATE en modèle CAO Replicad B-Rep paramétrique complet dans "cadSpec" dès ce premier appel.
 
 Retourne STRICTEMENT un JSON valide (aucun texte hors JSON) respectant ce schéma exact :
 {
@@ -313,7 +314,7 @@ function resolveRuntimeAiConfig(override = null) {
   return { provider, resolvedProvider, apiKey, model, baseUrl, source: 'override' };
 }
 
-async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'image/jpeg', images = [], overrideConfig = null, expectJson = true }) {
+async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'image/jpeg', images = [], overrideConfig = null, expectJson = true, deepThinking = false }) {
   const cfg = resolveRuntimeAiConfig(overrideConfig);
   const provider = cfg.resolvedProvider;
   if (!provider || provider === 'offline') return null;
@@ -355,7 +356,6 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
     let attempt = await callOnce(model);
     if (!attempt.ok) {
       const errMsg = attempt.json?.error?.message || `Gemini HTTP ${attempt.status}`;
-      // Auto-retry if Google reports the model is deprecated / unavailable to new users
       if (attempt.status === 404 || /no longer available|not found/i.test(errMsg)) {
         const candidates = [];
         const suggested = errMsg.match(/use\s+(?:models\/)?([a-z0-9._-]+)/i);
@@ -363,7 +363,6 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
         for (const fb of ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash']) {
           if (fb !== attempt.model && !candidates.includes(fb)) candidates.push(fb);
         }
-        // Also try querying live available models for this key
         try {
           const live = await listAvailableModels(overrideConfig);
           for (const m of (live.models || []).slice(0, 4)) {
@@ -402,22 +401,33 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
       }
     }
     content.push({ type: 'text', text: promptText });
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': cfg.apiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
+
+    const callAnthropic = async (useThinking) => {
+      const body = {
         model,
-        max_tokens: 8192,
+        max_tokens: useThinking ? 10000 : 8192,
         messages: [{ role: 'user', content }]
-      })
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(json?.error?.message || `Anthropic HTTP ${res.status}`);
-    const txt = (json?.content || []).map(c => c.text || '').join('\n');
+      };
+      if (useThinking) body.thinking = { type: 'enabled', budget_tokens: 4096 };
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': cfg.apiKey,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify(body)
+      });
+      const json = await res.json().catch(() => ({}));
+      return { ok: res.ok, status: res.status, json };
+    };
+
+    let attempt = await callAnthropic(deepThinking);
+    if (!attempt.ok && deepThinking && (attempt.status === 400 || attempt.status === 422)) {
+      attempt = await callAnthropic(false);
+    }
+    if (!attempt.ok) throw new Error(attempt.json?.error?.message || `Anthropic HTTP ${attempt.status}`);
+    const txt = (attempt.json?.content || []).filter(c => c.type === 'text').map(c => c.text || '').join('\n');
     return { provider, model, text: txt, data: expectJson ? extractJsonFromText(txt) : null };
   }
 
@@ -443,29 +453,55 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
     endpoint = clean.endsWith('/chat/completions') ? clean : `${clean}/chat/completions`;
   }
 
+  // ALWAYS send detail: "high" so Vision models read fine CAD dimensions without downscaling to 512px!
   const contentParts = [{ type: 'text', text: promptText }];
   for (const m of mediaList) {
     if (m.mimeType !== 'application/pdf') {
-      contentParts.push({ type: 'image_url', image_url: { url: `data:${m.mimeType};base64,${m.base64}` } });
+      contentParts.push({
+        type: 'image_url',
+        image_url: {
+          url: `data:${m.mimeType};base64,${m.base64}`,
+          detail: 'high'
+        }
+      });
     }
   }
-  const payload = {
-    model,
-    messages: [{ role: 'user', content: contentParts }]
-  };
-  if (expectJson && provider === 'openai') {
-    payload.response_format = { type: 'json_object' };
-  }
 
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload)
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json?.error?.message || `${provider} HTTP ${res.status}`);
-  const txt = json?.choices?.[0]?.message?.content || '';
-  return { provider, model, text: txt, data: expectJson ? extractJsonFromText(txt) : null };
+  const callOpenAiStyle = async (useThinking) => {
+    const payload = {
+      model,
+      messages: [{ role: 'user', content: contentParts }]
+    };
+    if (expectJson && provider === 'openai') {
+      payload.response_format = { type: 'json_object' };
+    }
+    if (useThinking) {
+      if (provider === 'qwen' || provider === 'qwen_us' || provider === 'qwen_cn') {
+        payload.enable_thinking = true;
+        payload.thinking_budget = 4096;
+      } else if (provider === 'openrouter') {
+        payload.reasoning = { effort: 'medium' };
+      }
+    }
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const json = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, json };
+  };
+
+  const canThink = deepThinking && (provider === 'qwen' || provider === 'qwen_us' || provider === 'qwen_cn' || provider === 'openrouter');
+  let attempt = await callOpenAiStyle(canThink);
+  // Auto-fallback cleanly if a specific model does not support enable_thinking / reasoning
+  if (!attempt.ok && canThink && (attempt.status === 400 || attempt.status === 422)) {
+    attempt = await callOpenAiStyle(false);
+  }
+  if (!attempt.ok) throw new Error(attempt.json?.error?.message || `${provider} HTTP ${attempt.status}`);
+  const msgObj = attempt.json?.choices?.[0]?.message || {};
+  const txt = msgObj.content || '';
+  return { provider, model, text: txt, reasoning: msgObj.reasoning_content || '', data: expectJson ? extractJsonFromText(txt) : null };
 }
 
 async function listAvailableModels(overrideConfig = null) {
@@ -628,7 +664,7 @@ async function analyzePlanDocument({ buffer, filename = 'plan', notes = '', atta
   if (hasMedia && aiCfg.resolvedProvider !== 'offline') {
     const promptText = VISION_PROMPT(filename, notes ? `Contexte OF : ${notes}` : '');
     try {
-      const resp = await callConfiguredAiRaw({ promptText, buffer, mimeType, images: attachments, expectJson: true });
+      const resp = await callConfiguredAiRaw({ promptText, buffer, mimeType, images: attachments, expectJson: true, deepThinking: true });
       if (resp?.data) {
         aiData = resp.data;
         mode = `${resp.provider}_vision_ai`;
@@ -916,10 +952,11 @@ Nouveau message de l'ingénieur BE :
 
 RÈGLES D'ACTION STRICTES (1 SEULE REQUÊTE = RÉFLEXION + 3D DIRECT) :
 1. PRIORITÉ À L'ACTION : Si l'utilisateur joint une image/plan, demande de créer ou modifier une pièce, ou confirme ("oui", "ok", "vas-y", "corrige", "fais-le"), TU DOIS PRODUIRE IMMÉDIATEMENT LE MODÈLE 3D B-REP COMPLET ("modified": true, "engine": "replicad", "params": [...], "code": "function main(P) { ... }") DÈS CE TOUR ! Ne demande JAMAIS de confirmation inutile et ne refuse jamais d'essayer.
-2. En cas de doute mineur sur une cote peu lisible, choisis la valeur mécanique la plus cohérente, mets-la dans "params" (pour que l'ingénieur la règle en 2 secondes au 0.001 mm), génère le 3D, et signale le point dans "thinking.points_a_verifier".
-3. Ne mets "modified": false QUE si l'utilisateur pose une pure question théorique / méthodes sans aucune demande de création ou modification 3D (et sans nouveau plan joint).
-4. Si le modèle actuel était en ancien format "csg" et que l'utilisateur demande une modification ou création, passe-le en "engine": "replicad" propre avec tous ses paramètres dans "params".
-5. Si des images/plans sont joints, extrais ou mets à jour aussi "ficheTechnique" dans la même réponse (0 requête supplémentaire).
+2. LECTURE CROISÉE ANTI-INVERSION & MODÉLISATION COMPLÈTE : Quand une image/plan est jointe, recoupe TOUTES les vues (face, côté, coupes) pour ne JAMAIS inverser le gros corps principal avec une gorge centrale en creux. IL EST STRICTEMENT INTERDIT d'esquiver ou d'ignorer une forme visible (méplat / profil en D, gorge extérieure, manchons/ergots d'extrémité, rainures, perçages, inserts) en écrivant "non modélisé — à confirmer" : modélise TOUT dans \`main(P)\` et expose chaque cote dans \`params\`.
+3. En cas de doute mineur sur un chiffre peu lisible, vérifie la cohérence des sommes de longueurs et des diamètres/rayons (R60 = Ø120), choisis la valeur mécanique la plus cohérente dans \`params\` (réglable au 0.001 mm par l'ingénieur), et signale le point dans "thinking.points_a_verifier".
+4. Ne mets "modified": false QUE si l'utilisateur pose une pure question théorique / méthodes sans aucune demande de création ou modification 3D (et sans nouveau plan joint).
+5. Si le modèle actuel était en ancien format "csg" et que l'utilisateur demande une modification ou création, passe-le en "engine": "replicad" propre avec tous ses paramètres dans "params".
+6. Si des images/plans sont joints, extrais ou mets à jour aussi "ficheTechnique" dans la même réponse (0 requête supplémentaire).
 
 Retourne STRICTEMENT un objet JSON valide (aucun texte hors JSON) — remplis "thinking" EN PREMIER :
 {
@@ -977,7 +1014,8 @@ ${REPLICAD_API_DOC}`;
     const resp = await callConfiguredAiRaw({
       promptText: refineInstruction,
       images: visionImages,
-      expectJson: true
+      expectJson: true,
+      deepThinking: hasVision || !errorContext
     });
     const parsed = resp?.data;
     if (parsed && (parsed.reply || parsed.cadSpec)) {

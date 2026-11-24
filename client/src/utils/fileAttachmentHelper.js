@@ -41,8 +41,8 @@ export async function prepareVisionAttachment(file, maxPdfPages = 2) {
     for (let p = 1; p <= pageCount; p++) {
       const page = await pdf.getPage(p);
       const baseVp = page.getViewport({ scale: 1 });
-      const targetMax = 1800;
-      const scale = Math.min(2.5, Math.max(1.2, targetMax / Math.max(baseVp.width, baseVp.height)));
+      const targetMax = 2400;
+      const scale = Math.min(3.0, Math.max(1.5, targetMax / Math.max(baseVp.width, baseVp.height)));
       const vp = page.getViewport({ scale });
       const canvas = document.createElement('canvas');
       canvas.width = Math.round(vp.width);
@@ -67,19 +67,21 @@ export async function prepareVisionAttachment(file, maxPdfPages = 2) {
     return results;
   }
 
-  // Standard image file (jpg/png/webp) — compress gently if huge (> 2000px)
+  // Standard image file (jpg/png/webp) — keep crisp HD up to 2400px so fine CAD dimensions stay razor-sharp
   const rawUrl = await readAsDataUrl(file);
   try {
     const img = await loadImage(rawUrl);
-    const maxDim = 2000;
+    const maxDim = 2400;
     if (img.width > maxDim || img.height > maxDim) {
       const ratio = maxDim / Math.max(img.width, img.height);
       const canvas = document.createElement('canvas');
       canvas.width = Math.round(img.width * ratio);
       canvas.height = Math.round(img.height * ratio);
       const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      const resized = canvas.toDataURL('image/jpeg', 0.9);
+      const resized = canvas.toDataURL('image/jpeg', 0.95);
       return [{
         filename: name,
         originalFilename: name,
@@ -117,7 +119,7 @@ export async function rotateAttachment90(att) {
   ctx.rotate(Math.PI / 2);
   ctx.drawImage(img, -img.width / 2, -img.height / 2);
   const mime = att.mimeType === 'image/png' ? 'image/png' : 'image/jpeg';
-  const rotated = canvas.toDataURL(mime, 0.92);
+  const rotated = canvas.toDataURL(mime, 0.96);
   return {
     ...att,
     base64: rotated,
