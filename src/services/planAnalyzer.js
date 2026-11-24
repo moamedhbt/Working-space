@@ -206,7 +206,8 @@ Définis \`cadSpec.engine = "replicad"\`, \`cadSpec.params = [...]\` et \`cadSpe
 Fonctions en scope :
 - Primitives : \`centeredCylinder(d, l, axis, center)\`, \`centeredBox(lx, ly, lz, center)\`, \`centeredCone(d1, d2, l, axis, center)\`, \`revolveProfile([[r,pos],...], axis, center)\`, \`extrudePolygon([[u,v],...], depth, axis, center)\`, \`dShapeBody(r, flatWidth, l, axis, center)\`
 - Usinages : \`.fuse()\`, \`.cut()\`, \`.intersect()\`, \`.translate([x,y,z])\`, \`.rotate(deg, pt, dir)\`, \`cutExternalGroove\`, \`cutInternalGroove\`, \`cutHolePattern\`, \`addPinPattern\`, \`cutThread\`, \`safeFillet\`, \`safeChamfer\`
-- Replicad natif : \`draw([x,y]).lineTo(...).bulgeArcTo(...).tangentArcTo(...).close().sketchOnPlane('XY'|'XZ'|'YZ', off).extrude(h)\` / \`.revolve()\`, \`drawCircle\`, \`drawRectangle\`, \`drawRoundedRectangle\`, \`drawPolysides\`, \`drawEllipse\`, \`loft\`, \`makeCylinder\`, \`makeBaseBox\`, \`makeSphere\`, \`makeCompound\`, \`EdgeFinder\`, \`FaceFinder\`.
+- Replicad natif : \`draw([x,y]).lineTo(...).threePointsArcTo([x,y],[mx,my]).sagittaArcTo([x,y], sag).tangentArcTo([x,y]).close().sketchOnPlane('XY'|'XZ'|'YZ', off).extrude(h)\` / \`.revolve()\`, \`drawCircle\`, \`drawRectangle\`, \`drawRoundedRectangle\`, \`drawPolysides\`, \`drawEllipse\`, \`loft\`, \`makeCylinder\`, \`makeBaseBox\`, \`makeSphere\`, \`makeCompound\`, \`EdgeFinder\`, \`FaceFinder\`.
+- ATTENTION ARC : \`bulgeArcTo(pt, bulge)\` prend un ratio \`bulge\` dans [-1, 1] (JAMAIS un rayon en mm !). Pour un arc de rayon R, utilise \`threePointsArcTo\`, \`sagittaArcTo\` ou \`drawCircle(R)\`.
 RÈGLES PERF (< 2s) : JAMAIS \`makeHelix\`+\`genericSweep\` ni boucle de 20+ booléens (utilise \`cutThread\` 1 seule fois). Tout trou débouchant dépasse de +6 mm. Pas d'import/require/window.`;
 
 const REPLICAD_API_DOC = `${ASSEMBLY_BLUEPRINT_DOC}`;
@@ -645,7 +646,22 @@ function sanitizeBlueprint(raw) {
 
 function sanitizeCadSpec(spec, fallbackName = 'Piece_CNC') {
   const cleanBp = sanitizeBlueprint(spec?.blueprint);
-  if (spec && (spec.engine === 'assembly' || cleanBp)) {
+  const hasCode = typeof spec?.code === 'string' && spec.code.trim().length > 10;
+
+  // Respect explicit engine choice! Never let a stale blueprint shadow new Replicad code or vice-versa.
+  if (spec && spec.engine === 'replicad' && hasCode) {
+    return {
+      engine: 'replicad',
+      unit: 'mm',
+      name: String(spec.name || fallbackName),
+      material: String(spec.material || ''),
+      params: sanitizeParamsList(spec.params),
+      blueprint: null,
+      code: String(spec.code || '').trim(),
+      features: Array.isArray(spec.features) ? spec.features : []
+    };
+  }
+  if (spec && (spec.engine === 'assembly' || (cleanBp && !hasCode))) {
     return {
       engine: 'assembly',
       unit: 'mm',
@@ -653,17 +669,18 @@ function sanitizeCadSpec(spec, fallbackName = 'Piece_CNC') {
       material: String(spec.material || ''),
       params: sanitizeParamsList(spec.params),
       blueprint: cleanBp || { body: { type: 'cylinder', diameter: 60, length: 100, axis: 'x' }, features: [] },
-      code: spec.code ? String(spec.code).trim() : '',
+      code: '',
       features: Array.isArray(spec.features) ? spec.features : []
     };
   }
-  if (spec && (spec.engine === 'replicad' || (typeof spec.code === 'string' && spec.code.trim().length > 10))) {
+  if (spec && hasCode) {
     return {
       engine: 'replicad',
       unit: 'mm',
       name: String(spec.name || fallbackName),
       material: String(spec.material || ''),
       params: sanitizeParamsList(spec.params),
+      blueprint: null,
       code: String(spec.code || '').trim(),
       features: Array.isArray(spec.features) ? spec.features : []
     };

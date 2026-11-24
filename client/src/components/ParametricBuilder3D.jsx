@@ -253,7 +253,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
   const [statusMsg, setStatusMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
-  const isAssembly = Boolean(cadSpec && (cadSpec.engine === 'assembly' || cadSpec.blueprint?.body));
+  const isAssembly = Boolean(cadSpec && cadSpec.engine === 'assembly' && cadSpec.blueprint?.body);
   const isReplicadCode = Boolean(!isAssembly && cadSpec && (cadSpec.engine === 'replicad' || (typeof cadSpec.code === 'string' && cadSpec.code.trim().length > 10)));
   const isReplicad = isAssembly || isReplicadCode;
   const materialInfo = materialColorAndDensity(cadSpec?.material || fiche?.material || piece?.matiere || '');
@@ -502,6 +502,9 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
         setDims({ x: result.bbox.lx, y: result.bbox.ly, z: result.bbox.lz });
       } catch (err) {
         if (cancelled) return;
+        setOcctResult(null);
+        clearRootGroup();
+        solidMeshRef.current = null;
         setOcctError(err.message || 'Erreur noyau OpenCASCADE');
       } finally {
         if (!cancelled) setBuildingOcct(false);

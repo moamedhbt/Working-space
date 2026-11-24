@@ -41,6 +41,14 @@ async function ensureOC() {
 // ============================================================
 
 function axisDir(axis = 'x') {
+  if (Array.isArray(axis) && axis.length >= 3) {
+    const x = Number(axis[0]) || 0;
+    const y = Number(axis[1]) || 0;
+    const z = Number(axis[2]) || 0;
+    const len = Math.hypot(x, y, z);
+    if (len > 1e-6) return [x / len, y / len, z / len];
+    return [0, 0, 1];
+  }
   const a = String(axis || 'x').toLowerCase();
   if (a === 'x' || a === '+x') return [1, 0, 0];
   if (a === '-x') return [-1, 0, 0];
@@ -334,6 +342,28 @@ function normalizePartsResult(raw, defaultName = 'Piece_CAO', defaultColor = '#9
   return out;
 }
 
+// Safe draw() wrapper: guards against passing a mm radius (e.g. 60) to bulgeArcTo() which expects bulge in [-1, 1]
+function safeDraw(initialPoint) {
+  const pen = replicad.draw(initialPoint);
+  const origBulgeArcTo = pen.bulgeArcTo?.bind(pen);
+  if (origBulgeArcTo) {
+    pen.bulgeArcTo = (endPoint, bulge, ...rest) => {
+      const b = Number(bulge);
+      if (Number.isFinite(b) && Math.abs(b) > 1.5 && Array.isArray(endPoint) && endPoint.length >= 2) {
+        const cur = pen.pointer || [0, 0];
+        const chord = Math.hypot((Number(endPoint[0]) || 0) - (Number(cur[0]) || 0), (Number(endPoint[1]) || 0) - (Number(cur[1]) || 0));
+        if (chord > 1e-4) {
+          const R = Math.max(chord / 2 + 0.001, Math.abs(b));
+          const sagitta = R - Math.sqrt(Math.max(0, R * R - (chord / 2) * (chord / 2)));
+          return pen.sagittaArcTo(endPoint, Math.sign(b) * sagitta);
+        }
+      }
+      return origBulgeArcTo(endPoint, bulge, ...rest);
+    };
+  }
+  return pen;
+}
+
 function executeReplicadCode(code, paramsMap = {}, defaultName = 'Piece_CAO', defaultColor = '#94a3b8') {
   const scopeKeys = [
     'replicad',
@@ -349,7 +379,7 @@ function executeReplicadCode(code, paramsMap = {}, defaultName = 'Piece_CAO', de
 
   const scopeVals = [
     replicad,
-    replicad.draw, replicad.drawCircle, replicad.drawRectangle, replicad.drawRoundedRectangle, replicad.drawPolysides, replicad.drawEllipse,
+    safeDraw, replicad.drawCircle, replicad.drawRectangle, replicad.drawRoundedRectangle, replicad.drawPolysides, replicad.drawEllipse,
     replicad.makeCylinder, replicad.makeBaseBox, replicad.makeBox, replicad.makeSphere, replicad.makeHelix, replicad.makePlane, replicad.makeCompound,
     replicad.Sketcher, replicad.sketchCircle, replicad.sketchRectangle, replicad.sketchRoundedRectangle, replicad.sketchPolysides, replicad.sketchHelix,
     replicad.loft, replicad.genericSweep, replicad.revolution, replicad.cut2D, replicad.fuse2D, replicad.intersect2D, replicad.EdgeFinder, replicad.FaceFinder,
