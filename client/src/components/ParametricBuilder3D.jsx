@@ -20,6 +20,7 @@ import {
   exportReplicadSTEPBlob,
   exportReplicadSTLBlob,
   onReplicadStatus,
+  warmupReplicad,
   materialColorAndDensity,
   paramsArrayToMap
 } from '../utils/replicadClient';
@@ -244,6 +245,11 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
   const materialInfo = materialColorAndDensity(cadSpec?.material || fiche?.material || piece?.matiere || '');
 
   useEffect(() => onReplicadStatus(setOcctStatus), []);
+
+  // Pre-warm OpenCASCADE WASM silently in background when BE Studio opens (so 3D builds in <1s!)
+  useEffect(() => {
+    warmupReplicad().catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (isReplicad) setCodeDraft(cadSpec?.code || '');
@@ -1491,14 +1497,23 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                   <div className="text-[11px] font-mono-num break-words">{occtError}</div>
                 </div>
               </div>
-              <button
-                type="button"
-                disabled={refining}
-                onClick={handleAutoFixOcctError}
-                className="px-2.5 py-1.5 rounded bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-[#0B0F14] text-[11px] font-semibold flex items-center gap-1 cursor-pointer shrink-0"
-              >
-                <Wrench className="w-3.5 h-3.5" /> {refining ? 'Correction…' : 'Corriger auto avec l’IA'}
-              </button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowCodeEditor(true)}
+                  className="px-2 py-1.5 rounded bg-[#111821] border border-red-500/40 text-red-200 text-[11px] flex items-center gap-1 cursor-pointer"
+                >
+                  <Code2 className="w-3.5 h-3.5" /> Code
+                </button>
+                <button
+                  type="button"
+                  disabled={refining}
+                  onClick={handleAutoFixOcctError}
+                  className="px-2.5 py-1.5 rounded bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-[#0B0F14] text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  <Wrench className="w-3.5 h-3.5" /> {refining ? 'Correction…' : 'Corriger auto avec l’IA'}
+                </button>
+              </div>
             </div>
           )}
 

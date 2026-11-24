@@ -206,7 +206,8 @@ FONCTIONS B-REP DISPONIBLES EN SCOPE (TOUTES EXACTES ET ÉTANCHES) :
    - \`drawCircle(r)\`, \`drawRectangle(w, h)\`, \`drawRoundedRectangle(w, h, r)\`, \`drawPolysides(r, n)\`, \`drawEllipse(rx, ry)\`
    - \`makeCylinder(r, h, loc, dir)\`, \`makeBaseBox(lx, ly, lz)\`, \`makeSphere(r)\`, \`makeCompound(arr)\`, \`cut2D\`, \`fuse2D\`, \`intersect2D\`, \`loft\`, \`EdgeFinder\`, \`FaceFinder\`
 
-RÈGLES D'OR B-REP (ANTI-BUGS) :
+RÈGLES D'OR B-REP (ANTI-BUGS & PERFORMANCE < 2 SECONDES) :
+- PERFORMANCE CRITIQUE : N'utilise JAMAIS \`makeHelix\` + \`genericSweep\` ni de boucles de 20+ découpes booléennes (cela bloque OpenCASCADE WASM). Pour TOUT filetage (métrique, trapézoïdal, simple ou double entrée), appelle \`cutThread(body, { nominalDiameter, pitch, length, internal, axis, center, profile })\` UNE SEULE FOIS — c'est un solide de révolution rapide (< 0.5 s). Ne fais JAMAIS de \`fillet\` sur des arêtes de filetage.
 - Tout perçage / alésage débouchant DOIT dépasser la pièce d'au moins +6 mm (ex: \`P.longueur + 10\`) pour traverser franchement sans peau résiduelle.
 - Centre la pièce autour de \`[0, 0, 0]\` (axe principal = \`'x'\` pour les pièces de révolution / tournage, \`'z'\` pour les plaques / brides).
 - N'utilise JAMAIS \`import\`, \`require\`, \`fetch\`, \`window\`, \`document\`. Écris du JS synchrone propre et lisible.

@@ -52,6 +52,7 @@ export function resetReplicadWorker() {
     try { worker.terminate(); } catch {}
     worker = null;
   }
+  warmupPromise = null;
   notifyStatus({ status: 'idle', message: '' });
 }
 
@@ -69,7 +70,20 @@ function callWorker(type, payload = {}, timeoutMs = 45000) {
   });
 }
 
+let warmupPromise = null;
+
+export function warmupReplicad() {
+  if (warmupPromise) return warmupPromise;
+  warmupPromise = callWorker('warmup', {}, 150000).catch(err => {
+    warmupPromise = null;
+    throw err;
+  });
+  return warmupPromise;
+}
+
 export async function buildReplicadModel({ code, paramsMap = {}, legacyFeatures = null, name = 'Piece_CAO', defaultColor = '#94a3b8' }) {
+  // Always ensure OCCT WASM download finishes under the generous warmup timeout first!
+  await warmupReplicad();
   return callWorker('build', { code, paramsMap, legacyFeatures, name, defaultColor }, 60000);
 }
 
