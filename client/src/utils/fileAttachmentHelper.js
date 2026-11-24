@@ -12,6 +12,85 @@ function loadImage(dataUrl) {
   });
 }
 
+/**
+ * Fast client-side image quality check (~20ms, 0 tokens):
+ * Detects blur (Laplacian variance), low light / poor contrast, and vertical phone orientation.
+ */
+export async function analyzeImageQuality(dataUrl) {
+  try {
+    const img = await loadImage(dataUrl);
+    const maxSample = 360;
+    const scale = Math.min(1, maxSample / Math.max(img.width, img.height));
+    const w = Math.max(32, Math.round(img.width * scale));
+    const h = Math.max(32, Math.round(img.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, w, h);
+    const data = ctx.getImageData(0, 0, w, h).data;
+
+    const gray = new Float32Array(w * h);
+    let sum = 0;
+    for (let i = 0; i < w * h; i++) {
+      const p = i * 4;
+      const g = 0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2];
+      gray[i] = g;
+      sum += g;
+    }
+    const mean = sum / (w * h);
+
+    let varianceLum = 0;
+    for (let i = 0; i < gray.length; i++) {
+      const d = gray[i] - mean;
+      varianceLum += d * d;
+    }
+    const stdLum = Math.sqrt(varianceLum / gray.length);
+
+    // 4-neighbor Laplacian variance for sharpness
+    let lapSum = 0;
+    let lapSq = 0;
+    let lapCount = 0;
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const idx = y * w + x;
+        const lap = -4 * gray[idx] + gray[idx - 1] + gray[idx + 1] + gray[idx - w] + gray[idx + w];
+        lapSum += lap;
+        lapSq += lap * lap;
+        lapCount++;
+      }
+    }
+    const lapMean = lapSum / Math.max(1, lapCount);
+    const sharpness = lapSq / Math.max(1, lapCount) - lapMean * lapMean;
+
+    const warnings = [];
+    if (img.height > img.width * 1.15) {
+      warnings.push({ code: 'portrait', text: 'Photo verticale — utilisez ↻ 90° si le plan est couché' });
+    }
+    if (mean < 65) {
+      warnings.push({ code: 'dark', text: 'Photo sombre — éclairage faible' });
+    } else if (stdLum < 22) {
+      warnings.push({ code: 'contrast', text: 'Faible contraste sur le plan' });
+    }
+    if (sharpness < 75) {
+      warnings.push({ code: 'blur', text: 'Image floue — risque d’erreur sur les petites cotes' });
+    }
+    if (Math.max(img.width, img.height) < 800) {
+      warnings.push({ code: 'lowres', text: `Résolution faible (${img.width}×${img.height} px)` });
+    }
+    return {
+      ok: warnings.length === 0,
+      width: img.width,
+      height: img.height,
+      brightness: Math.round(mean),
+      sharpness: Math.round(sharpness),
+      warnings
+    };
+  } catch {
+    return { ok: true, warnings: [] };
+  }
+}
+
 function readAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -82,25 +161,29 @@ export async function prepareVisionAttachment(file, maxPdfPages = 2) {
       ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       const resized = canvas.toDataURL('image/jpeg', 0.95);
+      const quality = await analyzeImageQuality(resized);
       return [{
         filename: name,
         originalFilename: name,
         mimeType: 'image/jpeg',
         base64: resized,
         previewUrl: resized,
-        isFromPdf: false
+        isFromPdf: false,
+        quality
       }];
     }
   } catch {}
 
   const mimeType = file.type && file.type.startsWith('image/') ? file.type : 'image/jpeg';
+  const quality = await analyzeImageQuality(rawUrl);
   return [{
     filename: name,
     originalFilename: name,
     mimeType,
     base64: rawUrl,
     previewUrl: rawUrl,
-    isFromPdf: false
+    isFromPdf: false,
+    quality
   }];
 }
 
@@ -120,10 +203,12 @@ export async function rotateAttachment90(att) {
   ctx.drawImage(img, -img.width / 2, -img.height / 2);
   const mime = att.mimeType === 'image/png' ? 'image/png' : 'image/jpeg';
   const rotated = canvas.toDataURL(mime, 0.96);
+  const quality = await analyzeImageQuality(rotated);
   return {
     ...att,
     base64: rotated,
-    previewUrl: rotated
+    previewUrl: rotated,
+    quality
   };
 }
 
@@ -221,5 +306,100 @@ export function checkCadParamsCoherence(params = [], dims = null) {
   }
 
   return warnings;
+}
+
+const ISO_METRIC_COARSE_PITCH = {
+  3: 0.5, 4: 0.7, 5: 0.8, 6: 1.0, 8: 1.25, 10: 1.5, 12: 1.75, 14: 2.0,
+  16: 2.0, 18: 2.5, 20: 2.5, 22: 2.5, 24: 3.0, 27: 3.0, 30: 3.5, 33: 3.5,
+  36: 4.0, 39: 4.0, 42: 4.5, 45: 4.5, 48: 5.0, 52: 5.0, 56: 5.5, 60: 5.5, 64: 6.0
+};
+
+/**
+ * Free (0-token) ISO Thread Standards Verifier (ISO 2901 Trapezoidal + ISO 261/724 Metric).
+ * Extracts thread callouts from fiche/spec and checks actual CAD parameters against ISO formulas.
+ */
+export function checkIsoThreadStandards(params = [], fiche = null, cadSpec = null) {
+  const results = [];
+  const textPool = [
+    cadSpec?.name || '',
+    fiche?.partName || '',
+    fiche?.summary || '',
+    ...(Array.isArray(fiche?.criticalTolerances) ? fiche.criticalTolerances : []),
+    ...(Array.isArray(fiche?.specialNotes) ? fiche.specialNotes : []),
+    ...(Array.isArray(params) ? params.map(p => `${p.label || ''} ${p.tolerance || ''}`) : [])
+  ].join(' ');
+
+  const list = (Array.isArray(params) ? params : []).map(p => ({
+    key: String(p.key || '').toLowerCase(),
+    label: String(p.label || p.key || '').toLowerCase(),
+    rawLabel: String(p.label || p.key || ''),
+    val: Number(p.value)
+  }));
+
+  const boreParam = list.find(p => Number.isFinite(p.val) && p.val > 0 && /(alesage|alésage|noyau|fond.*filet|minor|diam.*int|bore)/.test(`${p.key} ${p.label}`));
+  const threadNomParam = list.find(p => Number.isFinite(p.val) && p.val > 0 && /(filet|thread|diam.*nom|tr\d|tarau)/.test(`${p.key} ${p.label}`) && !/(pas|pitch|long|len)/.test(`${p.key} ${p.label}`));
+  const pitchParam = list.find(p => Number.isFinite(p.val) && p.val > 0 && /(pas\b|pitch)/.test(`${p.key} ${p.label}`));
+
+  // 1) Trapezoidal ISO 2901: Tr D x P [P(lead)]
+  const trMatch = textPool.match(/\bTr\s*(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)(?:\s*P\s*\(?\s*(\d+(?:[.,]\d+)?)\s*\)?)?/i);
+  if (trMatch) {
+    const D = parseFloat(trMatch[1].replace(',', '.'));
+    const P = parseFloat(trMatch[2].replace(',', '.'));
+    const lead = trMatch[3] ? parseFloat(trMatch[3].replace(',', '.')) : P;
+    const ac = P <= 5 ? 0.25 : P <= 12 ? 0.5 : 1.0;
+    const d1Minor = Number((D - P).toFixed(3));
+    const d2Pitch = Number((D - 0.5 * P).toFixed(3));
+    const d4Major = Number((D + 2 * ac).toFixed(3));
+    const starts = lead > P ? Math.round(lead / P) : 1;
+
+    const issues = [];
+    if (boreParam && Math.abs(boreParam.val - d1Minor) > Math.max(0.8, P * 0.15)) {
+      issues.push(`Ø noyau/alésage lu (${boreParam.val} mm) ≠ ISO 2901 (${d1Minor} mm)`);
+    }
+    if (pitchParam && Math.abs(pitchParam.val - P) > 0.1 && Math.abs(pitchParam.val - lead) > 0.1) {
+      issues.push(`Pas lu (${pitchParam.val} mm) ≠ ${P} mm${starts > 1 ? ` (avance ${lead} mm)` : ''}`);
+    }
+    if (threadNomParam && Math.abs(threadNomParam.val - D) > 1.5 && Math.abs(threadNomParam.val - d4Major) > 1.5) {
+      issues.push(`Ø filet lu (${threadNomParam.val} mm) ≠ nominal ${D} / crête ${d4Major} mm`);
+    }
+
+    results.push({
+      standard: 'ISO 2901',
+      callout: `Tr ${D}×${P}${starts > 1 ? ` P(${lead}) ${starts} filets` : ''}`,
+      expected: `Ø noyau D1=${d1Minor} · Ø flancs D2=${d2Pitch} · Ø crête écrou D4=${d4Major} mm`,
+      ok: issues.length === 0,
+      issues
+    });
+  }
+
+  // 2) Metric ISO 261/724: M D [x P]
+  const mMatches = [...textPool.matchAll(/\bM\s*(\d{1,2})(?:\s*[x×]\s*(\d+(?:[.,]\d+)?))?\b/g)];
+  const seenM = new Set();
+  for (const mm of mMatches) {
+    const D = parseInt(mm[1], 10);
+    if (!D || D < 3 || D > 64) continue;
+    const P = mm[2] ? parseFloat(mm[2].replace(',', '.')) : ISO_METRIC_COARSE_PITCH[D];
+    if (!P) continue;
+    const tag = `M${D}x${P}`;
+    if (seenM.has(tag)) continue;
+    seenM.add(tag);
+
+    const d1Minor = Number((D - 1.08253 * P).toFixed(3));
+    const tapDrill = Number((D - P).toFixed(2));
+    const issues = [];
+    if (!trMatch && boreParam && Math.abs(boreParam.val - D) < 4 && Math.abs(boreParam.val - d1Minor) > Math.max(0.5, P * 0.25)) {
+      issues.push(`Avant-trou / Ø noyau (${boreParam.val} mm) écarté de ISO 724 (${d1Minor} mm, foret ~${tapDrill} mm)`);
+    }
+    results.push({
+      standard: 'ISO 261 / 724',
+      callout: `M${D}×${P}`,
+      expected: `Ø noyau écrou D1=${d1Minor} mm · avant-trou ≈ Ø${tapDrill} mm`,
+      ok: issues.length === 0,
+      issues
+    });
+    if (results.length >= 3) break;
+  }
+
+  return results;
 }
 

@@ -6,7 +6,7 @@ import {
   Send, Trash2, ClipboardList, Layers, Eye, EyeOff, Copy,
   RotateCcw, RotateCw, Scissors, Grid3X3, Compass, AlertCircle, ChevronDown,
   ChevronRight, Save, Paperclip, X, FileText, Cpu, Wrench, Plus, Code2,
-  Crop, Lock, AlertTriangle, ScanEye
+  Crop, Lock, AlertTriangle, ScanEye, Image as ImageIcon, ShieldCheck
 } from 'lucide-react';
 import { api } from '../api';
 import {
@@ -28,7 +28,8 @@ import {
   prepareVisionAttachment,
   rotateAttachment90,
   cropAttachmentRegion,
-  checkCadParamsCoherence
+  checkCadParamsCoherence,
+  checkIsoThreadStandards
 } from '../utils/fileAttachmentHelper';
 
 const OP_LABELS = {
@@ -210,6 +211,14 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
   const [chatAttachments, setChatAttachments] = useState([]); // [{ filename, mimeType, base64, previewUrl, isFromPdf }]
   const [preparingFile, setPreparingFile] = useState(false);
   const [includePlanNext, setIncludePlanNext] = useState(false);
+
+  // 3D-over-2D Plan Superposition Overlay state (0-token visual verification)
+  const [showPlanOverlay, setShowPlanOverlay] = useState(false);
+  const [overlayOpacity, setOverlayOpacity] = useState(0.45);
+  const [overlayScale, setOverlayScale] = useState(1);
+  const [overlayX, setOverlayX] = useState(0);
+  const [overlayY, setOverlayY] = useState(0);
+  const [overlayRot, setOverlayRot] = useState(0);
 
   // Interactive Zoom/Crop modal state for close-ups (cartouche, vue de bout, coupe)
   const [cropTarget, setCropTarget] = useState(null); // { idx, att }
@@ -1195,7 +1204,21 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     : null;
   const existingPlanFile = piece?.be?.clientFile || piece?.be?.planFile || null;
   const hasPlanContext = Boolean((uploadedPlan?.attachments?.length > 0) || uploadedPlan?.fileId || existingPlanFile);
+  const planOverlayUrl =
+    uploadedPlan?.attachments?.[0]?.previewUrl ||
+    chatAttachments?.[0]?.previewUrl ||
+    (existingPlanFile?.url && !/\.pdf$/i.test(existingPlanFile.filename || '') ? existingPlanFile.url : null);
   const coherenceWarnings = isReplicad ? checkCadParamsCoherence(cadSpec?.params, dims) : [];
+  const isoChecks = isReplicad ? checkIsoThreadStandards(cadSpec?.params, fiche, cadSpec) : [];
+  const unverifiedParams = isReplicad ? (cadSpec?.params || []).filter(p => p.confidence === 'check') : [];
+  const exportBlockedByChecks = unverifiedParams.length > 0;
+
+  function lockAllParamsVerified() {
+    setCadSpec(prev => ({
+      ...prev,
+      params: (prev.params || []).map(p => ({ ...p, confidence: 'locked' }))
+    }));
+  }
 
   return (
     <div className="cyber-card p-3.5 sm:p-4 space-y-3.5">
@@ -1385,7 +1408,21 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                   </button>
                 ))}
               </div>
-              <div className="flex items-center gap-1">
+              <div className="flex flex-wrap items-center gap-1">
+                {planOverlayUrl && (
+                  <button
+                    type="button"
+                    onClick={() => setShowPlanOverlay(v => !v)}
+                    className={`px-2 py-1 rounded border text-[10px] font-semibold flex items-center gap-1 cursor-pointer ${
+                      showPlanOverlay
+                        ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-200'
+                        : 'bg-[#111821] border-[#1E2A38] text-slate-300 hover:border-emerald-400/50'
+                    }`}
+                    title="Superposer le plan 2D en transparence sur la vue 3D pour comparer à l’œil (0 token)"
+                  >
+                    <ImageIcon className="w-3 h-3" /> Calque Plan
+                  </button>
+                )}
                 {hasFeatures && hasPlanContext && (
                   <button
                     type="button"
@@ -1418,6 +1455,23 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
           {/* 3D CANVAS */}
           <div className="relative rounded-[6px] overflow-hidden border border-[#1E2A38] bg-[#090d14]">
             <div ref={mountRef} className="w-full h-[400px]" />
+
+            {/* 0-TOKEN 2D PLAN SUPERPOSITION OVERLAY (pointer-events-none so 3D stays rotatable underneath!) */}
+            {showPlanOverlay && planOverlayUrl && (
+              <div className="absolute inset-0 pointer-events-none flex items-center justify-center overflow-hidden">
+                <img
+                  src={planOverlayUrl}
+                  alt="Calque Plan 2D"
+                  style={{
+                    opacity: overlayOpacity,
+                    transform: `translate(${overlayX}px, ${overlayY}px) scale(${overlayScale}) rotate(${overlayRot}deg)`,
+                    maxWidth: '100%',
+                    maxHeight: '100%',
+                    objectFit: 'contain'
+                  }}
+                />
+              </div>
+            )}
 
             {/* Multi-body / Multi-material toggle pills (e.g. Corps Bronze / Tiges Téflon) */}
             {isReplicad && occtResult?.parts?.length > 1 && (
@@ -1486,6 +1540,45 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
               0.001 mm
             </div>
           </div>
+
+          {/* 0-TOKEN PLAN OVERLAY ALIGNMENT CONTROLS */}
+          {showPlanOverlay && planOverlayUrl && (
+            <div className="p-2 rounded-[6px] bg-emerald-950/25 border border-emerald-500/35 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[10px] text-slate-200">
+              <span className="font-semibold text-emerald-300 flex items-center gap-1">
+                <ImageIcon className="w-3 h-3" /> Calque Plan 2D :
+              </span>
+              <label className="flex items-center gap-1.5">
+                Opacité {Math.round(overlayOpacity * 100)}%
+                <input type="range" min="0.05" max="0.95" step="0.05" value={overlayOpacity} onChange={e => setOverlayOpacity(parseFloat(e.target.value))} className="w-20 accent-emerald-400" />
+              </label>
+              <label className="flex items-center gap-1.5">
+                Zoom {Math.round(overlayScale * 100)}%
+                <input type="range" min="0.5" max="2.5" step="0.05" value={overlayScale} onChange={e => setOverlayScale(parseFloat(e.target.value))} className="w-20 accent-emerald-400" />
+              </label>
+              <label className="flex items-center gap-1">
+                X
+                <input type="range" min="-200" max="200" step="5" value={overlayX} onChange={e => setOverlayX(parseInt(e.target.value, 10))} className="w-16 accent-emerald-400" />
+              </label>
+              <label className="flex items-center gap-1">
+                Y
+                <input type="range" min="-200" max="200" step="5" value={overlayY} onChange={e => setOverlayY(parseInt(e.target.value, 10))} className="w-16 accent-emerald-400" />
+              </label>
+              <button
+                type="button"
+                onClick={() => setOverlayRot(r => (r + 90) % 360)}
+                className="px-1.5 py-0.5 rounded bg-[#0B0F14] border border-emerald-500/40 text-emerald-200 flex items-center gap-1 cursor-pointer"
+              >
+                <RotateCw className="w-2.5 h-2.5" /> 90°
+              </button>
+              <button
+                type="button"
+                onClick={() => { setOverlayOpacity(0.45); setOverlayScale(1); setOverlayX(0); setOverlayY(0); setOverlayRot(0); }}
+                className="ml-auto px-1.5 py-0.5 rounded bg-[#0B0F14] border border-[#1E2A38] text-slate-400 hover:text-white cursor-pointer"
+              >
+                Réinit.
+              </button>
+            </div>
+          )}
 
           {/* OPENCASCADE KERNEL ERROR BANNER WITH 1-CLICK ZERO-IMAGE-TOKEN AUTO-REPAIR */}
           {occtError && (
@@ -1637,6 +1730,38 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                   <ul className="list-disc pl-4 space-y-0.5 text-[10px]">
                     {coherenceWarnings.map((w, wi) => <li key={wi}>{w}</li>)}
                   </ul>
+                </div>
+              )}
+
+              {/* FREE (0-TOKEN) ISO THREAD STANDARDS CHECKER (ISO 2901 TRAPEZOIDAL & ISO 261/724 METRIC) */}
+              {isoChecks.length > 0 && (
+                <div className="space-y-1">
+                  {isoChecks.map((iso, ii) => (
+                    <div
+                      key={ii}
+                      className={`p-2 rounded border text-[10px] space-y-0.5 ${
+                        iso.ok
+                          ? 'bg-emerald-950/20 border-emerald-500/35 text-emerald-200'
+                          : 'bg-red-950/30 border-red-500/45 text-red-200'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 font-semibold">
+                        <span className="flex items-center gap-1.5">
+                          <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                          Norme {iso.standard} · {iso.callout}
+                        </span>
+                        <span className={iso.ok ? 'text-emerald-300' : 'text-red-300'}>
+                          {iso.ok ? '✓ Conforme' : '⚠ Écart détecté'}
+                        </span>
+                      </div>
+                      <div className="text-slate-300 font-mono-num">{iso.expected}</div>
+                      {iso.issues.length > 0 && (
+                        <ul className="list-disc pl-4 text-red-300">
+                          {iso.issues.map((iss, ji) => <li key={ji}>{iss}</li>)}
+                        </ul>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
 
@@ -2132,46 +2257,59 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
               )}
 
               {chatAttachments.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {chatAttachments.map((att, idx) => (
-                    <div key={idx} className="relative rounded border border-sky-500/40 bg-[#0B0F14] p-1.5 flex items-center gap-2 pr-7">
-                      <img src={att.previewUrl} alt={att.filename} className="w-11 h-11 object-contain rounded bg-black/40" />
-                      <div className="text-[10px] leading-tight max-w-[155px] space-y-1">
-                        <div className="text-slate-200 truncate">{att.originalFilename || att.filename}</div>
-                        <div className="flex items-center gap-1 flex-wrap">
-                          <button
-                            type="button"
-                            onClick={() => handleRotateChatAttachment(idx)}
-                            className="px-1.5 py-0.5 rounded bg-sky-500/15 border border-sky-500/40 text-sky-300 hover:bg-sky-500/25 flex items-center gap-1 cursor-pointer"
-                            title="Pivoter l'image de 90° pour la remettre droite"
-                          >
-                            <RotateCw className="w-2.5 h-2.5" /> 90°
-                          </button>
-                          {!att.isZoomCrop && (
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap gap-2">
+                    {chatAttachments.map((att, idx) => (
+                      <div key={idx} className="relative rounded border border-sky-500/40 bg-[#0B0F14] p-1.5 flex items-center gap-2 pr-7">
+                        <img src={att.previewUrl} alt={att.filename} className="w-11 h-11 object-contain rounded bg-black/40" />
+                        <div className="text-[10px] leading-tight max-w-[155px] space-y-1">
+                          <div className="text-slate-200 truncate">{att.originalFilename || att.filename}</div>
+                          <div className="flex items-center gap-1 flex-wrap">
                             <button
                               type="button"
-                              onClick={() => {
-                                setCropTarget({ idx, att });
-                                setCropRect({ x: 0.15, y: 0.15, w: 0.5, h: 0.5 });
-                                setCropLabel('detail');
-                              }}
-                              className="px-1.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/40 text-purple-300 hover:bg-purple-500/25 flex items-center gap-1 cursor-pointer"
-                              title="Ajouter un gros plan net (cartouche, vue de bout, coupe) dans le même envoi IA"
+                              onClick={() => handleRotateChatAttachment(idx)}
+                              className="px-1.5 py-0.5 rounded bg-sky-500/15 border border-sky-500/40 text-sky-300 hover:bg-sky-500/25 flex items-center gap-1 cursor-pointer"
+                              title="Pivoter l'image de 90° pour la remettre droite"
                             >
-                              <Crop className="w-2.5 h-2.5" /> Zoom
+                              <RotateCw className="w-2.5 h-2.5" /> 90°
                             </button>
-                          )}
+                            {!att.isZoomCrop && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCropTarget({ idx, att });
+                                  setCropRect({ x: 0.15, y: 0.15, w: 0.5, h: 0.5 });
+                                  setCropLabel('detail');
+                                }}
+                                className="px-1.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/40 text-purple-300 hover:bg-purple-500/25 flex items-center gap-1 cursor-pointer"
+                                title="Ajouter un gros plan net (cartouche, vue de bout, coupe) dans le même envoi IA"
+                              >
+                                <Crop className="w-2.5 h-2.5" /> Zoom
+                              </button>
+                            )}
+                          </div>
                         </div>
+                        <button
+                          type="button"
+                          onClick={() => setChatAttachments(prev => prev.filter((_, i) => i !== idx))}
+                          className="absolute top-1 right-1 p-0.5 rounded bg-slate-900/80 text-slate-400 hover:text-red-400 cursor-pointer"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setChatAttachments(prev => prev.filter((_, i) => i !== idx))}
-                        className="absolute top-1 right-1 p-0.5 rounded bg-slate-900/80 text-slate-400 hover:text-red-400 cursor-pointer"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
+                    ))}
+                  </div>
+                  {/* Pre-send Photo Quality Alert (0 token) */}
+                  {chatAttachments.some(a => a.quality?.warnings?.length > 0) && (
+                    <div className="px-2 py-1.5 rounded bg-amber-950/40 border border-amber-500/40 text-amber-200 text-[10px] space-y-0.5">
+                      {chatAttachments.flatMap((a, ai) => (a.quality?.warnings || []).map((w, wi) => (
+                        <div key={`${ai}_${wi}`} className="flex items-center gap-1.5">
+                          <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
+                          <span>{w.text}</span>
+                        </div>
+                      )))}
                     </div>
-                  ))}
+                  )}
                 </div>
               )}
 
@@ -2220,6 +2358,24 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
 
           {/* MANDATORY BE VALIDATION & EXPORTS (NATIVE OPENCASCADE .STEP & .STL) */}
           <div className="p-3 rounded-[6px] bg-[#0B0F14] border border-emerald-500/35 space-y-2.5">
+            {exportBlockedByChecks && (
+              <div className="p-2 rounded bg-amber-950/40 border border-amber-500/45 text-amber-200 text-[11px] flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-start gap-1.5 min-w-0 flex-1">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <span>
+                    <strong>Export bloqué :</strong> {unverifiedParams.length} cote(s) encore en <strong>⚠ À vérifier</strong> ({unverifiedParams.map(p => p.label || p.key).slice(0, 3).join(', ')}{unverifiedParams.length > 3 ? '…' : ''}). Contrôlez-les sur le plan avant d’exporter.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={lockAllParamsVerified}
+                  className="px-2 py-1 rounded bg-emerald-600/25 border border-emerald-500/50 hover:bg-emerald-600/40 text-emerald-200 text-[10px] font-semibold flex items-center gap-1 cursor-pointer shrink-0"
+                >
+                  <Lock className="w-3 h-3" /> Tout marquer vérifié
+                </button>
+              </div>
+            )}
+
             <label className="flex items-start gap-2 text-xs text-slate-200 cursor-pointer">
               <input
                 type="checkbox"
@@ -2235,16 +2391,16 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
             <div className="flex flex-wrap gap-1.5">
               <button
                 type="button"
-                disabled={!validatedByBe || !hasFeatures || Boolean(exportingFormat) || buildingOcct}
+                disabled={!validatedByBe || !hasFeatures || exportBlockedByChecks || Boolean(exportingFormat) || buildingOcct}
                 onClick={() => downloadFile('step')}
                 className="px-2.5 py-2 rounded-[6px] bg-[#22D3EE]/15 border border-[#22D3EE]/50 enabled:hover:bg-[#22D3EE]/25 disabled:opacity-40 text-[#22D3EE] text-xs font-semibold flex items-center gap-1 cursor-pointer"
-                title="Export .STEP B-Rep natif OpenCASCADE (ouvrable dans SolidWorks, Mastercam, Fusion 360, FreeCAD)"
+                title={exportBlockedByChecks ? 'Vérifiez d’abord les cotes marquées ⚠ À vérifier' : 'Export .STEP B-Rep natif OpenCASCADE (ouvrable dans SolidWorks, Mastercam, Fusion 360, FreeCAD)'}
               >
                 <Download className="w-3.5 h-3.5" /> {exportingFormat === 'step' ? '.STEP…' : '.STEP (B-Rep)'}
               </button>
               <button
                 type="button"
-                disabled={!validatedByBe || !hasFeatures || Boolean(exportingFormat) || buildingOcct}
+                disabled={!validatedByBe || !hasFeatures || exportBlockedByChecks || Boolean(exportingFormat) || buildingOcct}
                 onClick={() => downloadFile('stl')}
                 className="px-2.5 py-2 rounded-[6px] bg-[#111821] border border-[#1E2A38] enabled:hover:border-[#22D3EE] disabled:opacity-40 text-slate-200 text-xs flex items-center gap-1 cursor-pointer"
               >
@@ -2262,7 +2418,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
               {piece && (
                 <button
                   type="button"
-                  disabled={!validatedByBe || !hasFeatures || publishing || buildingOcct}
+                  disabled={!validatedByBe || !hasFeatures || exportBlockedByChecks || publishing || buildingOcct}
                   onClick={() => publishToOf('stl')}
                   className="ml-auto px-3 py-2 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
                 >
