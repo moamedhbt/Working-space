@@ -178,32 +178,36 @@ function extractReadableTextFromPdfBuffer(buf) {
   return matches.join(' ').replace(/[^\x20-\x7EÀ-ÿØø±×]/g, ' ').slice(0, 6000);
 }
 
-const ASSEMBLY_BLUEPRINT_DOC = `MOTEUR CAO B-REP PAR FICHE GÉOMÉTRIQUE & ASSEMBLEUR DE BRIQUES (MODE RECOMMANDÉ PAR DÉFAUT — 0 BUG DE CODE, < 1 SECONDE) :
-Au lieu d'écrire du code JS libre, remplis \`cadSpec.engine = "assembly"\` + \`cadSpec.params\` (toutes les cotes importantes au 0.001 mm) + \`cadSpec.blueprint = { body, features }\`.
-Chaque valeur numérique dans \`blueprint\` peut être soit un nombre, soit le nom d'une clé de \`params\` (ex: \`"longueur"\`, \`"diametre_ext"\`, \`"longueur / 2"\`) pour que modifier un paramètre mette à jour le 3D instantanément !
+const ASSEMBLY_BLUEPRINT_DOC = `BRIQUES CAO B-REP (RAPIDE, 0 BUG) — remplis \`cadSpec.engine = "assembly"\`, \`cadSpec.params\` et \`cadSpec.blueprint = { body, features }\`.
+Chaque valeur numérique dans \`blueprint\` peut être un nombre ou une clé de \`params\` (ex: \`"longueur"\`, \`"longueur / 2"\`).
+- \`body\` (centré [0,0,0], \`axis: "x"|"y"|"z"\`, \`color\`):
+  • \`d_profile\`: \`radius\`, \`flatWidth\`, \`length\`
+  • \`cylinder\`: \`diameter\`, \`length\`
+  • \`revolve\`: \`profile: [[r0,x0],[r1,x1],...]\`
+  • \`box\`: \`lx\`, \`ly\`, \`lz\`, \`cornerRadius?\`
+  • \`flange\`: \`flangeDiameter\`, \`flangeThickness\`, \`hubDiameter?\`, \`hubLength?\`
+  • \`polygon\`: \`sides\`, \`acrossFlats\` (ou \`radius\`), \`length\`
+- \`features[]\` (dans l'ordre):
+  • \`boss\`: \`shape:"box"|"cylinder"\`, \`lx,ly,lz\` ou \`diameter,length\`, \`center\`, \`bothEnds?\`, \`endOffset?\`
+  • \`bore\`: \`diameter\`, \`through:true\` (ou \`length\`), \`axis\`, \`center\`
+  • \`groove_ext\` / \`groove_int\`: \`grooveDiameter\`, \`outerDiameter?\`, \`width\`, \`axis\`, \`center\`
+  • \`thread\`: \`nominalDiameter\`, \`pitch\`, \`length\`, \`internal\`, \`profile:"trapezoidal"|"metric"\`, \`axis\`, \`center\`
+  • \`hole_pattern\`: \`count\`, \`diameter\`, \`pcd\`, \`through?\`, \`depth?\`, \`startAngleDeg?\`, \`angles?\`, \`axis\`, \`center\`
+  • \`hole\`: \`diameter\`, \`depth\`, \`axis\`, \`positions: [[x,y,z],...]\`
+  • \`slot\`: \`lx,ly,lz\`, \`center\`, \`bothEnds?\`
+  • \`pins\`: \`name\`, \`color\`, \`count\`, \`diameter\`, \`pcd\`, \`length\`, \`cutHostHole:true\`, \`axis\`, \`startAngleDeg?\`, \`angles?\`
+  • \`chamfer\`: \`size\` | \`fillet\`: \`radius\`
+Couleurs: Acier #94a3b8, Inox #b4becb, Alu #cbd5e1, Bronze #b8894a, Laiton #d4af37, Fonte #64748b, Téflon #f1f5f9.`;
 
-1. CORPS PRINCIPAL (\`blueprint.body\`, centré sur [0,0,0], \`axis: "x"\` pour pièces tournées, \`"z"\` pour plaques/brides) :
-   - \`{ "type": "d_profile", "radius": "rayon_corps", "flatWidth": "largeur_meplat", "length": "longueur_corps", "axis": "x", "color": "#b8894a" }\` (corps cylindrique R avec méplat latéral à cote totale flatWidth)
-   - \`{ "type": "cylinder", "diameter": "diametre_ext", "length": "longueur", "axis": "x", "color": "#94a3b8" }\`
-   - \`{ "type": "revolve", "axis": "x", "profile": [[r0, x0], [r1, x1], ...], "color": "#94a3b8" }\` (arbre étagé, manchon, cône, bague profilée)
-   - \`{ "type": "box", "lx": "longueur", "ly": "largeur", "lz": "epaisseur", "cornerRadius": 0, "axis": "z", "color": "#94a3b8" }\` (plaque, bloc, équerre)
-   - \`{ "type": "flange", "flangeDiameter": "d_bride", "flangeThickness": "ep_bride", "hubDiameter": "d_moyeu", "hubLength": "l_moyeu", "axis": "z" }\` (bride, moyeu)
-   - \`{ "type": "polygon", "sides": 6, "acrossFlats": "surplats", "length": "longueur", "axis": "x" }\` (6 pans, octogone)
-
-2. BRIQUES D'USINAGE & ASSEMBLAGE (\`blueprint.features[]\`, exécutées dans l'ordre) :
-   - \`{ "id": "tenons", "type": "boss", "label": "Tenons d'extrémité", "shape": "box"|"cylinder", "lx": "l_tenon", "ly": "larg_tenon", "lz": "haut_tenon", "bothEnds": true, "endOffset": "(longueur_corps + l_tenon) / 2 - 2", "axis": "x" }\` (ajout de tenons, ergots, manchons ou bossages aux deux bouts ou à un \`center: [x,y,z]\`)
-   - \`{ "id": "gorge", "type": "groove_ext", "label": "Gorge centrale ext.", "grooveDiameter": "d_gorge", "outerDiameter": "d_ext", "width": "l_gorge", "axis": "x", "center": [0,0,0] }\` (gorge tournée extérieure — NE COUPE PAS la pièce !)
-   - \`{ "id": "gorge_int", "type": "groove_int", "label": "Gorge intérieure", "grooveDiameter": "d_gorge_int", "width": "l_gorge", "axis": "x", "center": [0,0,0] }\`
-   - \`{ "id": "alesage", "type": "bore", "label": "Alésage central", "diameter": "d_alesage", "through": true, "axis": "x", "center": [0,0,0] }\`
-   - \`{ "id": "filet", "type": "thread", "label": "Filetage Tr65x8", "nominalDiameter": "d_filet", "pitch": "pas_filet", "length": "longueur_filet", "internal": true, "profile": "trapezoidal"|"metric", "axis": "x", "center": [0,0,0] }\` (1 seule brique rapide < 0.5 s)
-   - \`{ "id": "trous", "type": "hole_pattern", "label": "Perçages PCD", "count": 8, "diameter": "d_trou", "pcd": "pcd", "through": true, "startAngleDeg": 0, "angles"?: [0,38,...], "axis": "x", "center": [0,0,0] }\`
-   - \`{ "id": "trou_1", "type": "hole", "label": "Perçage radial", "diameter": 10, "depth": 30, "axis": "y", "positions": [[0, 0, 0]] }\`
-   - \`{ "id": "rainure", "type": "slot", "label": "Rainure / Méplat", "lx": 20, "ly": 10, "lz": 8, "center": [0,0,0] }\`
-   - \`{ "id": "inserts", "type": "pins", "label": "Inserts Téflon", "name": "Inserts PTFE", "color": "#f1f5f9", "count": 8, "diameter": "d_insert", "pcd": "pcd", "length": "longueur_corps", "cutHostHole": true, "axis": "x", "startAngleDeg": 0 }\` (crée les trous dans le corps + les inserts blancs en solide séparé !)
-   - \`{ "id": "chanfrein", "type": "chamfer", "label": "Chanfreins", "size": 1.5 }\` / \`{ "id": "conge", "type": "fillet", "label": "Congés", "radius": 2 }\`
-
-COULEURS MATIÈRES : Acier \`#94a3b8\`, Inox \`#b4becb\`, Alu \`#cbd5e1\`, Bronze \`#b8894a\`, Laiton \`#d4af37\`, Fonte \`#64748b\`, Téflon/PTFE \`#f1f5f9\`.
-Note : Utilise \`engine: "assembly"\` + \`blueprint\` pour 95 % des pièces mécaniques. N'utilise \`engine: "replicad"\` + \`code\` QUE si une géométrie organique/libre est impossible avec ces briques.`;
+const REPLICAD_FREE_DOC = `MOTEUR CAO B-REP OPENCASCADE LIBRE (REPLICAD — LIBERTÉ TOTALE : MOULES, FORMES SPÉCIALES, MULTI-CORPS) :
+Définis \`cadSpec.engine = "replicad"\`, \`cadSpec.params = [...]\` et \`cadSpec.code = "function main(P) { ... }"\`.
+\`main(P)\` retourne soit un solide, soit un tableau multi-corps/multi-matières :
+\`return [{ name: "Matrice inférieure", shape: die, color: "#64748b" }, { name: "Poinçon supérieur", shape: punch, color: "#94a3b8" }];\`
+Fonctions en scope :
+- Primitives : \`centeredCylinder(d, l, axis, center)\`, \`centeredBox(lx, ly, lz, center)\`, \`centeredCone(d1, d2, l, axis, center)\`, \`revolveProfile([[r,pos],...], axis, center)\`, \`extrudePolygon([[u,v],...], depth, axis, center)\`, \`dShapeBody(r, flatWidth, l, axis, center)\`
+- Usinages : \`.fuse()\`, \`.cut()\`, \`.intersect()\`, \`.translate([x,y,z])\`, \`.rotate(deg, pt, dir)\`, \`cutExternalGroove\`, \`cutInternalGroove\`, \`cutHolePattern\`, \`addPinPattern\`, \`cutThread\`, \`safeFillet\`, \`safeChamfer\`
+- Replicad natif : \`draw([x,y]).lineTo(...).bulgeArcTo(...).tangentArcTo(...).close().sketchOnPlane('XY'|'XZ'|'YZ', off).extrude(h)\` / \`.revolve()\`, \`drawCircle\`, \`drawRectangle\`, \`drawRoundedRectangle\`, \`drawPolysides\`, \`drawEllipse\`, \`loft\`, \`makeCylinder\`, \`makeBaseBox\`, \`makeSphere\`, \`makeCompound\`, \`EdgeFinder\`, \`FaceFinder\`.
+RÈGLES PERF (< 2s) : JAMAIS \`makeHelix\`+\`genericSweep\` ni boucle de 20+ booléens (utilise \`cutThread\` 1 seule fois). Tout trou débouchant dépasse de +6 mm. Pas d'import/require/window.`;
 
 const REPLICAD_API_DOC = `${ASSEMBLY_BLUEPRINT_DOC}`;
 
@@ -312,7 +316,7 @@ function resolveRuntimeAiConfig(override = null) {
   return { provider, resolvedProvider, apiKey, model, baseUrl, source: 'override' };
 }
 
-async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'image/jpeg', images = [], overrideConfig = null, expectJson = true, deepThinking = false }) {
+async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'image/jpeg', images = [], overrideConfig = null, expectJson = true, deepThinking = false, imageDetail = 'auto', maxTokens = 3200 }) {
   const cfg = resolveRuntimeAiConfig(overrideConfig);
   const provider = cfg.resolvedProvider;
   if (!provider || provider === 'offline') return null;
@@ -451,7 +455,6 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
     endpoint = clean.endsWith('/chat/completions') ? clean : `${clean}/chat/completions`;
   }
 
-  // ALWAYS send detail: "high" so Vision models read fine CAD dimensions without downscaling to 512px!
   const contentParts = [{ type: 'text', text: promptText }];
   for (const m of mediaList) {
     if (m.mimeType !== 'application/pdf') {
@@ -459,27 +462,34 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
         type: 'image_url',
         image_url: {
           url: `data:${m.mimeType};base64,${m.base64}`,
-          detail: 'high'
+          detail: imageDetail === 'high' ? 'high' : 'auto'
         }
       });
     }
   }
 
-  const callOpenAiStyle = async (useThinking) => {
+  const isQwenProvider = provider === 'qwen' || provider === 'qwen_us' || provider === 'qwen_cn';
+
+  const callOpenAiStyle = async (thinkingOpt) => {
     const payload = {
       model,
+      max_tokens: maxTokens,
       messages: [{ role: 'user', content: contentParts }]
     };
     if (expectJson && provider === 'openai') {
       payload.response_format = { type: 'json_object' };
     }
-    if (useThinking) {
-      if (provider === 'qwen' || provider === 'qwen_us' || provider === 'qwen_cn') {
+    if (isQwenProvider && thinkingOpt !== 'omit') {
+      // CRITICAL: On DashScope Qwen3/3.8, omitting enable_thinking leaves slow server-side thinking ON!
+      // Explicitly send enable_thinking: false in Fast/Standard mode!
+      if (thinkingOpt === 'on') {
         payload.enable_thinking = true;
         payload.thinking_budget = 1600;
-      } else if (provider === 'openrouter') {
-        payload.reasoning = { effort: 'low' };
+      } else {
+        payload.enable_thinking = false;
       }
+    } else if (provider === 'openrouter' && thinkingOpt === 'on') {
+      payload.reasoning = { effort: 'medium' };
     }
     const res = await fetch(endpoint, {
       method: 'POST',
@@ -490,11 +500,13 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
     return { ok: res.ok, status: res.status, json };
   };
 
-  const canThink = deepThinking && (provider === 'qwen' || provider === 'qwen_us' || provider === 'qwen_cn' || provider === 'openrouter');
-  let attempt = await callOpenAiStyle(canThink);
-  // Auto-fallback cleanly if a specific model does not support enable_thinking / reasoning
-  if (!attempt.ok && canThink && (attempt.status === 400 || attempt.status === 422)) {
-    attempt = await callOpenAiStyle(false);
+  const initialThinkingOpt = deepThinking
+    ? ((isQwenProvider || provider === 'openrouter') ? 'on' : 'omit')
+    : (isQwenProvider ? 'off' : 'omit');
+  let attempt = await callOpenAiStyle(initialThinkingOpt);
+  // Auto-fallback cleanly if a specific model does not accept enable_thinking / reasoning
+  if (!attempt.ok && initialThinkingOpt !== 'omit' && (attempt.status === 400 || attempt.status === 422)) {
+    attempt = await callOpenAiStyle('omit');
   }
   if (!attempt.ok) throw new Error(attempt.json?.error?.message || `${provider} HTTP ${attempt.status}`);
   const msgObj = attempt.json?.choices?.[0]?.message || {};
@@ -954,7 +966,8 @@ function applyLocalCadPrompt(cadSpec, prompt = '') {
   };
 }
 
-async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer = null, filename = 'plan', attachments = [], ficheTechnique = null, errorContext = '', visualAudit = false, thinkingMode = 'auto' }) {
+async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer = null, filename = 'plan', attachments = [], ficheTechnique = null, errorContext = '', visualAudit = false, workMode = 'standard' }) {
+  const startedAt = Date.now();
   const cleanSpec = sanitizeCadSpec(cadSpec);
   const ext = path.extname(filename || '').toLowerCase();
   const mimeType =
@@ -963,89 +976,89 @@ async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer =
     ext === '.webp' ? 'image/webp' :
     'image/jpeg';
 
+  const isComplexMode = workMode === 'complex';
   const recentHistory = (Array.isArray(history) ? history : [])
-    .slice(-6)
-    .map(m => `${m.role === 'user' ? 'Ingénieur BE' : 'Assistant IA BE'} : ${String(m.text || '').slice(0, 450)}`)
+    .slice(isComplexMode ? -6 : -4)
+    .map(m => `${m.role === 'user' ? 'BE' : 'IA'} : ${String(m.text || '').slice(0, 350)}`)
     .join('\n');
 
   const hasVision = (Array.isArray(attachments) && attachments.some(a => a?.base64)) || (planBuffer && Buffer.isBuffer(planBuffer) && planBuffer.length > 0);
   const compactFollowUp = !hasVision && !visualAudit && Boolean(ficheTechnique);
-  const useDeepThinking = thinkingMode === 'deep'
-    ? true
-    : thinkingMode === 'fast'
-      ? false
-      : (hasVision && !errorContext);
+  // Standard = FAST (enable_thinking: false, lean brick prompt, auto image detail)
+  // Complex  = FREEFORM (full OpenCASCADE Replicad code, deep thinking 1600, HD vision)
+  const useDeepThinking = isComplexMode && !errorContext;
+  const imageDetail = isComplexMode || visualAudit ? 'high' : 'auto';
+  const maxTokens = isComplexMode ? 6144 : 2800;
 
-  const machinesCtx = compactFollowUp ? '' : getWorkshopMachinesContext();
+  const machinesCtx = (isComplexMode && !compactFollowUp) ? getWorkshopMachinesContext() : '';
   const lockedParams = (cleanSpec.params || []).filter(p => p.confidence === 'locked');
   const lockedNote = lockedParams.length > 0
-    ? `🔒 COTES VERROUILLÉES PAR L'INGÉNIEUR BE (NE PAS MODIFIER sauf demande explicite) : ${lockedParams.map(p => `${p.key}=${p.value}${p.unit || 'mm'}`).join(', ')}.\n`
+    ? `🔒 COTES VERROUILLÉES (ne pas modifier sauf demande) : ${lockedParams.map(p => `${p.key}=${p.value}${p.unit || 'mm'}`).join(', ')}.\n`
     : '';
 
   const visualAuditNote = visualAudit
-    ? `👁️ MODE CONTRÔLE VISUEL 3D vs PLAN 2D : Tu reçois le PLAN 2D ORIGINAL + le RENDU 3D ACTUEL en 3 vues (FACE / CÔTÉ / ISO). Compare-les impitoyablement ! Repère immédiatement toute inversion de volume (gros corps vs gorge centrale, collerettes vs manchons), toute forme manquante (méplat/profil en D, tenons/ergots, rainures, trous, inserts), et tout écart de proportion — puis produis la Fiche Géométrique ("engine": "assembly", "blueprint": {...}) CORRIGÉE ("modified": true).\n`
+    ? `👁️ CONTRÔLE VISUEL 3D vs PLAN 2D : Compare le rendu 3D (FACE/CÔTÉ/ISO) au plan 2D original, repère toute inversion de volume ou forme manquante, et corrige immédiatement ("modified": true).\n`
     : '';
 
-  const compactRule = compactFollowUp
-    ? `⚡ MODE SUIVI RAPIDE : La fiche technique / DFM / gamme CNC existe déjà — NE LA RÉGÉNÈRE PAS (omets "ficheTechnique" et "thinking") ! Retourne UNIQUEMENT "reply" (court, 1-3 phrases), "modified" et le "cadSpec" mis à jour.`
-    : `6. Si des images/plans sont joints, extrais ou mets à jour aussi "ficheTechnique" et "thinking" dans la même réponse (0 requête supplémentaire).`;
+  let refineInstruction;
+  if (!isComplexMode) {
+    // ⚡ MODE STANDARD (RAPIDE · BRIQUES) — ultra-léger, zéro couche inutile, 5-12s !
+    refineInstruction = `Tu es un Ingénieur BE CNC rapide et précis. Réponds en français court et construis la pièce 3D avec les briques standard OpenCASCADE.
+${lockedNote}${visualAuditNote}Modèle actuel : ${JSON.stringify(cleanSpec)}
+${recentHistory ? `Historique :\n${recentHistory}\n` : ''}${errorContext ? `Erreur à corriger : ${errorContext}\n` : ''}Demande BE : "${prompt}"
 
-  const refineInstruction = `Tu es un Ingénieur Bureau d'Études & Méthodes CNC senior, expert en lecture de plans ISO 2D, DFM atelier et CAO B-Rep OpenCASCADE par Fiche Géométrique + Briques d'assemblage.
-Tu discutes en français naturel avec l'ingénieur BE pour concevoir, vérifier et modifier n'importe quelle pièce mécanique 3D exacte (exportable en .STEP et .STL, précision 0.001 mm).
-Comprends le langage naturel même avec des fautes de frappe ("filtage" = filetage/taraudage, "chanfrin" = chanfrein, "6 pan" = hexagone).
-${machinesCtx ? `${machinesCtx}\n` : ''}${lockedNote}${visualAuditNote}
-Modèle 3D actuel (JSON cadSpec) :
-${JSON.stringify(cleanSpec, null, 2)}
+RÈGLES :
+- Produis directement le 3D ("modified": true, "engine": "assembly", "params": [...], "blueprint": { "body": {...}, "features": [...] }).
+- Si plan/image joint : recoupe les vues (ne jamais inverser corps et gorge), modélise toutes les formes visibles (méplat/D, gorge, tenons, filet, trous, inserts), marque "confidence": "high"|"check"|"locked".
+- ${compactFollowUp ? 'NE PAS régénérer ficheTechnique (omets-la).' : 'Si image/plan joint, ajoute aussi "ficheTechnique" (matière, débit brut, tolérances, gamme).'}
 
-${!compactFollowUp && ficheTechnique ? `Fiche technique actuelle : ${JSON.stringify(ficheTechnique)}` : ''}
-${recentHistory ? `Historique récent :\n${recentHistory}\n` : ''}
-${errorContext ? `⚠️ ERREUR DE COMPILATION OPENCASCADE À CORRIGER IMMÉDIATEMENT (passe en "engine": "assembly" avec blueprint propre) :\n${errorContext}\n` : ''}
-Nouveau message de l'ingénieur BE :
-"${prompt}"
-
-RÈGLES D'ACTION STRICTES (1 SEULE REQUÊTE = FICHE GÉOMÉTRIQUE + 3D DIRECT) :
-1. PRIORITÉ À L'ACTION : Si l'utilisateur joint une image/plan, lance un contrôle visuel 3D vs Plan, demande de créer ou modifier une pièce, ou confirme ("oui", "ok", "vas-y", "corrige", "fais-le"), TU DOIS PRODUIRE IMMÉDIATEMENT LA FICHE GÉOMÉTRIQUE B-REP COMPLÈTE ("modified": true, "engine": "assembly", "params": [...], "blueprint": { "body": {...}, "features": [...] }) DÈS CE TOUR !
-2. LECTURE CROISÉE ANTI-INVERSION & MODÉLISATION COMPLÈTE : Quand une image/plan (ou un zoom) est joint, recoupe TOUTES les vues (face, côté, coupes) pour ne JAMAIS inverser le gros corps principal avec une gorge centrale en creux. IL EST STRICTEMENT INTERDIT d'esquiver une forme visible (méplat / profil en D, gorge extérieure, tenons/manchons d'extrémité, rainures, perçages, inserts) : ajoute chaque brique dans \`blueprint.features\` et expose chaque cote dans \`params\`.
-3. CONFIANCE & MÉMOIRE DES COTES : Marque chaque paramètre dans \`params\` avec \`"confidence": "high"\` (lu clairement), \`"check"\` (chiffre flou ou déduit à vérifier par l'ingénieur), ou conserve \`"locked"\` pour toutes les cotes déjà validées/verrouillées par l'ingénieur.
-4. Ne mets "modified": false QUE si l'utilisateur pose une pure question théorique / méthodes sans aucune demande de création ou modification 3D.
-5. Utilise \`"engine": "assembly"\` + \`"blueprint"\` (briques déterministes 0 bug) par défaut. N'utilise \`"engine": "replicad"\` + \`"code"\` que si la pièce est une forme organique impossible en briques.
-${compactRule}
-
-Retourne STRICTEMENT un objet JSON valide (aucun texte hors JSON) :
+JSON STRICT (aucun texte hors JSON) :
 {
-  ${compactFollowUp ? '' : `"thinking": { "vues_et_fonction": string, "cotes_cles": string[], "alertes_dfm": string[], "points_a_verifier": string[] },`}
-  "reply": string (réponse claire et concise d'ingénieur BE en français),
+  "reply": string (1-3 phrases),
   "modified": boolean,
   "cadSpec": {
     "engine": "assembly",
     "unit": "mm",
     "name": string,
     "material": string,
-    "params": [
-      { "key": string, "label": string, "value": number, "unit": "mm"|"°"|"u", "tolerance"?: string, "confidence": "high"|"check"|"locked", "sourceView"?: string }
-    ],
-    "blueprint": {
-      "body": { "type": "d_profile"|"cylinder"|"revolve"|"box"|"flange"|"polygon", "axis": "x"|"y"|"z", ... },
-      "features": [ { "id": string, "type": "boss"|"bore"|"groove_ext"|"groove_int"|"thread"|"hole_pattern"|"hole"|"slot"|"pins"|"chamfer"|"fillet", "label": string, ... } ]
-    }
+    "params": [{ "key": string, "label": string, "value": number, "unit": "mm"|"°"|"u", "tolerance"?: string, "confidence": "high"|"check"|"locked", "sourceView"?: string }],
+    "blueprint": { "body": { "type": "d_profile"|"cylinder"|"revolve"|"box"|"flange"|"polygon", "axis": "x"|"y"|"z", ... }, "features": [...] }
   }${compactFollowUp ? '' : `,
-  "ficheTechnique"?: {
-    "client": string,
-    "reference": string,
-    "revision": string,
-    "partName": string,
-    "material": string,
-    "rawStock": string,
-    "criticalTolerances": string[],
-    "specialNotes": string[],
-    "suggestedOperations": [
-      { "libelle": string, "typeMachine": "Tournage CNC"|"Fraisage CNC"|"Tournage Manuel"|"Contrôle", "tempsReglageMin": number, "tempsUnitaireMin": number }
-    ],
-    "summary": string
-  }`}
+  "ficheTechnique"?: { "client": string, "reference": string, "revision": string, "partName": string, "material": string, "rawStock": string, "criticalTolerances": string[], "specialNotes": string[], "suggestedOperations": [{ "libelle": string, "typeMachine": "Tournage CNC"|"Fraisage CNC"|"Tournage Manuel"|"Contrôle", "tempsReglageMin": number, "tempsUnitaireMin": number }], "summary": string }`}
 }
 
 ${ASSEMBLY_BLUEPRINT_DOC}`;
+  } else {
+    // 🧩 MODE COMPLEXE / LIBRE — liberté totale OpenCASCADE (moules, formes spéciales, multi-corps)
+    refineInstruction = `Tu es un Ingénieur BE & Méthodes CNC senior en MODE COMPLEXE / FORME LIBRE (OpenCASCADE Replicad).
+Tu as 100 % de liberté géométrique pour concevoir moules multi-corps, carters, profils courbes, nervures, lofts ou pièces spéciales.
+${machinesCtx ? `${machinesCtx}\n` : ''}${lockedNote}${visualAuditNote}Modèle actuel : ${JSON.stringify(cleanSpec)}
+${!compactFollowUp && ficheTechnique ? `Fiche actuelle : ${JSON.stringify(ficheTechnique)}\n` : ''}${recentHistory ? `Historique :\n${recentHistory}\n` : ''}${errorContext ? `⚠️ ERREUR OPENCASCADE À CORRIGER :\n${errorContext}\n` : ''}Demande BE : "${prompt}"
+
+RÈGLES :
+1. Produis immédiatement le modèle B-Rep complet ("modified": true, "engine": "replicad", "params": [...], "code": "function main(P) { ... }") dès ce tour.
+2. Si plan/image joint : recoupe toutes les vues (ne jamais inverser corps et gorge), modélise TOUTES les formes visibles sans rien esquiver, marque chaque paramètre "confidence": "high"|"check"|"locked".
+3. Si c'est un moule ou un assemblage, retourne un tableau multi-corps distincts avec couleurs réalistes (ex: Matrice, Poinçon, Pièce, Colonnes).
+4. ${compactFollowUp ? 'NE PAS régénérer ficheTechnique ni thinking.' : 'Remplis "thinking" et "ficheTechnique" si image/plan joint.'}
+
+JSON STRICT (aucun texte hors JSON) :
+{
+  ${compactFollowUp ? '' : `"thinking": { "vues_et_fonction": string, "cotes_cles": string[], "alertes_dfm": string[], "points_a_verifier": string[] },`}
+  "reply": string,
+  "modified": boolean,
+  "cadSpec": {
+    "engine": "replicad",
+    "unit": "mm",
+    "name": string,
+    "material": string,
+    "params": [{ "key": string, "label": string, "value": number, "unit": "mm"|"°"|"u", "tolerance"?: string, "confidence": "high"|"check"|"locked", "sourceView"?: string }],
+    "code": string
+  }${compactFollowUp ? '' : `,
+  "ficheTechnique"?: { "client": string, "reference": string, "revision": string, "partName": string, "material": string, "rawStock": string, "criticalTolerances": string[], "specialNotes": string[], "suggestedOperations": [{ "libelle": string, "typeMachine": "Tournage CNC"|"Fraisage CNC"|"Tournage Manuel"|"Contrôle", "tempsReglageMin": number, "tempsUnitaireMin": number }], "summary": string }`}
+}
+
+${REPLICAD_FREE_DOC}`;
+  }
 
   const aiCfg = getAiSettings();
 
@@ -1053,7 +1066,7 @@ ${ASSEMBLY_BLUEPRINT_DOC}`;
   const visionImages = [];
   if (Array.isArray(attachments)) {
     for (const a of attachments) {
-      if (a?.base64) visionImages.push({ mimeType: a.mimeType || 'image/png', base64: a.base64 });
+      if (a?.base64) visionImages.push({ mimeType: a.mimeType || 'image/jpeg', base64: a.base64 });
     }
   }
   if (planBuffer && Buffer.isBuffer(planBuffer) && planBuffer.length > 0 && visionImages.length < 3) {
@@ -1066,8 +1079,11 @@ ${ASSEMBLY_BLUEPRINT_DOC}`;
       promptText: refineInstruction,
       images: visionImages,
       expectJson: true,
-      deepThinking: useDeepThinking
+      deepThinking: useDeepThinking,
+      imageDetail,
+      maxTokens
     });
+    const elapsedMs = Date.now() - startedAt;
     const parsed = resp?.data;
     if (parsed && (parsed.reply || parsed.cadSpec)) {
       const nextSpec = parsed.cadSpec
@@ -1083,6 +1099,8 @@ ${ASSEMBLY_BLUEPRINT_DOC}`;
       } : null;
       return {
         mode: `${resp.provider}_vision_ai`,
+        workMode: isComplexMode ? 'complex' : 'standard',
+        elapsedMs,
         provider: resp.provider,
         model: resp.model,
         usedVision: hasVision,
@@ -1098,6 +1116,8 @@ ${ASSEMBLY_BLUEPRINT_DOC}`;
       const plain = resp.text.trim();
       return {
         mode: `${resp.provider}_vision_ai`,
+        workMode: isComplexMode ? 'complex' : 'standard',
+        elapsedMs,
         provider: resp.provider,
         model: resp.model,
         usedVision: hasVision,

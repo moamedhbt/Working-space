@@ -720,7 +720,7 @@ router.post('/be/refine-3d', auth, requireRole('directeur', 'be', 'chef'), async
       includePlan = false,
       errorContext = '',
       visualAudit = false,
-      thinkingMode = 'auto'
+      workMode = 'standard'
     } = req.body || {};
     const cleanAttachments = Array.isArray(attachments) ? attachments.filter(a => a && a.base64).slice(0, 5) : [];
     const cleanPrompt = String(prompt || '').trim() || (
@@ -772,7 +772,7 @@ router.post('/be/refine-3d', auth, requireRole('directeur', 'be', 'chef'), async
       ficheTechnique,
       errorContext: String(errorContext || ''),
       visualAudit: Boolean(visualAudit),
-      thinkingMode: ['fast', 'deep', 'auto'].includes(thinkingMode) ? thinkingMode : 'auto'
+      workMode: workMode === 'complex' ? 'complex' : 'standard'
     });
     res.json(result);
   } catch (err) {

@@ -230,9 +230,10 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
   const [analyzing, setAnalyzing] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
   const [refining, setRefining] = useState(false);
+  const [elapsedSec, setElapsedSec] = useState(0);
   const [chatError, setChatError] = useState('');
   const [openThinking, setOpenThinking] = useState({});
-  const [thinkingMode, setThinkingMode] = useState('auto'); // 'auto' | 'fast' | 'deep'
+  const [workMode, setWorkMode] = useState('standard'); // 'standard' (fast bricks) | 'complex' (freeform Replicad)
   const [correctionLog, setCorrectionLog] = useState([]); // [{ ts, text }]
 
   // OpenCASCADE / Replicad B-Rep Worker state
@@ -263,6 +264,19 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
   useEffect(() => {
     warmupReplicad().catch(() => {});
   }, []);
+
+  // Live stopwatch while waiting for AI response
+  useEffect(() => {
+    if (!refining) {
+      setElapsedSec(0);
+      return;
+    }
+    const t0 = Date.now();
+    const timer = setInterval(() => {
+      setElapsedSec((Date.now() - t0) / 1000);
+    }, 200);
+    return () => clearInterval(timer);
+  }, [refining]);
 
   useEffect(() => {
     if (isReplicad) setCodeDraft(cadSpec?.code || '');
@@ -308,6 +322,8 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
           text: m.text,
           thinking: m.thinking || null,
           modified: m.modified,
+          workMode: m.workMode,
+          elapsedMs: m.elapsedMs,
           model: m.model,
           ts: m.ts,
           attachmentNames: m.attachmentNames || (m.attachments ? m.attachments.map(a => a.filename) : undefined)
@@ -778,7 +794,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
         cadSpec,
         ficheTechnique: fiche,
         history: updatedHistory.map(m => ({ role: m.role, text: m.text })),
-        thinkingMode,
+        workMode,
         prompt: text
       });
 
@@ -797,6 +813,8 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
           thinking: res.thinking || null,
           modified: Boolean(res.modified),
           mode: res.mode,
+          workMode: res.workMode || workMode,
+          elapsedMs: res.elapsedMs || 0,
           model: res.model || '',
           usedVision: Boolean(res.usedVision),
           ts: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
@@ -823,6 +841,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
         ficheTechnique: fiche,
         history: chatMessages.slice(-4).map(m => ({ role: m.role, text: m.text })),
         errorContext: occtError,
+        workMode: isReplicadCode ? 'complex' : 'standard',
         prompt: `Corrige l'erreur OpenCASCADE suivante sans changer les cotes demandées : ${occtError}`
       });
       if (res.cadSpec) {
@@ -969,7 +988,8 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
         ficheTechnique: fiche,
         history: updatedHistory.map(m => ({ role: m.role, text: m.text })),
         visualAudit: true,
-        prompt: 'Compare attentivement ce rendu 3D en 3 vues (FACE / BOUT / ISO) au plan 2D original. Liste les erreurs visuelles (corps inversé avec gorge, méplat/D-shape manquant, ergots, trous, proportions) et corrige le code Replicad B-Rep immédiatement.'
+        workMode,
+        prompt: 'Compare attentivement ce rendu 3D en 3 vues (FACE / BOUT / ISO) au plan 2D original. Liste les erreurs visuelles (corps inversé avec gorge, méplat/D-shape manquant, ergots, trous, proportions) et corrige le modèle 3D B-Rep immédiatement.'
       });
 
       if (res.ficheTechnique) setFiche(res.ficheTechnique);
@@ -2322,9 +2342,14 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                       {m.role === 'user' ? 'Ingénieur BE' : `Assistant IA${m.model ? ` · ${m.model}` : ''}`}
                     </span>
                     <div className="flex items-center gap-1.5">
+                      {m.role === 'ai' && m.elapsedMs > 0 && (
+                        <span className="text-slate-400 font-mono-num text-[9px]">
+                          ⏱ {(m.elapsedMs / 1000).toFixed(1)}s
+                        </span>
+                      )}
                       {m.role === 'ai' && m.modified && (
                         <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[9px] font-semibold">
-                          3D B-Rep mis à jour
+                          {m.workMode === 'complex' ? '🧩 3D Libre' : '⚡ 3D Briques'}
                         </span>
                       )}
                       <span className="text-slate-500 font-mono-num">{m.ts || ''}</span>
@@ -2402,8 +2427,13 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
               })}
 
               {refining && (
-                <div className="p-2.5 rounded-[6px] bg-sky-950/20 border border-sky-500/20 text-sky-300 text-xs animate-pulse">
-                  L’IA analyse et génère le modèle B-Rep…
+                <div className="p-2.5 rounded-[6px] bg-sky-950/20 border border-sky-500/20 text-sky-300 text-xs flex items-center justify-between gap-2 animate-pulse">
+                  <span>
+                    {workMode === 'complex'
+                      ? '🧩 Mode Complexe / Libre : l’IA conçoit le modèle 3D…'
+                      : '⚡ Mode Standard : l’IA assemble les briques 3D…'}
+                  </span>
+                  <span className="font-mono-num text-sky-200 font-semibold">{elapsedSec.toFixed(1)}s</span>
                 </div>
               )}
               <div ref={chatEndRef} />
@@ -2435,51 +2465,36 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                 </label>
               )}
 
-              {/* FAST vs DEEP THINKING SPEED TOGGLE (Auto: Deep for plans, Fast 5-12s for text edits!) */}
-              <div className="flex flex-wrap items-center justify-between gap-1.5 text-[10px]">
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setThinkingMode('auto')}
-                    className={`px-2 py-0.5 rounded border cursor-pointer flex items-center gap-1 ${
-                      thinkingMode === 'auto'
-                        ? 'bg-[#22D3EE]/15 border-[#22D3EE]/50 text-[#22D3EE] font-semibold'
-                        : 'bg-[#0B0F14] border-[#1E2A38] text-slate-400 hover:text-slate-200'
-                    }`}
-                    title="Auto : Réflexion profonde quand un plan est joint, Rapide (5-12s) pour les retouches texte"
-                  >
-                    Auto ({chatAttachments.length > 0 || includePlanNext ? '🧠 Plan' : '⚡ Texte'})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setThinkingMode('fast')}
-                    className={`px-2 py-0.5 rounded border cursor-pointer flex items-center gap-1 ${
-                      thinkingMode === 'fast'
-                        ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-200 font-semibold'
-                        : 'bg-[#0B0F14] border-[#1E2A38] text-slate-400 hover:text-slate-200'
-                    }`}
-                    title="Mode Rapide : sans réflexion longue (~5-12 secondes)"
-                  >
-                    <Zap className="w-2.5 h-2.5" /> Rapide
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setThinkingMode('deep')}
-                    className={`px-2 py-0.5 rounded border cursor-pointer flex items-center gap-1 ${
-                      thinkingMode === 'deep'
-                        ? 'bg-purple-500/20 border-purple-400/60 text-purple-200 font-semibold'
-                        : 'bg-[#0B0F14] border-[#1E2A38] text-slate-400 hover:text-slate-200'
-                    }`}
-                    title="Réflexion profonde (budget 1600 tokens) : meilleure précision sur plans complexes"
-                  >
-                    <Brain className="w-2.5 h-2.5" /> Réflexion profonde
-                  </button>
-                </div>
-                <span className="text-slate-500">
-                  {thinkingMode === 'fast' || (thinkingMode === 'auto' && chatAttachments.length === 0 && !includePlanNext)
-                    ? '⚡ ~5-12s · suivi compact'
-                    : '🧠 ~15-30s · budget 1600'}
-                </span>
+              {/* HYBRID 2-MODE SWITCH: ⚡ Standard (fast bricks) vs 🧩 Complexe / Libre (molds, special freeform) */}
+              <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+                <button
+                  type="button"
+                  onClick={() => setWorkMode('standard')}
+                  className={`px-2 py-1.5 rounded-[6px] border cursor-pointer flex items-center justify-center gap-1.5 transition ${
+                    workMode === 'standard'
+                      ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-200 font-semibold'
+                      : 'bg-[#0B0F14] border-[#1E2A38] text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="Pièces mécaniques classiques : prompt léger + briques rapides (~5-12s, 0 bug)"
+                >
+                  <Zap className="w-3 h-3 shrink-0" />
+                  <span>Standard · Briques</span>
+                  <span className="text-[9px] opacity-75">rapide</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWorkMode('complex')}
+                  className={`px-2 py-1.5 rounded-[6px] border cursor-pointer flex items-center justify-center gap-1.5 transition ${
+                    workMode === 'complex'
+                      ? 'bg-purple-500/20 border-purple-400/60 text-purple-200 font-semibold'
+                      : 'bg-[#0B0F14] border-[#1E2A38] text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="Moules, pièces spéciales, formes libres : 100 % liberté OpenCASCADE Replicad + réflexion approfondie"
+                >
+                  <Brain className="w-3 h-3 shrink-0" />
+                  <span>Complexe · Libre</span>
+                  <span className="text-[9px] opacity-75">moules / spécial</span>
+                </button>
               </div>
 
               {chatAttachments.length > 0 && (

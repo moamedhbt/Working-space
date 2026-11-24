@@ -120,8 +120,8 @@ export async function prepareVisionAttachment(file, maxPdfPages = 2) {
     for (let p = 1; p <= pageCount; p++) {
       const page = await pdf.getPage(p);
       const baseVp = page.getViewport({ scale: 1 });
-      const targetMax = 2400;
-      const scale = Math.min(3.0, Math.max(1.5, targetMax / Math.max(baseVp.width, baseVp.height)));
+      const targetMax = 1800;
+      const scale = Math.min(2.4, Math.max(1.3, targetMax / Math.max(baseVp.width, baseVp.height)));
       const vp = page.getViewport({ scale });
       const canvas = document.createElement('canvas');
       canvas.width = Math.round(vp.width);
@@ -131,13 +131,13 @@ export async function prepareVisionAttachment(file, maxPdfPages = 2) {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       await page.render({ canvasContext: ctx, viewport: vp }).promise;
 
-      const pngDataUrl = canvas.toDataURL('image/png');
+      const jpgDataUrl = canvas.toDataURL('image/jpeg', 0.90);
       results.push({
-        filename: pageCount > 1 ? `${name.replace(/\.pdf$/i, '')}_p${p}.png` : `${name.replace(/\.pdf$/i, '')}.png`,
+        filename: pageCount > 1 ? `${name.replace(/\.pdf$/i, '')}_p${p}.jpg` : `${name.replace(/\.pdf$/i, '')}.jpg`,
         originalFilename: name,
-        mimeType: 'image/png',
-        base64: pngDataUrl,
-        previewUrl: pngDataUrl,
+        mimeType: 'image/jpeg',
+        base64: jpgDataUrl,
+        previewUrl: jpgDataUrl,
         isFromPdf: true,
         pageIndex: p,
         totalPages: pdf.numPages
@@ -146,32 +146,30 @@ export async function prepareVisionAttachment(file, maxPdfPages = 2) {
     return results;
   }
 
-  // Standard image file (jpg/png/webp) — keep crisp HD up to 2400px so fine CAD dimensions stay razor-sharp
+  // Standard image file (jpg/png/webp) — crisp 1600px JPEG 0.86 (~300 KB: 6x faster upload & Vision!)
   const rawUrl = await readAsDataUrl(file);
   try {
     const img = await loadImage(rawUrl);
-    const maxDim = 2400;
-    if (img.width > maxDim || img.height > maxDim) {
-      const ratio = maxDim / Math.max(img.width, img.height);
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(img.width * ratio);
-      canvas.height = Math.round(img.height * ratio);
-      const ctx = canvas.getContext('2d');
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      const resized = canvas.toDataURL('image/jpeg', 0.95);
-      const quality = await analyzeImageQuality(resized);
-      return [{
-        filename: name,
-        originalFilename: name,
-        mimeType: 'image/jpeg',
-        base64: resized,
-        previewUrl: resized,
-        isFromPdf: false,
-        quality
-      }];
-    }
+    const maxDim = 1600;
+    const ratio = Math.min(1, maxDim / Math.max(img.width, img.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(img.width * ratio));
+    canvas.height = Math.max(1, Math.round(img.height * ratio));
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const resized = canvas.toDataURL('image/jpeg', 0.86);
+    const quality = await analyzeImageQuality(resized);
+    return [{
+      filename: name,
+      originalFilename: name,
+      mimeType: 'image/jpeg',
+      base64: resized,
+      previewUrl: resized,
+      isFromPdf: false,
+      quality
+    }];
   } catch {}
 
   const mimeType = file.type && file.type.startsWith('image/') ? file.type : 'image/jpeg';
