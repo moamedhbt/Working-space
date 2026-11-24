@@ -4,10 +4,14 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  worker: {
+    format: 'es'
+  },
   server: {
     proxy: {
       '/api': 'http://127.0.0.1:3000',
-      '/uploads': 'http://127.0.0.1:3000'
+      '/uploads': 'http://127.0.0.1:3000',
+      '/occt': 'http://127.0.0.1:3000'
     }
   }
 });

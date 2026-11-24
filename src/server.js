@@ -1,4 +1,5 @@
 const express = require('express');
+const fs = require('fs');
 const path = require('path');
 const { initDB, UPLOADS_DIR } = require('./db/database');
 const authRoutes = require('./routes/auth.routes');
@@ -11,6 +12,18 @@ const app = express();
 
 app.use(express.json({ limit: '25mb' }));
 app.use('/uploads', express.static(UPLOADS_DIR));
+
+// Serve OpenCASCADE WASM locally from node_modules with immutable cache headers (zero git bloat!)
+app.get('/occt/replicad_single.wasm', (req, res) => {
+  const wasmPath = path.join(__dirname, '../client/node_modules/replicad-opencascadejs/dist/replicad_single.wasm');
+  if (!fs.existsSync(wasmPath)) {
+    return res.status(404).send('OCCT WASM not installed locally');
+  }
+  res.setHeader('Content-Type', 'application/wasm');
+  res.setHeader('Cache-Control', 'public, max-age=604800');
+  res.sendFile(wasmPath);
+});
+
 app.use(express.static(path.join(__dirname, '../client/dist')));
 
 app.use('/api', authRoutes);

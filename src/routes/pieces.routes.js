@@ -707,9 +707,25 @@ router.post('/be/analyze-plan', auth, requireRole('directeur', 'be', 'chef'), as
 
 router.post('/be/refine-3d', auth, requireRole('directeur', 'be', 'chef'), async (req, res) => {
   try {
-    const { pieceId, fileId, filename, base64, attachments = [], cadSpec, prompt, history, ficheTechnique } = req.body || {};
+    const {
+      pieceId,
+      fileId,
+      filename,
+      base64,
+      attachments = [],
+      cadSpec,
+      prompt,
+      history,
+      ficheTechnique,
+      includePlan = false,
+      errorContext = ''
+    } = req.body || {};
     const cleanAttachments = Array.isArray(attachments) ? attachments.filter(a => a && a.base64).slice(0, 4) : [];
-    const cleanPrompt = String(prompt || '').trim() || (cleanAttachments.length > 0 ? 'Analyse ce document joint et propose/applique les modifications nécessaires sur la pièce 3D.' : '');
+    const cleanPrompt = String(prompt || '').trim() || (
+      errorContext
+        ? 'Corrige cette erreur de compilation OpenCASCADE dans le code Replicad sans changer les cotes ni la géométrie voulue.'
+        : (cleanAttachments.length > 0 ? 'Analyse ce document joint et génère/mets à jour la pièce 3D B-Rep complète.' : '')
+    );
     if (!cleanPrompt) {
       return res.status(400).json({ error: 'Écrivez un message ou joignez une image/PDF pour l’IA.' });
     }
@@ -726,8 +742,8 @@ router.post('/be/refine-3d', auth, requireRole('directeur', 'be', 'chef'), async
     } else if (base64) {
       const raw = String(base64).includes(',') ? String(base64).split(',')[1] : String(base64);
       buf = Buffer.from(raw, 'base64');
-    } else if (pieceId && cleanAttachments.length === 0) {
-      // Automatically attach the active OF's 2D plan (client or BE plan) if user didn't attach a specific image!
+    } else if (includePlan && pieceId && cleanAttachments.length === 0) {
+      // Only attach the OF's 2D plan when explicitly requested (saves ~85% tokens on text-only edits!)
       const f = queryOne(
         "SELECT * FROM be_files WHERE pieceId = ? AND categorie IN ('client', 'plan') AND isActive = 1 ORDER BY CASE categorie WHEN 'client' THEN 0 ELSE 1 END LIMIT 1",
         [pieceId]
@@ -749,7 +765,8 @@ router.post('/be/refine-3d', auth, requireRole('directeur', 'be', 'chef'), async
       planBuffer: buf,
       filename: name,
       attachments: cleanAttachments,
-      ficheTechnique
+      ficheTechnique,
+      errorContext: String(errorContext || '')
     });
     res.json(result);
   } catch (err) {

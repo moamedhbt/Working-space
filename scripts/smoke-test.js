@@ -362,7 +362,30 @@ async function run() {
     assert.strictEqual(del2.status, 200);
     assert.strictEqual(del2.data.aiSettings.profiles.length, 0);
 
-    console.log('✅ TOUS LES TESTS DE SMOKE ONT RÉUSSI (19/19) !');
+    // 20. OpenCASCADE WASM serving + Replicad B-Rep cadSpec persistence per OF
+    const wasmHead = await fetch(`${BASE}/occt/replicad_single.wasm`, { method: 'HEAD' });
+    assert.strictEqual(wasmHead.status, 200);
+    assert.ok((wasmHead.headers.get('content-type') || '').includes('wasm'));
+
+    const repSave = await req(`/api/pieces/${chefOf.data.id}/be-studio`, 'PUT', {
+      cadSpec: {
+        engine: 'replicad',
+        unit: 'mm',
+        name: 'Ecrou_BRep',
+        material: 'Bronze au manganèse',
+        params: [{ key: 'diametre_ext', label: 'Diamètre ext.', value: 120.005, unit: 'mm', tolerance: '±0.1' }],
+        code: 'function main(P){ return centeredCylinder(P.diametre_ext, 190, "x"); }'
+      },
+      beChat: [{ role: 'ai', text: 'Modèle B-Rep généré', thinking: { vues_et_fonction: 'Écrou Tr65' }, modified: true }]
+    }, beToken);
+    assert.strictEqual(repSave.status, 200);
+    const stateRep = await req('/api/state', 'GET', null, beToken);
+    const repOf = stateRep.data.pieces.find(p => p.id === chefOf.data.id);
+    assert.strictEqual(repOf.cadSpec.engine, 'replicad');
+    assert.strictEqual(repOf.cadSpec.params[0].value, 120.005);
+    assert.ok(repOf.cadSpec.code.includes('centeredCylinder'));
+
+    console.log('✅ TOUS LES TESTS DE SMOKE ONT RÉUSSI (20/20) !');
   } finally {
     proc.kill('SIGTERM');
     for (const f of [tmpDb, `${tmpDb}-wal`, `${tmpDb}-shm`]) {
