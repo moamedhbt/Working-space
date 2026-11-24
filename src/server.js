@@ -43,7 +43,28 @@ app.get('/occt/replicad_single.wasm', (req, res) => {
   res.sendFile(wasmPath);
 });
 
-app.use(express.static(path.join(__dirname, '../client/dist')));
+const DIST_DIR = path.join(__dirname, '../client/dist');
+
+// Serve hashed Vite assets with immutable caching; NEVER cache index.html so Render deploys pick up new worker hashes immediately!
+app.use('/assets', express.static(path.join(DIST_DIR, 'assets'), {
+  maxAge: '1y',
+  immutable: true,
+  fallthrough: true
+}));
+// Missing hashed JS/CSS/WASM asset must return 404 (NOT index.html text/html!) so module workers fail cleanly instead of MIME mismatch
+app.use('/assets', (req, res) => {
+  res.status(404).type('text/plain').send('Asset not found (new deployment — please refresh page)');
+});
+
+app.use(express.static(DIST_DIR, {
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('index.html')) {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    }
+  }
+}));
 
 app.use('/api', authRoutes);
 app.use('/api', piecesRoutes);
@@ -57,7 +78,13 @@ app.use('/api', (err, req, res, next) => {
 });
 
 app.use((req, res) => {
-  res.sendFile(path.join(__dirname, '../client/dist/index.html'));
+  if (/\.(js|mjs|css|wasm|map|json|png|jpe?g|svg|ico|webp)$/i.test(req.path)) {
+    return res.status(404).type('text/plain').send('Not found');
+  }
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.sendFile(path.join(DIST_DIR, 'index.html'));
 });
 
 initDB().then(() => {

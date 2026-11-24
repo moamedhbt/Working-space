@@ -167,13 +167,24 @@ function cutInternalGroove(shape, { grooveDiameter, width, axis = 'x', center = 
   return shape.cut(cyl);
 }
 
-function patternPositions({ count = 4, pcd = 60, axis = 'x', startAngleDeg = 0, center = [0, 0, 0] }) {
-  const n = Math.max(1, Math.min(48, Math.round(Number(count) || 4)));
+function patternPositions({ count = 4, pcd = 60, axis = 'x', startAngleDeg = 0, angles = null, center = [0, 0, 0] }) {
   const r = Math.max(0.5, Number(pcd) / 2);
-  const startRad = ((Number(startAngleDeg) || 0) * Math.PI) / 180;
   const [cx, cy, cz] = center || [0, 0, 0];
   const a = String(axis || 'x').toLowerCase();
   const list = [];
+  if (Array.isArray(angles) && angles.length > 0) {
+    for (const deg of angles) {
+      const ang = ((Number(deg) || 0) * Math.PI) / 180;
+      const u = Math.cos(ang) * r;
+      const v = Math.sin(ang) * r;
+      if (a === 'x') list.push([cx, cy + u, cz + v]);
+      else if (a === 'y') list.push([cx + u, cy, cz + v]);
+      else list.push([cx + u, cy + v, cz]);
+    }
+    return list;
+  }
+  const n = Math.max(1, Math.min(48, Math.round(Number(count) || 4)));
+  const startRad = ((Number(startAngleDeg) || 0) * Math.PI) / 180;
   for (let i = 0; i < n; i++) {
     const ang = startRad + (i / n) * Math.PI * 2;
     const u = Math.cos(ang) * r;
@@ -186,8 +197,8 @@ function patternPositions({ count = 4, pcd = 60, axis = 'x', startAngleDeg = 0, 
 }
 
 function cutHolePattern(shape, opts = {}) {
-  const { count = 4, diameter = 8, pcd = 60, depth = 120, axis = 'x', startAngleDeg = 0, center = [0, 0, 0] } = opts;
-  const pts = patternPositions({ count, pcd, axis, startAngleDeg, center });
+  const { count = 4, diameter = 8, pcd = 60, depth = 120, axis = 'x', startAngleDeg = 0, angles = null, center = [0, 0, 0] } = opts;
+  const pts = patternPositions({ count, pcd, axis, startAngleDeg, angles, center });
   const cyls = pts.map(pt => centeredCylinder(diameter, depth, axis, pt));
   try {
     return shape.cut(cyls.length === 1 ? cyls[0] : replicad.makeCompound(cyls));
@@ -201,8 +212,8 @@ function cutHolePattern(shape, opts = {}) {
 }
 
 function addPinPattern(opts = {}) {
-  const { count = 4, diameter = 8, pcd = 60, length = 100, axis = 'x', startAngleDeg = 0, center = [0, 0, 0] } = opts;
-  const pts = patternPositions({ count, pcd, axis, startAngleDeg, center });
+  const { count = 4, diameter = 8, pcd = 60, length = 100, axis = 'x', startAngleDeg = 0, angles = null, center = [0, 0, 0] } = opts;
+  const pts = patternPositions({ count, pcd, axis, startAngleDeg, angles, center });
   const pins = pts.map(pt => centeredCylinder(diameter, length, axis, pt));
   return pins.length === 1 ? pins[0] : replicad.makeCompound(pins);
 }
@@ -454,6 +465,237 @@ function buildLegacyFeaturesAsReplicad(features = [], defaultName = 'Piece_CAO',
   return [{ name: defaultName, color: defaultColor, opacity: 1, shape: solid }];
 }
 
+// Safe arithmetic resolver: lets blueprint fields reference PARAMS keys (e.g. "longueur", "longueur / 2", "diametre_ext - 10")
+function resolveNum(val, P = {}, fallback = 0) {
+  if (typeof val === 'number' && Number.isFinite(val)) return val;
+  if (val == null || val === '') return fallback;
+  const raw = String(val).trim();
+  if (!raw) return fallback;
+  if (Object.prototype.hasOwnProperty.call(P, raw)) {
+    const n = Number(P[raw]);
+    return Number.isFinite(n) ? n : fallback;
+  }
+  const direct = Number(raw);
+  if (Number.isFinite(direct)) return direct;
+  // Replace parameter identifiers with their numeric values
+  const substituted = raw.replace(/\b[A-Za-z_][A-Za-z0-9_]*\b/g, (tok) => {
+    if (Object.prototype.hasOwnProperty.call(P, tok)) {
+      const n = Number(P[tok]);
+      return Number.isFinite(n) ? `(${n})` : '0';
+    }
+    return 'NaN';
+  });
+  if (!/^[0-9eE.+\-*/()\s]+$/.test(substituted)) return fallback;
+  try {
+    const out = Function(`"use strict"; return (${substituted});`)();
+    return typeof out === 'number' && Number.isFinite(out) ? out : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function resolveVec3(vec, P = {}, fallback = [0, 0, 0]) {
+  if (!Array.isArray(vec) || vec.length < 3) return fallback;
+  return [
+    resolveNum(vec[0], P, fallback[0]),
+    resolveNum(vec[1], P, fallback[1]),
+    resolveNum(vec[2], P, fallback[2])
+  ];
+}
+
+function buildFromBlueprint(blueprint, paramsMap = {}, defaultName = 'Piece_CAO', defaultColor = '#94a3b8') {
+  if (!blueprint || typeof blueprint !== 'object' || !blueprint.body) {
+    throw new Error('Fiche géométrique invalide (corps principal manquant).');
+  }
+  const P = paramsMap || {};
+  const b = blueprint.body || {};
+  const mainAxis = String(b.axis || 'x').toLowerCase();
+  const bodyColor = b.color || defaultColor;
+  const bodyName = b.name || defaultName || 'Corps principal';
+
+  let body = null;
+  let bodySpan = 100;
+  let bodyOuterD = 80;
+
+  if (b.type === 'd_profile') {
+    const r = b.radius != null ? resolveNum(b.radius, P, 50) : resolveNum(b.diameter, P, 100) / 2;
+    const flatWidth = b.flatWidth != null
+      ? resolveNum(b.flatWidth, P, r * 1.85)
+      : (b.flatDistFromCenter != null ? r + resolveNum(b.flatDistFromCenter, P, r * 0.85) : r * 2);
+    const len = resolveNum(b.length, P, 120);
+    bodySpan = len;
+    bodyOuterD = r * 2;
+    body = dShapeBody(r, flatWidth, len, mainAxis, [0, 0, 0]);
+  } else if (b.type === 'revolve' && Array.isArray(b.profile) && b.profile.length >= 2) {
+    const pts = b.profile.map(pt => [resolveNum(pt?.[0], P, 10), resolveNum(pt?.[1], P, 0)]);
+    const xs = pts.map(p => p[1]);
+    bodySpan = Math.max(10, Math.max(...xs) - Math.min(...xs));
+    bodyOuterD = Math.max(10, Math.max(...pts.map(p => p[0])) * 2);
+    body = revolveProfile(pts, mainAxis, [0, 0, 0]);
+  } else if (b.type === 'box') {
+    const lx = Math.max(1, resolveNum(b.lx ?? b.length, P, 100));
+    const ly = Math.max(1, resolveNum(b.ly ?? b.width, P, 80));
+    const lz = Math.max(1, resolveNum(b.lz ?? b.thickness ?? b.height, P, 25));
+    bodySpan = mainAxis === 'x' ? lx : mainAxis === 'y' ? ly : lz;
+    bodyOuterD = Math.max(lx, ly, lz);
+    body = centeredBox(lx, ly, lz, [0, 0, 0]);
+    const cr = resolveNum(b.cornerRadius, P, 0);
+    if (cr > 0.1) body = safeFillet(body, cr);
+  } else if (b.type === 'flange') {
+    const fd = Math.max(2, resolveNum(b.flangeDiameter ?? b.diameter, P, 120));
+    const ft = Math.max(1, resolveNum(b.flangeThickness ?? b.thickness, P, 20));
+    const hd = resolveNum(b.hubDiameter, P, 0);
+    const hl = resolveNum(b.hubLength, P, 0);
+    bodySpan = ft + (hl > 0 ? hl : 0);
+    bodyOuterD = fd;
+    const dir = axisDir(mainAxis);
+    body = centeredCylinder(fd, ft, mainAxis, [0, 0, 0]);
+    if (hd > 1 && hl > 0.5) {
+      const off = ft / 2 + hl / 2 - 0.5;
+      const hub = centeredCylinder(hd, hl + 1, mainAxis, [dir[0] * off, dir[1] * off, dir[2] * off]);
+      body = body.fuse(hub);
+    }
+  } else if (b.type === 'polygon') {
+    const sides = Math.max(3, Math.min(24, Math.round(resolveNum(b.sides, P, 6))));
+    const af = resolveNum(b.acrossFlats, P, 0);
+    const r = af > 0 ? (af / 2) / Math.cos(Math.PI / sides) : Math.max(1, resolveNum(b.radius, P, resolveNum(b.diameter, P, 60) / 2));
+    const len = Math.max(1, resolveNum(b.length, P, 40));
+    bodySpan = len;
+    bodyOuterD = r * 2;
+    const pts = [];
+    for (let i = 0; i < sides; i++) {
+      const a = (i / sides) * Math.PI * 2 + Math.PI / sides;
+      pts.push([Math.cos(a) * r, Math.sin(a) * r]);
+    }
+    body = extrudePolygon(pts, len, mainAxis, [0, 0, 0]);
+  } else {
+    // Default: cylinder
+    const d = Math.max(1, resolveNum(b.diameter, P, resolveNum(b.radius, P, 40) * 2));
+    const len = Math.max(1, resolveNum(b.length, P, 100));
+    bodySpan = len;
+    bodyOuterD = d;
+    body = centeredCylinder(d, len, mainAxis, [0, 0, 0]);
+  }
+
+  const extraParts = [];
+  const featureWarnings = [];
+  const features = Array.isArray(blueprint.features) ? blueprint.features : [];
+
+  for (const f of features) {
+    if (!f || f.enabled === false || f.hidden === true) continue;
+    const fAxis = String(f.axis || mainAxis).toLowerCase();
+    const fDir = axisDir(fAxis);
+    const center = resolveVec3(f.center, P, [0, 0, 0]);
+    try {
+      if (f.type === 'boss' || f.type === 'tenon' || f.type === 'lug' || f.type === 'collar') {
+        const makeOne = (c) => {
+          if (f.shape === 'cylinder' || (f.diameter != null && f.lx == null && f.width == null)) {
+            const d = Math.max(1, resolveNum(f.diameter, P, 40));
+            const l = Math.max(0.5, resolveNum(f.length, P, 20));
+            return centeredCylinder(d, l, fAxis, c);
+          }
+          const lx = Math.max(0.5, resolveNum(f.lx ?? (fAxis === 'x' ? f.length : f.width), P, 25));
+          const ly = Math.max(0.5, resolveNum(f.ly ?? (fAxis === 'y' ? f.length : f.height ?? f.width), P, 30));
+          const lz = Math.max(0.5, resolveNum(f.lz ?? (fAxis === 'z' ? f.length : f.width), P, 30));
+          return centeredBox(lx, ly, lz, c);
+        };
+        if (f.bothEnds) {
+          const projLen = resolveNum(f.length ?? (fAxis === 'x' ? f.lx : fAxis === 'y' ? f.ly : f.lz), P, 20);
+          const off = f.endOffset != null ? resolveNum(f.endOffset, P, bodySpan / 2 + projLen / 2 - 2) : (bodySpan / 2 + projLen / 2 - 2);
+          for (const sgn of [-1, 1]) {
+            const c = [center[0] + fDir[0] * sgn * off, center[1] + fDir[1] * sgn * off, center[2] + fDir[2] * sgn * off];
+            body = body.fuse(makeOne(c));
+          }
+        } else {
+          body = body.fuse(makeOne(center));
+        }
+      } else if (f.type === 'bore') {
+        const d = Math.max(0.5, resolveNum(f.diameter, P, 20));
+        const isThrough = f.through === true || f.length === 'through' || f.length == null;
+        const len = isThrough ? (bodySpan + 80) : Math.max(0.5, resolveNum(f.length, P, bodySpan + 20));
+        body = body.cut(centeredCylinder(d, len, fAxis, center));
+      } else if (f.type === 'groove_ext') {
+        const gd = Math.max(0.5, resolveNum(f.grooveDiameter ?? f.diameter, P, bodyOuterD * 0.8));
+        const od = Math.max(gd + 4, resolveNum(f.outerDiameter, P, bodyOuterD + 20));
+        const w = Math.max(0.5, resolveNum(f.width ?? f.length, P, 10));
+        body = cutExternalGroove(body, { grooveDiameter: gd, outerDiameter: od, width: w, axis: fAxis, center });
+      } else if (f.type === 'groove_int') {
+        const gd = Math.max(0.5, resolveNum(f.grooveDiameter ?? f.diameter, P, 30));
+        const w = Math.max(0.5, resolveNum(f.width ?? f.length, P, 5));
+        body = cutInternalGroove(body, { grooveDiameter: gd, width: w, axis: fAxis, center });
+      } else if (f.type === 'thread') {
+        const nomD = Math.max(1, resolveNum(f.nominalDiameter ?? f.diameter, P, 20));
+        const pitch = Math.max(0.3, resolveNum(f.pitch, P, 2));
+        const len = Math.max(2, resolveNum(f.length, P, bodySpan + 6));
+        const internal = f.internal !== false;
+        const profile = f.profile === 'trapezoidal' || /^tr/i.test(String(f.norme || f.label || '')) ? 'trapezoidal' : 'metric';
+        body = cutThread(body, { nominalDiameter: nomD, pitch, length: len, internal, axis: fAxis, center, profile });
+      } else if (f.type === 'hole_pattern') {
+        const count = Math.max(1, Math.round(resolveNum(f.count, P, 4)));
+        const diameter = Math.max(0.5, resolveNum(f.diameter, P, 8));
+        const pcd = Math.max(1, resolveNum(f.pcd, P, bodyOuterD * 0.65));
+        const isThrough = f.through === true || f.depth === 'through' || f.depth == null;
+        const depth = isThrough ? (bodySpan + 60) : Math.max(0.5, resolveNum(f.depth, P, bodySpan + 20));
+        const startAngleDeg = resolveNum(f.startAngleDeg, P, 0);
+        const angles = Array.isArray(f.angles) ? f.angles.map(a => resolveNum(a, P, 0)) : null;
+        body = cutHolePattern(body, { count, diameter, pcd, depth, axis: fAxis, startAngleDeg, angles, center });
+      } else if (f.type === 'hole') {
+        const diameter = Math.max(0.5, resolveNum(f.diameter, P, 10));
+        const isThrough = f.through === true || f.depth === 'through' || f.depth == null;
+        const depth = isThrough ? (bodySpan + 60) : Math.max(0.5, resolveNum(f.depth, P, 30));
+        const positions = Array.isArray(f.positions) && f.positions.length > 0
+          ? f.positions.map(pt => resolveVec3(pt, P, [0, 0, 0]))
+          : [center];
+        const cyls = positions.map(pt => centeredCylinder(diameter, depth, fAxis, pt));
+        body = body.cut(cyls.length === 1 ? cyls[0] : replicad.makeCompound(cyls));
+      } else if (f.type === 'slot' || f.type === 'pocket' || f.type === 'flat' || f.type === 'keyway') {
+        const lx = Math.max(0.5, resolveNum(f.lx ?? f.length, P, 20));
+        const ly = Math.max(0.5, resolveNum(f.ly ?? f.width, P, 10));
+        const lz = Math.max(0.5, resolveNum(f.lz ?? f.depth ?? f.height, P, 10));
+        if (f.bothEnds) {
+          const off = resolveNum(f.endOffset, P, bodySpan / 2);
+          for (const sgn of [-1, 1]) {
+            const c = [center[0] + fDir[0] * sgn * off, center[1] + fDir[1] * sgn * off, center[2] + fDir[2] * sgn * off];
+            body = body.cut(centeredBox(lx, ly, lz, c));
+          }
+        } else {
+          body = body.cut(centeredBox(lx, ly, lz, center));
+        }
+      } else if (f.type === 'pins' || f.type === 'inserts') {
+        const count = Math.max(1, Math.round(resolveNum(f.count, P, 4)));
+        const diameter = Math.max(0.5, resolveNum(f.diameter, P, 10));
+        const pcd = Math.max(1, resolveNum(f.pcd, P, bodyOuterD * 0.65));
+        const length = Math.max(1, resolveNum(f.length, P, bodySpan));
+        const startAngleDeg = resolveNum(f.startAngleDeg, P, 0);
+        const angles = Array.isArray(f.angles) ? f.angles.map(a => resolveNum(a, P, 0)) : null;
+        if (f.cutHostHole !== false) {
+          body = cutHolePattern(body, { count, diameter: diameter + 0.1, pcd, depth: length + 4, axis: fAxis, startAngleDeg, angles, center });
+        }
+        const pinSolid = addPinPattern({ count, diameter, pcd, length, axis: fAxis, startAngleDeg, angles, center });
+        extraParts.push({
+          name: f.name || f.label || 'Inserts / Goupilles',
+          color: f.color || '#f1f5f9',
+          opacity: 1,
+          shape: pinSolid
+        });
+      } else if (f.type === 'chamfer') {
+        const sz = Math.max(0.1, resolveNum(f.size ?? f.value, P, 1.5));
+        body = safeChamfer(body, sz);
+      } else if (f.type === 'fillet') {
+        const rad = Math.max(0.1, resolveNum(f.radius ?? f.value, P, 2));
+        body = safeFillet(body, rad);
+      }
+    } catch (err) {
+      featureWarnings.push(`${f.label || f.type}: ${err?.message || 'ignoré'}`);
+    }
+  }
+
+  return {
+    parts: [{ name: bodyName, color: bodyColor, opacity: 1, shape: body }, ...extraParts],
+    featureWarnings
+  };
+}
+
 function disposeLastParts() {
   for (const p of lastBuiltParts) {
     try { p.shape?.delete?.(); } catch {}
@@ -474,10 +716,18 @@ self.onmessage = async (event) => {
     if (type === 'build') {
       const t0 = performance.now();
       disposeLastParts();
-      const { code, paramsMap = {}, legacyFeatures = null, name = 'Piece_CAO', defaultColor = '#94a3b8' } = payload || {};
-      const parts = code && String(code).trim()
-        ? executeReplicadCode(code, paramsMap, name, defaultColor)
-        : buildLegacyFeaturesAsReplicad(legacyFeatures || [], name, defaultColor);
+      const { blueprint = null, code = '', paramsMap = {}, legacyFeatures = null, name = 'Piece_CAO', defaultColor = '#94a3b8' } = payload || {};
+      let parts;
+      let featureWarnings = [];
+      if (blueprint && typeof blueprint === 'object' && blueprint.body) {
+        const built = buildFromBlueprint(blueprint, paramsMap, name, defaultColor);
+        parts = built.parts;
+        featureWarnings = built.featureWarnings || [];
+      } else if (code && String(code).trim()) {
+        parts = executeReplicadCode(code, paramsMap, name, defaultColor);
+      } else {
+        parts = buildLegacyFeaturesAsReplicad(legacyFeatures || [], name, defaultColor);
+      }
 
       lastBuiltParts = parts;
 
@@ -546,7 +796,8 @@ self.onmessage = async (event) => {
           bbox,
           volumeCm3: Number((totalVolumeMm3 / 1000).toFixed(2)),
           areaCm2: Number((totalAreaMm2 / 100).toFixed(2)),
-          elapsedMs: Math.round(performance.now() - t0)
+          elapsedMs: Math.round(performance.now() - t0),
+          featureWarnings
         }
       }, transferables);
       return;

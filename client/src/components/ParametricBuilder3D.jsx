@@ -6,7 +6,7 @@ import {
   Send, Trash2, ClipboardList, Layers, Eye, EyeOff, Copy,
   RotateCcw, RotateCw, Scissors, Grid3X3, Compass, AlertCircle, ChevronDown,
   ChevronRight, Save, Paperclip, X, FileText, Cpu, Wrench, Plus, Code2,
-  Crop, Lock, AlertTriangle, ScanEye, Image as ImageIcon, ShieldCheck
+  Crop, Lock, AlertTriangle, ScanEye, Image as ImageIcon, ShieldCheck, Zap, Brain, RefreshCw
 } from 'lucide-react';
 import { api } from '../api';
 import {
@@ -232,12 +232,14 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
   const [refining, setRefining] = useState(false);
   const [chatError, setChatError] = useState('');
   const [openThinking, setOpenThinking] = useState({});
+  const [thinkingMode, setThinkingMode] = useState('auto'); // 'auto' | 'fast' | 'deep'
+  const [correctionLog, setCorrectionLog] = useState([]); // [{ ts, text }]
 
   // OpenCASCADE / Replicad B-Rep Worker state
   const [occtStatus, setOcctStatus] = useState({ status: 'idle', message: '' });
   const [buildingOcct, setBuildingOcct] = useState(false);
   const [occtError, setOcctError] = useState('');
-  const [occtResult, setOcctResult] = useState(null); // { parts, bbox, volumeCm3, areaCm2, elapsedMs }
+  const [occtResult, setOcctResult] = useState(null); // { parts, bbox, volumeCm3, areaCm2, elapsedMs, featureWarnings }
   const [hiddenParts, setHiddenParts] = useState({});
   const [showCodeEditor, setShowCodeEditor] = useState(false);
   const [codeDraft, setCodeDraft] = useState('');
@@ -250,7 +252,9 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
   const [statusMsg, setStatusMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
-  const isReplicad = Boolean(cadSpec && (cadSpec.engine === 'replicad' || (typeof cadSpec.code === 'string' && cadSpec.code.trim().length > 10)));
+  const isAssembly = Boolean(cadSpec && (cadSpec.engine === 'assembly' || cadSpec.blueprint?.body));
+  const isReplicadCode = Boolean(!isAssembly && cadSpec && (cadSpec.engine === 'replicad' || (typeof cadSpec.code === 'string' && cadSpec.code.trim().length > 10)));
+  const isReplicad = isAssembly || isReplicadCode;
   const materialInfo = materialColorAndDensity(cadSpec?.material || fiche?.material || piece?.matiere || '');
 
   useEffect(() => onReplicadStatus(setOcctStatus), []);
@@ -453,7 +457,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     }
   }
 
-  // 1) When in Replicad B-Rep mode: compute exact OpenCASCADE geometry in Web Worker (debounced)
+  // 1) When in Assembly Blueprint or Replicad B-Rep mode: compute exact OpenCASCADE geometry in Web Worker (debounced)
   useEffect(() => {
     if (!isReplicad) {
       setBuildingOcct(false);
@@ -461,7 +465,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
       setOcctResult(null);
       return;
     }
-    if (!cadSpec?.code?.trim()) {
+    if (!isAssembly && !cadSpec?.code?.trim()) {
       setOcctResult(null);
       return;
     }
@@ -471,7 +475,8 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
       setOcctError('');
       try {
         const result = await buildReplicadModel({
-          code: cadSpec.code,
+          blueprint: isAssembly ? cadSpec.blueprint : null,
+          code: isAssembly ? '' : cadSpec.code,
           paramsMap: paramsArrayToMap(cadSpec.params),
           name: cadSpec.name || 'Piece_BE',
           defaultColor: materialInfo.color
@@ -491,7 +496,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [isReplicad, cadSpec?.code, cadSpec?.params, cadSpec?.name, materialInfo.color]);
+  }, [isReplicad, isAssembly, cadSpec?.blueprint, cadSpec?.code, cadSpec?.params, cadSpec?.name, materialInfo.color]);
 
   // 2) Render either Replicad OpenCASCADE meshes OR legacy CSG into Three.js scene
   useEffect(() => {
@@ -773,6 +778,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
         cadSpec,
         ficheTechnique: fiche,
         history: updatedHistory.map(m => ({ role: m.role, text: m.text })),
+        thinkingMode,
         prompt: text
       });
 
@@ -1006,10 +1012,59 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     }
   }
 
+  function logCorrection(text) {
+    const ts = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    setCorrectionLog(prev => [{ ts, text }, ...prev].slice(0, 20));
+  }
+
   function updateReplicadParam(idx, patch) {
+    const oldP = (cadSpec?.params || [])[idx];
+    if (oldP && patch.value !== undefined && Number(patch.value) !== Number(oldP.value)) {
+      logCorrection(`${oldP.label || oldP.key} : ${oldP.value} → ${patch.value} ${oldP.unit || 'mm'}`);
+    }
     setCadSpec(prev => ({
       ...prev,
       params: (prev.params || []).map((p, i) => (i === idx ? { ...p, ...patch } : p))
+    }));
+    setValidatedByBe(false);
+  }
+
+  function updateBlueprintBody(patch) {
+    const oldType = cadSpec?.blueprint?.body?.type;
+    if (patch.type && oldType && patch.type !== oldType) {
+      logCorrection(`Corps : ${oldType} → ${patch.type}`);
+    }
+    setCadSpec(prev => ({
+      ...prev,
+      engine: 'assembly',
+      blueprint: {
+        ...(prev.blueprint || { body: { type: 'cylinder', axis: 'x' }, features: [] }),
+        body: { ...(prev.blueprint?.body || {}), ...patch }
+      }
+    }));
+    setValidatedByBe(false);
+  }
+
+  function toggleBlueprintFeature(idx) {
+    setCadSpec(prev => ({
+      ...prev,
+      blueprint: {
+        ...(prev.blueprint || { body: { type: 'cylinder', axis: 'x' }, features: [] }),
+        features: (prev.blueprint?.features || []).map((f, i) => (i === idx ? { ...f, enabled: f.enabled === false ? true : false } : f))
+      }
+    }));
+    setValidatedByBe(false);
+  }
+
+  function removeBlueprintFeature(idx) {
+    const f = (cadSpec?.blueprint?.features || [])[idx];
+    if (f) logCorrection(`Brique retirée : ${f.label || f.type}`);
+    setCadSpec(prev => ({
+      ...prev,
+      blueprint: {
+        ...(prev.blueprint || { body: { type: 'cylinder', axis: 'x' }, features: [] }),
+        features: (prev.blueprint?.features || []).filter((_, i) => i !== idx)
+      }
     }));
     setValidatedByBe(false);
   }
@@ -1126,7 +1181,11 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
         }
         ext = 'stl';
       } else if (format === 'script') {
-        if (isReplicad) {
+        if (isAssembly) {
+          const payload = { name: cadSpec.name, material: cadSpec.material, params: cadSpec.params, blueprint: cadSpec.blueprint };
+          blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+          ext = 'json';
+        } else if (isReplicad) {
           const header = `// Script CAO OpenCASCADE (Replicad) — ${baseName}\nconst P = ${JSON.stringify(paramsArrayToMap(cadSpec.params), null, 2)};\n\n`;
           blob = new Blob([header + (cadSpec.code || '')], { type: 'text/javascript' });
           ext = 'js';
@@ -1198,7 +1257,11 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     }
   }
 
-  const hasFeatures = isReplicad ? Boolean(cadSpec?.code?.trim()) : (cadSpec?.features || []).length > 0;
+  const hasFeatures = isAssembly
+    ? Boolean(cadSpec?.blueprint?.body)
+    : isReplicad
+      ? Boolean(cadSpec?.code?.trim())
+      : (cadSpec?.features || []).length > 0;
   const estimatedMassKg = occtResult?.volumeCm3 > 0
     ? ((occtResult.volumeCm3 * materialInfo.density) / 1000).toFixed(2)
     : null;
@@ -1504,9 +1567,11 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
               <span className={isReplicad ? 'text-emerald-300 font-medium' : 'text-slate-400'}>
                 {buildingOcct
                   ? (occtStatus.status === 'loading_occt' ? 'Chargement OpenCASCADE…' : 'Calcul B-Rep…')
-                  : isReplicad
-                    ? `OpenCASCADE B-Rep${occtResult?.elapsedMs ? ` (${occtResult.elapsedMs}ms)` : ''}`
-                    : 'Mode CSG'}
+                  : isAssembly
+                    ? `Fiche + Briques B-Rep${occtResult?.elapsedMs ? ` (${occtResult.elapsedMs}ms)` : ''}`
+                    : isReplicad
+                      ? `Code Replicad B-Rep${occtResult?.elapsedMs ? ` (${occtResult.elapsedMs}ms)` : ''}`
+                      : 'Mode CSG'}
               </span>
             </div>
 
@@ -1580,33 +1645,147 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
             </div>
           )}
 
-          {/* OPENCASCADE KERNEL ERROR BANNER WITH 1-CLICK ZERO-IMAGE-TOKEN AUTO-REPAIR */}
+          {/* OPENCASCADE KERNEL ERROR BANNER (STALE DEPLOYMENT AUTO-RELOAD OR 1-CLICK AI FIX) */}
           {occtError && (
-            <div className="p-2.5 rounded-[6px] bg-red-950/50 border border-red-500/45 text-red-200 text-xs flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-start gap-2 min-w-0 flex-1">
-                <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                <div className="min-w-0">
-                  <div className="font-semibold text-red-300">Erreur noyau OpenCASCADE</div>
-                  <div className="text-[11px] font-mono-num break-words">{occtError}</div>
+            occtError.startsWith('STALE_WORKER_BUNDLE:') ? (
+              <div className="p-2.5 rounded-[6px] bg-sky-950/50 border border-sky-400/50 text-sky-100 text-xs flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-start gap-2 min-w-0 flex-1">
+                  <RefreshCw className="w-4 h-4 text-sky-300 shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <div className="font-semibold text-sky-200">Nouvelle version du moteur 3D déployée</div>
+                    <div className="text-[11px] text-sky-200/80">Votre onglet chargeait un ancien fichier. Rechargez la page pour afficher la 3D.</div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="px-3 py-1.5 rounded bg-sky-500 hover:bg-sky-400 text-[#0B0F14] text-[11px] font-semibold flex items-center gap-1 cursor-pointer shrink-0"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> Recharger (F5)
+                </button>
+              </div>
+            ) : (
+              <div className="p-2.5 rounded-[6px] bg-red-950/50 border border-red-500/45 text-red-200 text-xs flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-start gap-2 min-w-0 flex-1">
+                  <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <div className="font-semibold text-red-300">Erreur noyau OpenCASCADE</div>
+                    <div className="text-[11px] font-mono-num break-words">{occtError}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {!isAssembly && (
+                    <button
+                      type="button"
+                      onClick={() => setShowCodeEditor(true)}
+                      className="px-2 py-1.5 rounded bg-[#111821] border border-red-500/40 text-red-200 text-[11px] flex items-center gap-1 cursor-pointer"
+                    >
+                      <Code2 className="w-3.5 h-3.5" /> Code
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={refining}
+                    onClick={handleAutoFixOcctError}
+                    className="px-2.5 py-1.5 rounded bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-[#0B0F14] text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+                  >
+                    <Wrench className="w-3.5 h-3.5" /> {refining ? 'Correction…' : 'Corriger auto avec l’IA'}
+                  </button>
                 </div>
               </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setShowCodeEditor(true)}
-                  className="px-2 py-1.5 rounded bg-[#111821] border border-red-500/40 text-red-200 text-[11px] flex items-center gap-1 cursor-pointer"
-                >
-                  <Code2 className="w-3.5 h-3.5" /> Code
-                </button>
-                <button
-                  type="button"
-                  disabled={refining}
-                  onClick={handleAutoFixOcctError}
-                  className="px-2.5 py-1.5 rounded bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-[#0B0F14] text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
-                >
-                  <Wrench className="w-3.5 h-3.5" /> {refining ? 'Correction…' : 'Corriger auto avec l’IA'}
-                </button>
+            )
+          )}
+
+          {/* INTERACTIVE FICHE GÉOMÉTRIQUE + BRIQUES D'ASSEMBLAGE (0-TOKEN INSTANT EDITING) */}
+          {isAssembly && cadSpec.blueprint?.body && (
+            <div className="p-3 rounded-[6px] bg-[#0B0F14] border border-emerald-500/35 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs font-semibold text-emerald-300 flex items-center gap-1.5">
+                  <Box className="w-3.5 h-3.5" />
+                  Fiche Géométrique & Briques ({(cadSpec.blueprint.features || []).length} usinages) — 0 token
+                </div>
+                <div className="flex items-center gap-1.5 text-[11px]">
+                  <span className="text-slate-400">Corps :</span>
+                  <select
+                    value={cadSpec.blueprint.body.type || 'cylinder'}
+                    onChange={e => updateBlueprintBody({ type: e.target.value })}
+                    className="px-2 py-1 rounded bg-[#111821] border border-emerald-500/40 text-emerald-200 text-[11px] focus:outline-none"
+                  >
+                    <option value="d_profile">Profil en D (cylindre + méplat)</option>
+                    <option value="cylinder">Cylindre plein</option>
+                    <option value="revolve">Arbre / Révolution étagée</option>
+                    <option value="box">Bloc / Plaque prismatique</option>
+                    <option value="flange">Bride / Moyeu</option>
+                    <option value="polygon">Polygone / 6 pans</option>
+                  </select>
+                  <select
+                    value={cadSpec.blueprint.body.axis || 'x'}
+                    onChange={e => updateBlueprintBody({ axis: e.target.value })}
+                    className="px-1.5 py-1 rounded bg-[#111821] border border-[#1E2A38] text-slate-200 text-[11px] focus:outline-none"
+                    title="Axe principal de la pièce"
+                  >
+                    <option value="x">Axe X</option>
+                    <option value="y">Axe Y</option>
+                    <option value="z">Axe Z</option>
+                  </select>
+                </div>
               </div>
+
+              {(cadSpec.blueprint.features || []).length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {cadSpec.blueprint.features.map((feat, fi) => {
+                    const active = feat.enabled !== false;
+                    return (
+                      <div
+                        key={feat.id || fi}
+                        className={`flex items-center gap-1 px-2 py-1 rounded border text-[10px] ${
+                          active
+                            ? 'bg-[#111821] border-[#1E2A38] text-slate-200'
+                            : 'bg-[#090d14] border-[#1E2A38]/50 text-slate-500 line-through'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => toggleBlueprintFeature(fi)}
+                          className="text-slate-400 hover:text-[#22D3EE] cursor-pointer"
+                          title={active ? 'Masquer cette brique' : 'Réactiver cette brique'}
+                        >
+                          {active ? <Eye className="w-3 h-3 text-emerald-400" /> : <EyeOff className="w-3 h-3" />}
+                        </button>
+                        <span className="font-semibold text-[#22D3EE]">{feat.type}</span>
+                        <span>{feat.label || feat.name || ''}</span>
+                        <button
+                          type="button"
+                          onClick={() => removeBlueprintFeature(fi)}
+                          className="text-slate-500 hover:text-red-400 ml-0.5 cursor-pointer"
+                          title="Supprimer cette brique"
+                        >
+                          <Trash2 className="w-2.5 h-2.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {occtResult?.featureWarnings?.length > 0 && (
+                <div className="text-[10px] text-amber-300 bg-amber-950/30 border border-amber-500/35 rounded px-2 py-1">
+                  Briques ignorées : {occtResult.featureWarnings.join(' · ')}
+                </div>
+              )}
+
+              {correctionLog.length > 0 && (
+                <details className="text-[10px] text-slate-400">
+                  <summary className="cursor-pointer hover:text-slate-200">
+                    Journal des corrections BE ({correctionLog.length})
+                  </summary>
+                  <div className="mt-1 pl-2 border-l border-[#1E2A38] space-y-0.5 font-mono-num">
+                    {correctionLog.map((c, ci) => (
+                      <div key={ci}><span className="text-slate-500">{c.ts}</span> · {c.text}</div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
           )}
 
@@ -2256,6 +2435,53 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                 </label>
               )}
 
+              {/* FAST vs DEEP THINKING SPEED TOGGLE (Auto: Deep for plans, Fast 5-12s for text edits!) */}
+              <div className="flex flex-wrap items-center justify-between gap-1.5 text-[10px]">
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setThinkingMode('auto')}
+                    className={`px-2 py-0.5 rounded border cursor-pointer flex items-center gap-1 ${
+                      thinkingMode === 'auto'
+                        ? 'bg-[#22D3EE]/15 border-[#22D3EE]/50 text-[#22D3EE] font-semibold'
+                        : 'bg-[#0B0F14] border-[#1E2A38] text-slate-400 hover:text-slate-200'
+                    }`}
+                    title="Auto : Réflexion profonde quand un plan est joint, Rapide (5-12s) pour les retouches texte"
+                  >
+                    Auto ({chatAttachments.length > 0 || includePlanNext ? '🧠 Plan' : '⚡ Texte'})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setThinkingMode('fast')}
+                    className={`px-2 py-0.5 rounded border cursor-pointer flex items-center gap-1 ${
+                      thinkingMode === 'fast'
+                        ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-200 font-semibold'
+                        : 'bg-[#0B0F14] border-[#1E2A38] text-slate-400 hover:text-slate-200'
+                    }`}
+                    title="Mode Rapide : sans réflexion longue (~5-12 secondes)"
+                  >
+                    <Zap className="w-2.5 h-2.5" /> Rapide
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setThinkingMode('deep')}
+                    className={`px-2 py-0.5 rounded border cursor-pointer flex items-center gap-1 ${
+                      thinkingMode === 'deep'
+                        ? 'bg-purple-500/20 border-purple-400/60 text-purple-200 font-semibold'
+                        : 'bg-[#0B0F14] border-[#1E2A38] text-slate-400 hover:text-slate-200'
+                    }`}
+                    title="Réflexion profonde (budget 1600 tokens) : meilleure précision sur plans complexes"
+                  >
+                    <Brain className="w-2.5 h-2.5" /> Réflexion profonde
+                  </button>
+                </div>
+                <span className="text-slate-500">
+                  {thinkingMode === 'fast' || (thinkingMode === 'auto' && chatAttachments.length === 0 && !includePlanNext)
+                    ? '⚡ ~5-12s · suivi compact'
+                    : '🧠 ~15-30s · budget 1600'}
+                </span>
+              </div>
+
               {chatAttachments.length > 0 && (
                 <div className="space-y-1.5">
                   <div className="flex flex-wrap gap-2">
@@ -2411,9 +2637,9 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                 disabled={!validatedByBe || !hasFeatures || Boolean(exportingFormat)}
                 onClick={() => downloadFile('script')}
                 className="px-2.5 py-2 rounded-[6px] bg-[#111821] border border-[#1E2A38] enabled:hover:border-purple-400 disabled:opacity-40 text-purple-300 text-xs flex items-center gap-1 cursor-pointer"
-                title={isReplicad ? 'Script JavaScript Replicad / OpenCASCADE' : 'Script Python CadQuery'}
+                title={isAssembly ? 'Fiche Géométrique JSON (briques + paramètres)' : isReplicad ? 'Script JavaScript Replicad / OpenCASCADE' : 'Script Python CadQuery'}
               >
-                <FileCode className="w-3.5 h-3.5" /> {isReplicad ? 'Script .js' : 'CadQuery .py'}
+                <FileCode className="w-3.5 h-3.5" /> {isAssembly ? 'Fiche .json' : isReplicad ? 'Script .js' : 'CadQuery .py'}
               </button>
               {piece && (
                 <button

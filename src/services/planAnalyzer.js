@@ -178,40 +178,34 @@ function extractReadableTextFromPdfBuffer(buf) {
   return matches.join(' ').replace(/[^\x20-\x7EÀ-ÿØø±×]/g, ' ').slice(0, 6000);
 }
 
-const REPLICAD_API_DOC = `MOTEUR CAO B-REP OPENCASCADE (REPLICAD) — LIBERTÉ GÉOMÉTRIQUE TOTALE + EXPORT .STEP / .STL NATIF :
-Écris un code JavaScript pur définissant \`function main(P) { ... }\` où \`P\` est l'objet contenant toutes les cotes numériques (en mm, précision jusqu'à 0.001 mm) déclarées dans \`cadSpec.params\`.
-Chaque cote importante DOIT être déclarée dans \`cadSpec.params\` (pour que l'ingénieur BE puisse la modifier au 0.001 mm sans toucher au code ni rappeler l'IA).
-\`main(P)\` retourne SOIT un solide, SOIT un tableau multi-corps / multi-matières :
-\`return [{ name: "Corps principal", shape: body, color: "#b8894a" }, { name: "Inserts Téflon", shape: pins, color: "#f1f5f9" }];\`
+const ASSEMBLY_BLUEPRINT_DOC = `MOTEUR CAO B-REP PAR FICHE GÉOMÉTRIQUE & ASSEMBLEUR DE BRIQUES (MODE RECOMMANDÉ PAR DÉFAUT — 0 BUG DE CODE, < 1 SECONDE) :
+Au lieu d'écrire du code JS libre, remplis \`cadSpec.engine = "assembly"\` + \`cadSpec.params\` (toutes les cotes importantes au 0.001 mm) + \`cadSpec.blueprint = { body, features }\`.
+Chaque valeur numérique dans \`blueprint\` peut être soit un nombre, soit le nom d'une clé de \`params\` (ex: \`"longueur"\`, \`"diametre_ext"\`, \`"longueur / 2"\`) pour que modifier un paramètre mette à jour le 3D instantanément !
 
-FONCTIONS B-REP DISPONIBLES EN SCOPE (TOUTES EXACTES ET ÉTANCHES) :
-1. Primitives & formes mécaniques centrées :
-   - \`centeredCylinder(diameter, length, axis='x', center=[0,0,0])\`
-   - \`centeredBox(lx, ly, lz, center=[0,0,0])\`
-   - \`centeredCone(d1, d2, length, axis='x', center=[0,0,0])\`
-   - \`revolveProfile([[r0, pos0], [r1, pos1], ...], axis='x', center=[0,0,0])\` (révolution complète autour de l'axe — idéal pour arbres étagés, bagues, épaulements, cônes, chanfreins tournés)
-   - \`extrudePolygon([[u0, v0], ...], depth, axis='z', center=[0,0,0])\` (extrusion 2D quelconque)
-   - \`dShapeBody(radius, totalWidth, length, axis='x', center=[0,0,0])\` (corps cylindrique R avec méplat latéral à cote totale)
-2. Usinages & motifs :
-   - \`shape.fuse(other)\`, \`shape.cut(other)\`, \`shape.intersect(other)\`
-   - \`shape.translate([x,y,z])\`, \`shape.rotate(deg, [cx,cy,cz], [ax,ay,az])\`
-   - \`cutExternalGroove(shape, { grooveDiameter, outerDiameter, width, axis='x', center=[0,0,0] })\` (gorge extérieure réelle — NE COUPE PAS la pièce !)
-   - \`cutInternalGroove(shape, { grooveDiameter, width, axis='x', center=[0,0,0] })\` (gorge intérieure)
-   - \`cutHolePattern(shape, { count, diameter, pcd, depth, axis='x', startAngleDeg=0, center=[0,0,0] })\`
-   - \`addPinPattern({ count, diameter, pcd, length, axis='x', startAngleDeg=0, center=[0,0,0] })\` (inserts, tiges, goupilles rapportées en solide séparé)
-   - \`cutThread(shape, { nominalDiameter, pitch, length, internal=true, axis='x', center=[0,0,0], profile:'metric'|'trapezoidal' })\`
-   - \`safeFillet(shape, radius, finder?)\` / \`safeChamfer(shape, size, finder?)\` (ne plante jamais si un congé est trop grand)
-3. API Replicad native complète disponible aussi :
-   - \`draw([x,y]).lineTo(...).bulgeArcTo(...).tangentArcTo(...).close().sketchOnPlane('XY'|'XZ'|'YZ', offset).extrude(h)\` ou \`.revolve([0,0,1])\`
-   - \`drawCircle(r)\`, \`drawRectangle(w, h)\`, \`drawRoundedRectangle(w, h, r)\`, \`drawPolysides(r, n)\`, \`drawEllipse(rx, ry)\`
-   - \`makeCylinder(r, h, loc, dir)\`, \`makeBaseBox(lx, ly, lz)\`, \`makeSphere(r)\`, \`makeCompound(arr)\`, \`cut2D\`, \`fuse2D\`, \`intersect2D\`, \`loft\`, \`EdgeFinder\`, \`FaceFinder\`
+1. CORPS PRINCIPAL (\`blueprint.body\`, centré sur [0,0,0], \`axis: "x"\` pour pièces tournées, \`"z"\` pour plaques/brides) :
+   - \`{ "type": "d_profile", "radius": "rayon_corps", "flatWidth": "largeur_meplat", "length": "longueur_corps", "axis": "x", "color": "#b8894a" }\` (corps cylindrique R avec méplat latéral à cote totale flatWidth)
+   - \`{ "type": "cylinder", "diameter": "diametre_ext", "length": "longueur", "axis": "x", "color": "#94a3b8" }\`
+   - \`{ "type": "revolve", "axis": "x", "profile": [[r0, x0], [r1, x1], ...], "color": "#94a3b8" }\` (arbre étagé, manchon, cône, bague profilée)
+   - \`{ "type": "box", "lx": "longueur", "ly": "largeur", "lz": "epaisseur", "cornerRadius": 0, "axis": "z", "color": "#94a3b8" }\` (plaque, bloc, équerre)
+   - \`{ "type": "flange", "flangeDiameter": "d_bride", "flangeThickness": "ep_bride", "hubDiameter": "d_moyeu", "hubLength": "l_moyeu", "axis": "z" }\` (bride, moyeu)
+   - \`{ "type": "polygon", "sides": 6, "acrossFlats": "surplats", "length": "longueur", "axis": "x" }\` (6 pans, octogone)
 
-RÈGLES D'OR B-REP (ANTI-BUGS & PERFORMANCE < 2 SECONDES) :
-- PERFORMANCE CRITIQUE : N'utilise JAMAIS \`makeHelix\` + \`genericSweep\` ni de boucles de 20+ découpes booléennes (cela bloque OpenCASCADE WASM). Pour TOUT filetage (métrique, trapézoïdal, simple ou double entrée), appelle \`cutThread(body, { nominalDiameter, pitch, length, internal, axis, center, profile })\` UNE SEULE FOIS — c'est un solide de révolution rapide (< 0.5 s). Ne fais JAMAIS de \`fillet\` sur des arêtes de filetage.
-- Tout perçage / alésage débouchant DOIT dépasser la pièce d'au moins +6 mm (ex: \`P.longueur + 10\`) pour traverser franchement sans peau résiduelle.
-- Centre la pièce autour de \`[0, 0, 0]\` (axe principal = \`'x'\` pour les pièces de révolution / tournage, \`'z'\` pour les plaques / brides).
-- N'utilise JAMAIS \`import\`, \`require\`, \`fetch\`, \`window\`, \`document\`. Écris du JS synchrone propre et lisible.
-- Couleurs matières réalistes : Acier \`#94a3b8\`, Inox \`#b4becb\`, Aluminium \`#cbd5e1\`, Bronze \`#b8894a\`, Laiton \`#d4af37\`, Fonte \`#64748b\`, Téflon/PTFE/POM \`#f1f5f9\`.`;
+2. BRIQUES D'USINAGE & ASSEMBLAGE (\`blueprint.features[]\`, exécutées dans l'ordre) :
+   - \`{ "id": "tenons", "type": "boss", "label": "Tenons d'extrémité", "shape": "box"|"cylinder", "lx": "l_tenon", "ly": "larg_tenon", "lz": "haut_tenon", "bothEnds": true, "endOffset": "(longueur_corps + l_tenon) / 2 - 2", "axis": "x" }\` (ajout de tenons, ergots, manchons ou bossages aux deux bouts ou à un \`center: [x,y,z]\`)
+   - \`{ "id": "gorge", "type": "groove_ext", "label": "Gorge centrale ext.", "grooveDiameter": "d_gorge", "outerDiameter": "d_ext", "width": "l_gorge", "axis": "x", "center": [0,0,0] }\` (gorge tournée extérieure — NE COUPE PAS la pièce !)
+   - \`{ "id": "gorge_int", "type": "groove_int", "label": "Gorge intérieure", "grooveDiameter": "d_gorge_int", "width": "l_gorge", "axis": "x", "center": [0,0,0] }\`
+   - \`{ "id": "alesage", "type": "bore", "label": "Alésage central", "diameter": "d_alesage", "through": true, "axis": "x", "center": [0,0,0] }\`
+   - \`{ "id": "filet", "type": "thread", "label": "Filetage Tr65x8", "nominalDiameter": "d_filet", "pitch": "pas_filet", "length": "longueur_filet", "internal": true, "profile": "trapezoidal"|"metric", "axis": "x", "center": [0,0,0] }\` (1 seule brique rapide < 0.5 s)
+   - \`{ "id": "trous", "type": "hole_pattern", "label": "Perçages PCD", "count": 8, "diameter": "d_trou", "pcd": "pcd", "through": true, "startAngleDeg": 0, "angles"?: [0,38,...], "axis": "x", "center": [0,0,0] }\`
+   - \`{ "id": "trou_1", "type": "hole", "label": "Perçage radial", "diameter": 10, "depth": 30, "axis": "y", "positions": [[0, 0, 0]] }\`
+   - \`{ "id": "rainure", "type": "slot", "label": "Rainure / Méplat", "lx": 20, "ly": 10, "lz": 8, "center": [0,0,0] }\`
+   - \`{ "id": "inserts", "type": "pins", "label": "Inserts Téflon", "name": "Inserts PTFE", "color": "#f1f5f9", "count": 8, "diameter": "d_insert", "pcd": "pcd", "length": "longueur_corps", "cutHostHole": true, "axis": "x", "startAngleDeg": 0 }\` (crée les trous dans le corps + les inserts blancs en solide séparé !)
+   - \`{ "id": "chanfrein", "type": "chamfer", "label": "Chanfreins", "size": 1.5 }\` / \`{ "id": "conge", "type": "fillet", "label": "Congés", "radius": 2 }\`
+
+COULEURS MATIÈRES : Acier \`#94a3b8\`, Inox \`#b4becb\`, Alu \`#cbd5e1\`, Bronze \`#b8894a\`, Laiton \`#d4af37\`, Fonte \`#64748b\`, Téflon/PTFE \`#f1f5f9\`.
+Note : Utilise \`engine: "assembly"\` + \`blueprint\` pour 95 % des pièces mécaniques. N'utilise \`engine: "replicad"\` + \`code\` QUE si une géométrie organique/libre est impossible avec ces briques.`;
+
+const REPLICAD_API_DOC = `${ASSEMBLY_BLUEPRINT_DOC}`;
 
 const VISION_PROMPT = (filename, extraPrompt = '') => {
   const machinesCtx = getWorkshopMachinesContext();
@@ -249,14 +243,17 @@ Retourne STRICTEMENT un JSON valide (aucun texte hors JSON) respectant ce schém
     "summary": string
   },
   "cadSpec": {
-    "engine": "replicad",
+    "engine": "assembly",
     "unit": "mm",
     "name": string,
     "material": string,
     "params": [
       { "key": string, "label": string, "value": number, "unit": "mm"|"°"|"u", "tolerance"?: string, "confidence": "high"|"check", "sourceView"?: string }
     ],
-    "code": string
+    "blueprint": {
+      "body": { "type": "d_profile"|"cylinder"|"revolve"|"box"|"flange"|"polygon", "axis": "x"|"y"|"z", ... },
+      "features": [ { "id": string, "type": "boss"|"bore"|"groove_ext"|"groove_int"|"thread"|"hole_pattern"|"hole"|"slot"|"pins"|"chamfer"|"fillet", "label": string, ... } ]
+    }
   }
 }
 
@@ -406,10 +403,10 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
     const callAnthropic = async (useThinking) => {
       const body = {
         model,
-        max_tokens: useThinking ? 10000 : 8192,
+        max_tokens: useThinking ? 8192 : 6144,
         messages: [{ role: 'user', content }]
       };
-      if (useThinking) body.thinking = { type: 'enabled', budget_tokens: 4096 };
+      if (useThinking) body.thinking = { type: 'enabled', budget_tokens: 1600 };
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -479,9 +476,9 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
     if (useThinking) {
       if (provider === 'qwen' || provider === 'qwen_us' || provider === 'qwen_cn') {
         payload.enable_thinking = true;
-        payload.thinking_budget = 4096;
+        payload.thinking_budget = 1600;
       } else if (provider === 'openrouter') {
-        payload.reasoning = { effort: 'medium' };
+        payload.reasoning = { effort: 'low' };
       }
     }
     const res = await fetch(endpoint, {
@@ -613,7 +610,41 @@ function sanitizeParamsList(rawParams) {
   return out;
 }
 
+function sanitizeBlueprint(raw) {
+  if (!raw || typeof raw !== 'object' || !raw.body || typeof raw.body !== 'object') return null;
+  const ALLOWED_BODY = new Set(['d_profile', 'cylinder', 'revolve', 'box', 'flange', 'polygon']);
+  const ALLOWED_FEAT = new Set(['boss', 'tenon', 'lug', 'collar', 'bore', 'groove_ext', 'groove_int', 'thread', 'hole_pattern', 'hole', 'slot', 'pocket', 'flat', 'keyway', 'pins', 'inserts', 'chamfer', 'fillet']);
+  const bodyType = ALLOWED_BODY.has(raw.body.type) ? raw.body.type : 'cylinder';
+  const features = Array.isArray(raw.features)
+    ? raw.features
+      .filter(f => f && typeof f === 'object' && ALLOWED_FEAT.has(f.type))
+      .map((f, idx) => ({
+        ...f,
+        id: f.id || `b${idx + 1}`,
+        label: String(f.label || f.type),
+        enabled: f.enabled !== false
+      }))
+    : [];
+  return {
+    body: { ...raw.body, type: bodyType, axis: ['x', 'y', 'z'].includes(String(raw.body.axis || 'x').toLowerCase()) ? String(raw.body.axis || 'x').toLowerCase() : 'x' },
+    features
+  };
+}
+
 function sanitizeCadSpec(spec, fallbackName = 'Piece_CNC') {
+  const cleanBp = sanitizeBlueprint(spec?.blueprint);
+  if (spec && (spec.engine === 'assembly' || cleanBp)) {
+    return {
+      engine: 'assembly',
+      unit: 'mm',
+      name: String(spec.name || fallbackName),
+      material: String(spec.material || ''),
+      params: sanitizeParamsList(spec.params),
+      blueprint: cleanBp || { body: { type: 'cylinder', diameter: 60, length: 100, axis: 'x' }, features: [] },
+      code: spec.code ? String(spec.code).trim() : '',
+      features: Array.isArray(spec.features) ? spec.features : []
+    };
+  }
   if (spec && (spec.engine === 'replicad' || (typeof spec.code === 'string' && spec.code.trim().length > 10))) {
     return {
       engine: 'replicad',
@@ -923,7 +954,7 @@ function applyLocalCadPrompt(cadSpec, prompt = '') {
   };
 }
 
-async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer = null, filename = 'plan', attachments = [], ficheTechnique = null, errorContext = '', visualAudit = false }) {
+async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer = null, filename = 'plan', attachments = [], ficheTechnique = null, errorContext = '', visualAudit = false, thinkingMode = 'auto' }) {
   const cleanSpec = sanitizeCadSpec(cadSpec);
   const ext = path.extname(filename || '').toLowerCase();
   const mimeType =
@@ -933,62 +964,71 @@ async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer =
     'image/jpeg';
 
   const recentHistory = (Array.isArray(history) ? history : [])
-    .slice(-8)
-    .map(m => `${m.role === 'user' ? 'Ingénieur BE' : 'Assistant IA BE'} : ${String(m.text || '').slice(0, 600)}`)
+    .slice(-6)
+    .map(m => `${m.role === 'user' ? 'Ingénieur BE' : 'Assistant IA BE'} : ${String(m.text || '').slice(0, 450)}`)
     .join('\n');
 
-  const machinesCtx = getWorkshopMachinesContext();
   const hasVision = (Array.isArray(attachments) && attachments.some(a => a?.base64)) || (planBuffer && Buffer.isBuffer(planBuffer) && planBuffer.length > 0);
+  const compactFollowUp = !hasVision && !visualAudit && Boolean(ficheTechnique);
+  const useDeepThinking = thinkingMode === 'deep'
+    ? true
+    : thinkingMode === 'fast'
+      ? false
+      : (hasVision && !errorContext);
+
+  const machinesCtx = compactFollowUp ? '' : getWorkshopMachinesContext();
   const lockedParams = (cleanSpec.params || []).filter(p => p.confidence === 'locked');
   const lockedNote = lockedParams.length > 0
     ? `🔒 COTES VERROUILLÉES PAR L'INGÉNIEUR BE (NE PAS MODIFIER sauf demande explicite) : ${lockedParams.map(p => `${p.key}=${p.value}${p.unit || 'mm'}`).join(', ')}.\n`
     : '';
 
   const visualAuditNote = visualAudit
-    ? `👁️ MODE CONTRÔLE VISUEL 3D vs PLAN 2D : Tu reçois le PLAN 2D ORIGINAL + le RENDU 3D ACTUEL en 3 vues (FACE / CÔTÉ / ISO). Compare-les impitoyablement ! Repère immédiatement toute inversion de volume (gros corps vs gorge centrale, collerettes vs manchons), toute forme manquante (méplat/profil en D, ergots, rainures, trous, inserts), et tout écart de proportion — puis produis le code Replicad B-Rep CORRIGÉ ("modified": true).\n`
+    ? `👁️ MODE CONTRÔLE VISUEL 3D vs PLAN 2D : Tu reçois le PLAN 2D ORIGINAL + le RENDU 3D ACTUEL en 3 vues (FACE / CÔTÉ / ISO). Compare-les impitoyablement ! Repère immédiatement toute inversion de volume (gros corps vs gorge centrale, collerettes vs manchons), toute forme manquante (méplat/profil en D, tenons/ergots, rainures, trous, inserts), et tout écart de proportion — puis produis la Fiche Géométrique ("engine": "assembly", "blueprint": {...}) CORRIGÉE ("modified": true).\n`
     : '';
 
-  const refineInstruction = `Tu es un Ingénieur Bureau d'Études & Méthodes CNC senior, expert en lecture de plans ISO 2D, DFM atelier et CAO B-Rep OpenCASCADE (Replicad).
+  const compactRule = compactFollowUp
+    ? `⚡ MODE SUIVI RAPIDE : La fiche technique / DFM / gamme CNC existe déjà — NE LA RÉGÉNÈRE PAS (omets "ficheTechnique" et "thinking") ! Retourne UNIQUEMENT "reply" (court, 1-3 phrases), "modified" et le "cadSpec" mis à jour.`
+    : `6. Si des images/plans sont joints, extrais ou mets à jour aussi "ficheTechnique" et "thinking" dans la même réponse (0 requête supplémentaire).`;
+
+  const refineInstruction = `Tu es un Ingénieur Bureau d'Études & Méthodes CNC senior, expert en lecture de plans ISO 2D, DFM atelier et CAO B-Rep OpenCASCADE par Fiche Géométrique + Briques d'assemblage.
 Tu discutes en français naturel avec l'ingénieur BE pour concevoir, vérifier et modifier n'importe quelle pièce mécanique 3D exacte (exportable en .STEP et .STL, précision 0.001 mm).
 Comprends le langage naturel même avec des fautes de frappe ("filtage" = filetage/taraudage, "chanfrin" = chanfrein, "6 pan" = hexagone).
 ${machinesCtx ? `${machinesCtx}\n` : ''}${lockedNote}${visualAuditNote}
 Modèle 3D actuel (JSON cadSpec) :
 ${JSON.stringify(cleanSpec, null, 2)}
 
-${ficheTechnique ? `Fiche technique actuelle : ${JSON.stringify(ficheTechnique)}` : ''}
+${!compactFollowUp && ficheTechnique ? `Fiche technique actuelle : ${JSON.stringify(ficheTechnique)}` : ''}
 ${recentHistory ? `Historique récent :\n${recentHistory}\n` : ''}
-${errorContext ? `⚠️ ERREUR DE COMPILATION OPENCASCADE À CORRIGER IMMÉDIATEMENT :\n${errorContext}\n` : ''}
+${errorContext ? `⚠️ ERREUR DE COMPILATION OPENCASCADE À CORRIGER IMMÉDIATEMENT (passe en "engine": "assembly" avec blueprint propre) :\n${errorContext}\n` : ''}
 Nouveau message de l'ingénieur BE :
 "${prompt}"
 
-RÈGLES D'ACTION STRICTES (1 SEULE REQUÊTE = RÉFLEXION + 3D DIRECT) :
-1. PRIORITÉ À L'ACTION : Si l'utilisateur joint une image/plan, lance un contrôle visuel 3D vs Plan, demande de créer ou modifier une pièce, ou confirme ("oui", "ok", "vas-y", "corrige", "fais-le"), TU DOIS PRODUIRE IMMÉDIATEMENT LE MODÈLE 3D B-REP COMPLET ("modified": true, "engine": "replicad", "params": [...], "code": "function main(P) { ... }") DÈS CE TOUR ! Ne demande JAMAIS de confirmation inutile et ne refuse jamais d'essayer.
-2. LECTURE CROISÉE ANTI-INVERSION & MODÉLISATION COMPLÈTE : Quand une image/plan (ou un zoom de vue/cartouche) est jointe, recoupe TOUTES les vues (face, côté, coupes) pour ne JAMAIS inverser le gros corps principal avec une gorge centrale en creux. IL EST STRICTEMENT INTERDIT d'esquiver ou d'ignorer une forme visible (méplat / profil en D, gorge extérieure, manchons/ergots d'extrémité, rainures, perçages, inserts) en écrivant "non modélisé — à confirmer" : modélise TOUT dans \`main(P)\` et expose chaque cote dans \`params\`.
-3. CONFIANCE & MÉMOIRE DES COTES : Marque chaque paramètre dans \`params\` avec \`"confidence": "high"\` (lu clairement), \`"check"\` (chiffre flou ou déduit à vérifier par l'ingénieur), ou conserve \`"locked"\` pour toutes les cotes déjà validées/verrouillées par l'ingénieur (ne change JAMAIS leur valeur sauf demande explicite).
-4. Ne mets "modified": false QUE si l'utilisateur pose une pure question théorique / méthodes sans aucune demande de création ou modification 3D (et sans nouveau plan joint).
-5. Si le modèle actuel était en ancien format "csg" et que l'utilisateur demande une modification ou création, passe-le en "engine": "replicad" propre avec tous ses paramètres dans "params".
-6. Si des images/plans sont joints, extrais ou mets à jour aussi "ficheTechnique" dans la même réponse (0 requête supplémentaire).
+RÈGLES D'ACTION STRICTES (1 SEULE REQUÊTE = FICHE GÉOMÉTRIQUE + 3D DIRECT) :
+1. PRIORITÉ À L'ACTION : Si l'utilisateur joint une image/plan, lance un contrôle visuel 3D vs Plan, demande de créer ou modifier une pièce, ou confirme ("oui", "ok", "vas-y", "corrige", "fais-le"), TU DOIS PRODUIRE IMMÉDIATEMENT LA FICHE GÉOMÉTRIQUE B-REP COMPLÈTE ("modified": true, "engine": "assembly", "params": [...], "blueprint": { "body": {...}, "features": [...] }) DÈS CE TOUR !
+2. LECTURE CROISÉE ANTI-INVERSION & MODÉLISATION COMPLÈTE : Quand une image/plan (ou un zoom) est joint, recoupe TOUTES les vues (face, côté, coupes) pour ne JAMAIS inverser le gros corps principal avec une gorge centrale en creux. IL EST STRICTEMENT INTERDIT d'esquiver une forme visible (méplat / profil en D, gorge extérieure, tenons/manchons d'extrémité, rainures, perçages, inserts) : ajoute chaque brique dans \`blueprint.features\` et expose chaque cote dans \`params\`.
+3. CONFIANCE & MÉMOIRE DES COTES : Marque chaque paramètre dans \`params\` avec \`"confidence": "high"\` (lu clairement), \`"check"\` (chiffre flou ou déduit à vérifier par l'ingénieur), ou conserve \`"locked"\` pour toutes les cotes déjà validées/verrouillées par l'ingénieur.
+4. Ne mets "modified": false QUE si l'utilisateur pose une pure question théorique / méthodes sans aucune demande de création ou modification 3D.
+5. Utilise \`"engine": "assembly"\` + \`"blueprint"\` (briques déterministes 0 bug) par défaut. N'utilise \`"engine": "replicad"\` + \`"code"\` que si la pièce est une forme organique impossible en briques.
+${compactRule}
 
-Retourne STRICTEMENT un objet JSON valide (aucun texte hors JSON) — remplis "thinking" EN PREMIER :
+Retourne STRICTEMENT un objet JSON valide (aucun texte hors JSON) :
 {
-  "thinking": {
-    "vues_et_fonction": string,
-    "cotes_cles": string[],
-    "alertes_dfm": string[],
-    "points_a_verifier": string[]
-  },
-  "reply": string (réponse claire, structurée et concise d'ingénieur BE en français),
+  ${compactFollowUp ? '' : `"thinking": { "vues_et_fonction": string, "cotes_cles": string[], "alertes_dfm": string[], "points_a_verifier": string[] },`}
+  "reply": string (réponse claire et concise d'ingénieur BE en français),
   "modified": boolean,
   "cadSpec": {
-    "engine": "replicad",
+    "engine": "assembly",
     "unit": "mm",
     "name": string,
     "material": string,
     "params": [
       { "key": string, "label": string, "value": number, "unit": "mm"|"°"|"u", "tolerance"?: string, "confidence": "high"|"check"|"locked", "sourceView"?: string }
     ],
-    "code": string
-  },
+    "blueprint": {
+      "body": { "type": "d_profile"|"cylinder"|"revolve"|"box"|"flange"|"polygon", "axis": "x"|"y"|"z", ... },
+      "features": [ { "id": string, "type": "boss"|"bore"|"groove_ext"|"groove_int"|"thread"|"hole_pattern"|"hole"|"slot"|"pins"|"chamfer"|"fillet", "label": string, ... } ]
+    }
+  }${compactFollowUp ? '' : `,
   "ficheTechnique"?: {
     "client": string,
     "reference": string,
@@ -1002,10 +1042,10 @@ Retourne STRICTEMENT un objet JSON valide (aucun texte hors JSON) — remplis "t
       { "libelle": string, "typeMachine": "Tournage CNC"|"Fraisage CNC"|"Tournage Manuel"|"Contrôle", "tempsReglageMin": number, "tempsUnitaireMin": number }
     ],
     "summary": string
-  }
+  }`}
 }
 
-${REPLICAD_API_DOC}`;
+${ASSEMBLY_BLUEPRINT_DOC}`;
 
   const aiCfg = getAiSettings();
 
@@ -1026,7 +1066,7 @@ ${REPLICAD_API_DOC}`;
       promptText: refineInstruction,
       images: visionImages,
       expectJson: true,
-      deepThinking: hasVision || !errorContext
+      deepThinking: useDeepThinking
     });
     const parsed = resp?.data;
     if (parsed && (parsed.reply || parsed.cadSpec)) {

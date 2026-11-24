@@ -36,7 +36,11 @@ function getWorker() {
     else entry.reject(new Error(msg.error || 'Erreur OpenCASCADE'));
   };
   worker.onerror = (err) => {
-    const message = err?.message || 'Erreur interne du worker CAO OpenCASCADE';
+    const rawMsg = err?.message || '';
+    const isStaleBundle = !rawMsg || /mime|text\/html|failed to fetch|import|module script/i.test(rawMsg);
+    const message = isStaleBundle
+      ? 'STALE_WORKER_BUNDLE: Une nouvelle version a été déployée sur le serveur. Cliquez sur « Recharger (F5) » pour activer le moteur 3D.'
+      : rawMsg;
     for (const [, entry] of pending) {
       clearTimeout(entry.timer);
       entry.reject(new Error(message));
@@ -81,10 +85,10 @@ export function warmupReplicad() {
   return warmupPromise;
 }
 
-export async function buildReplicadModel({ code, paramsMap = {}, legacyFeatures = null, name = 'Piece_CAO', defaultColor = '#94a3b8' }) {
+export async function buildReplicadModel({ blueprint = null, code = '', paramsMap = {}, legacyFeatures = null, name = 'Piece_CAO', defaultColor = '#94a3b8' }) {
   // Always ensure OCCT WASM download finishes under the generous warmup timeout first!
   await warmupReplicad();
-  return callWorker('build', { code, paramsMap, legacyFeatures, name, defaultColor }, 60000);
+  return callWorker('build', { blueprint, code, paramsMap, legacyFeatures, name, defaultColor }, 60000);
 }
 
 export async function exportReplicadSTEPBlob() {
