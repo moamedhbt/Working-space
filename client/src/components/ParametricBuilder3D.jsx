@@ -5,7 +5,8 @@ import {
   Box, Download, Upload, Sparkles, CheckCircle2, FileCode,
   Send, Trash2, ClipboardList, Layers, Eye, EyeOff, Copy,
   RotateCcw, RotateCw, Scissors, Grid3X3, Compass, AlertCircle, ChevronDown,
-  ChevronRight, Save, Paperclip, X, FileText, Cpu, Wrench, Plus, Code2
+  ChevronRight, Save, Paperclip, X, FileText, Cpu, Wrench, Plus, Code2,
+  Crop, Lock, AlertTriangle, ScanEye
 } from 'lucide-react';
 import { api } from '../api';
 import {
@@ -22,7 +23,12 @@ import {
   materialColorAndDensity,
   paramsArrayToMap
 } from '../utils/replicadClient';
-import { prepareVisionAttachment, rotateAttachment90 } from '../utils/fileAttachmentHelper';
+import {
+  prepareVisionAttachment,
+  rotateAttachment90,
+  cropAttachmentRegion,
+  checkCadParamsCoherence
+} from '../utils/fileAttachmentHelper';
 
 const OP_LABELS = {
   add_cylinder: { name: 'Cylindre / Brut', kind: 'add' },
@@ -204,6 +210,13 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
   const [preparingFile, setPreparingFile] = useState(false);
   const [includePlanNext, setIncludePlanNext] = useState(false);
 
+  // Interactive Zoom/Crop modal state for close-ups (cartouche, vue de bout, coupe)
+  const [cropTarget, setCropTarget] = useState(null); // { idx, att }
+  const [cropRect, setCropRect] = useState(null); // normalized { x, y, w, h }
+  const [cropDragStart, setCropDragStart] = useState(null);
+  const [cropLabel, setCropLabel] = useState('vue_detail');
+  const cropImgRef = useRef(null);
+
   const [analyzing, setAnalyzing] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
   const [refining, setRefining] = useState(false);
@@ -310,7 +323,7 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     camera.position.set(170, 125, 190);
     cameraRef.current = camera;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.localClippingEnabled = true;
@@ -814,6 +827,170 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     }
   }
 
+  // Capture 3 crisp views (FACE / CÔTÉ / ISO 3D) of the current 3D solid onto a single PNG
+  function capture3ViewsComposite() {
+    const renderer = rendererRef.current;
+    const scene = sceneRef.current;
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    const grp = rootGroupRef.current;
+    if (!renderer || !scene || !camera || !controls || !grp || grp.children.length === 0) return null;
+
+    const savedPos = camera.position.clone();
+    const savedTarget = controls.target.clone();
+    const savedGrid = gridRef.current?.visible;
+    const savedAxes = axesRef.current?.visible;
+
+    const box = new THREE.Box3().setFromObject(grp);
+    const sphere = new THREE.Sphere();
+    box.getBoundingSphere(sphere);
+    const center = sphere.center;
+    const dist = Math.max(20, sphere.radius) * 2.55;
+
+    const views = [
+      { label: 'VUE DE FACE (+Z)', dir: new THREE.Vector3(0, 0, 1) },
+      { label: 'VUE DE BOUT (+X)', dir: new THREE.Vector3(1, 0, 0) },
+      { label: 'VUE 3D ISO', dir: new THREE.Vector3(1, 0.78, 1).normalize() }
+    ];
+
+    const tileW = 420;
+    const tileH = 400;
+    const headerH = 28;
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = tileW * 3;
+    outCanvas.height = tileH + headerH;
+    const ctx = outCanvas.getContext('2d');
+    ctx.fillStyle = '#090d14';
+    ctx.fillRect(0, 0, outCanvas.width, outCanvas.height);
+
+    if (gridRef.current) gridRef.current.visible = false;
+    if (axesRef.current) axesRef.current.visible = true;
+
+    try {
+      views.forEach((v, idx) => {
+        camera.position.copy(center).addScaledVector(v.dir, dist);
+        controls.target.copy(center);
+        camera.lookAt(center);
+        renderer.render(scene, camera);
+
+        const x0 = idx * tileW;
+        ctx.drawImage(renderer.domElement, x0, headerH, tileW, tileH);
+        ctx.fillStyle = '#0E141D';
+        ctx.fillRect(x0, 0, tileW, headerH);
+        ctx.fillStyle = '#22D3EE';
+        ctx.font = 'bold 13px sans-serif';
+        ctx.fillText(v.label, x0 + 12, 19);
+        if (idx > 0) {
+          ctx.strokeStyle = '#1E2A38';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(x0, 0);
+          ctx.lineTo(x0, outCanvas.height);
+          ctx.stroke();
+        }
+      });
+    } finally {
+      camera.position.copy(savedPos);
+      controls.target.copy(savedTarget);
+      if (gridRef.current && savedGrid !== undefined) gridRef.current.visible = savedGrid;
+      if (axesRef.current && savedAxes !== undefined) axesRef.current.visible = savedAxes;
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    return outCanvas.toDataURL('image/png');
+  }
+
+  // On-demand Visual Self-Check: compares 3-view 3D render against the 2D plan and corrects automatically
+  async function handleVisualAudit3DvsPlan() {
+    if (refining || buildingOcct) return;
+    const composite = capture3ViewsComposite();
+    if (!composite) {
+      setChatError('Aucun solide 3D affiché à comparer.');
+      return;
+    }
+    const planAtts = (uploadedPlan?.attachments || []).map(a => ({
+      filename: a.filename,
+      mimeType: a.mimeType,
+      base64: a.base64
+    }));
+    const hasFileId = Boolean(uploadedPlan?.fileId || existingPlanFile?.id);
+    if (planAtts.length === 0 && !hasFileId) {
+      setChatError('Joignez d’abord un plan 2D (ou utilisez le plan de l’OF) pour lancer la comparaison visuelle.');
+      return;
+    }
+
+    setRefining(true);
+    setChatError('');
+
+    const auditAtts = [
+      ...planAtts.slice(0, 2),
+      { filename: 'rendu_3d_3vues.png', mimeType: 'image/png', base64: composite }
+    ];
+    const nextUserMsg = {
+      role: 'user',
+      text: '👁️ Contrôle visuel : compare le rendu 3D actuel (3 vues) au plan 2D et corrige toute inversion ou forme manquante.',
+      attachments: [{ filename: 'Rendu 3D (Face / Bout / Iso)', previewUrl: composite, isFromPdf: false }],
+      attachmentNames: ['rendu_3d_3vues.png'],
+      ts: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+    };
+    const updatedHistory = [...chatMessages, nextUserMsg];
+    setChatMessages(updatedHistory);
+
+    try {
+      const res = await api('/api/be/refine-3d', 'POST', {
+        pieceId: piece?.id || null,
+        includePlan: planAtts.length === 0,
+        fileId: planAtts.length === 0 ? (uploadedPlan?.fileId || existingPlanFile?.id || null) : null,
+        filename: uploadedPlan?.filename || existingPlanFile?.filename || 'plan.png',
+        attachments: auditAtts,
+        cadSpec,
+        ficheTechnique: fiche,
+        history: updatedHistory.map(m => ({ role: m.role, text: m.text })),
+        visualAudit: true,
+        prompt: 'Compare attentivement ce rendu 3D en 3 vues (FACE / BOUT / ISO) au plan 2D original. Liste les erreurs visuelles (corps inversé avec gorge, méplat/D-shape manquant, ergots, trous, proportions) et corrige le code Replicad B-Rep immédiatement.'
+      });
+
+      if (res.ficheTechnique) setFiche(res.ficheTechnique);
+      if (res.modified && res.cadSpec) {
+        setCadSpec(res.cadSpec);
+        setHiddenParts({});
+        setValidatedByBe(false);
+        setTimeout(() => setCameraView(activeView), 450);
+      }
+      setChatMessages(prev => [
+        ...prev,
+        {
+          role: 'ai',
+          text: res.reply || 'Contrôle visuel terminé.',
+          thinking: res.thinking || null,
+          modified: Boolean(res.modified),
+          model: res.model || '',
+          ts: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+        }
+      ]);
+    } catch (err) {
+      setChatError(err.message);
+    } finally {
+      setRefining(false);
+    }
+  }
+
+  async function handleApplyCropZoom() {
+    if (!cropTarget?.att || !cropRect || cropRect.w < 0.03 || cropRect.h < 0.03) return;
+    try {
+      const zoomed = await cropAttachmentRegion(cropTarget.att, cropRect, cropLabel || 'detail');
+      if (zoomed) {
+        setChatAttachments(prev => [...prev, zoomed].slice(0, 5));
+      }
+      setCropTarget(null);
+      setCropRect(null);
+      setCropDragStart(null);
+    } catch (err) {
+      setChatError('Erreur zoom recadrage : ' + err.message);
+    }
+  }
+
   function updateReplicadParam(idx, patch) {
     setCadSpec(prev => ({
       ...prev,
@@ -1011,6 +1188,8 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
     ? ((occtResult.volumeCm3 * materialInfo.density) / 1000).toFixed(2)
     : null;
   const existingPlanFile = piece?.be?.clientFile || piece?.be?.planFile || null;
+  const hasPlanContext = Boolean((uploadedPlan?.attachments?.length > 0) || uploadedPlan?.fileId || existingPlanFile);
+  const coherenceWarnings = isReplicad ? checkCadParamsCoherence(cadSpec?.params, dims) : [];
 
   return (
     <div className="cyber-card p-3.5 sm:p-4 space-y-3.5">
@@ -1201,6 +1380,17 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                 ))}
               </div>
               <div className="flex items-center gap-1">
+                {hasFeatures && hasPlanContext && (
+                  <button
+                    type="button"
+                    disabled={refining || buildingOcct}
+                    onClick={handleVisualAudit3DvsPlan}
+                    className="px-2 py-1 rounded border border-purple-400/50 bg-purple-600/20 hover:bg-purple-600/35 disabled:opacity-40 text-purple-200 text-[10px] font-semibold flex items-center gap-1 cursor-pointer"
+                    title="Capture 3 vues du 3D (Face, Bout, Iso) et demande à l’IA de les comparer au plan 2D pour corriger toute erreur"
+                  >
+                    <ScanEye className="w-3 h-3" /> Comparer 3D vs Plan
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setShowAxes(v => !v)}
@@ -1348,10 +1538,20 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                 </div>
               ) : (
                 <div className="grid sm:grid-cols-2 gap-1.5 max-h-64 overflow-y-auto pr-1">
-                  {(cadSpec.params || []).map((p, idx) => (
+                  {(cadSpec.params || []).map((p, idx) => {
+                    const conf = p.confidence || 'high';
+                    const isCheck = conf === 'check';
+                    const isLocked = conf === 'locked';
+                    return (
                     <div
                       key={`${p.key}_${idx}`}
-                      className="flex items-center gap-2 p-2 rounded bg-[#111821] border border-[#1E2A38] hover:border-slate-600"
+                      className={`flex items-center gap-2 p-2 rounded border transition ${
+                        isCheck
+                          ? 'bg-amber-950/20 border-amber-500/45'
+                          : isLocked
+                            ? 'bg-emerald-950/15 border-emerald-500/40'
+                            : 'bg-[#111821] border-[#1E2A38] hover:border-slate-600'
+                      }`}
                     >
                       <div className="min-w-0 flex-1">
                         <div className="text-[11px] font-medium text-slate-100 truncate flex items-center gap-1">
@@ -1362,7 +1562,25 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                             </span>
                           )}
                         </div>
-                        <div className="text-[9px] text-slate-500 font-mono-num truncate">P.{p.key}</div>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <button
+                            type="button"
+                            onClick={() => updateReplicadParam(idx, { confidence: isLocked ? 'high' : 'locked' })}
+                            className={`px-1 py-0.2 rounded text-[9px] font-semibold flex items-center gap-0.5 cursor-pointer ${
+                              isLocked
+                                ? 'bg-emerald-500/20 text-emerald-300'
+                                : isCheck
+                                  ? 'bg-amber-500/20 text-amber-300'
+                                  : 'bg-slate-800 text-slate-400 hover:text-emerald-300'
+                            }`}
+                            title={isLocked ? 'Cote verrouillée : l’IA ne la modifiera plus. Cliquez pour déverrouiller.' : 'Cliquez pour verrouiller cette cote après vérification'}
+                          >
+                            {isLocked ? <><Lock className="w-2.5 h-2.5" /> Validé</> : isCheck ? '⚠ À vérifier' : '✓ Sûr'}
+                          </button>
+                          {p.sourceView && (
+                            <span className="text-[9px] text-slate-500 truncate">{p.sourceView}</span>
+                          )}
+                        </div>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         <input
@@ -1371,10 +1589,10 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                           value={p.value ?? ''}
                           onChange={e => {
                             const raw = e.target.value;
-                            if (raw === '' || raw === '-') updateReplicadParam(idx, { value: raw });
+                            if (raw === '' || raw === '-') updateReplicadParam(idx, { value: raw, confidence: 'locked' });
                             else {
                               const num = parseFloat(raw);
-                              if (Number.isFinite(num)) updateReplicadParam(idx, { value: num });
+                              if (Number.isFinite(num)) updateReplicadParam(idx, { value: num, confidence: 'locked' });
                             }
                           }}
                           className="w-24 px-2 py-1 rounded bg-[#0B0F14] border border-[#1E2A38] focus:border-[#22D3EE] focus:outline-none text-white text-[11px] font-mono-num text-right"
@@ -1390,7 +1608,20 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                         </button>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* FREE (0-TOKEN) MATHEMATICAL COHERENCE CHECKER */}
+              {coherenceWarnings.length > 0 && (
+                <div className="p-2 rounded bg-amber-950/35 border border-amber-500/40 text-amber-200 text-[11px] space-y-1">
+                  <div className="font-semibold text-amber-300 flex items-center gap-1.5 text-[10px] uppercase tracking-wider">
+                    <AlertTriangle className="w-3.5 h-3.5" /> Contrôle de cohérence géométrique (auto · 0 token)
+                  </div>
+                  <ul className="list-disc pl-4 space-y-0.5 text-[10px]">
+                    {coherenceWarnings.map((w, wi) => <li key={wi}>{w}</li>)}
+                  </ul>
                 </div>
               )}
 
@@ -1890,16 +2121,32 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
                   {chatAttachments.map((att, idx) => (
                     <div key={idx} className="relative rounded border border-sky-500/40 bg-[#0B0F14] p-1.5 flex items-center gap-2 pr-7">
                       <img src={att.previewUrl} alt={att.filename} className="w-11 h-11 object-contain rounded bg-black/40" />
-                      <div className="text-[10px] leading-tight max-w-[125px] space-y-1">
+                      <div className="text-[10px] leading-tight max-w-[155px] space-y-1">
                         <div className="text-slate-200 truncate">{att.originalFilename || att.filename}</div>
-                        <button
-                          type="button"
-                          onClick={() => handleRotateChatAttachment(idx)}
-                          className="px-1.5 py-0.5 rounded bg-sky-500/15 border border-sky-500/40 text-sky-300 hover:bg-sky-500/25 flex items-center gap-1 cursor-pointer"
-                          title="Pivoter l'image de 90° pour la remettre droite"
-                        >
-                          <RotateCw className="w-2.5 h-2.5" /> Pivoter 90°
-                        </button>
+                        <div className="flex items-center gap-1 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => handleRotateChatAttachment(idx)}
+                            className="px-1.5 py-0.5 rounded bg-sky-500/15 border border-sky-500/40 text-sky-300 hover:bg-sky-500/25 flex items-center gap-1 cursor-pointer"
+                            title="Pivoter l'image de 90° pour la remettre droite"
+                          >
+                            <RotateCw className="w-2.5 h-2.5" /> 90°
+                          </button>
+                          {!att.isZoomCrop && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCropTarget({ idx, att });
+                                setCropRect({ x: 0.15, y: 0.15, w: 0.5, h: 0.5 });
+                                setCropLabel('detail');
+                              }}
+                              className="px-1.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/40 text-purple-300 hover:bg-purple-500/25 flex items-center gap-1 cursor-pointer"
+                              title="Ajouter un gros plan net (cartouche, vue de bout, coupe) dans le même envoi IA"
+                            >
+                              <Crop className="w-2.5 h-2.5" /> Zoom
+                            </button>
+                          )}
+                        </div>
                       </div>
                       <button
                         type="button"
@@ -2011,6 +2258,119 @@ export default function ParametricBuilder3D({ piece, onPublishToOf, onReload }) 
           </div>
         </div>
       </div>
+
+      {/* INTERACTIVE ZOOM / CROP MODAL FOR SHARP DETAIL VIEWS (CARTOUCHE, VUE DE BOUT, COUPE) */}
+      {cropTarget?.att && (
+        <div className="fixed inset-0 z-[80] bg-black/80 flex items-center justify-center p-3 sm:p-5">
+          <div className="w-full max-w-3xl cyber-card p-4 space-y-3 max-h-[92vh] flex flex-col">
+            <div className="flex items-center justify-between gap-2 pb-2 border-b border-[#1E2A38]">
+              <div>
+                <h4 className="text-sm font-semibold text-white flex items-center gap-2">
+                  <Crop className="w-4 h-4 text-purple-400" /> Ajouter un gros plan HD dans le même envoi IA
+                </h4>
+                <p className="text-[11px] text-slate-400">
+                  Tracez un rectangle sur le cartouche, la vue de bout ou une coupe — l’IA lira les petits chiffres sans flou (0 requête supplémentaire).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setCropTarget(null); setCropRect(null); setCropDragStart(null); }}
+                className="p-1.5 rounded bg-[#111821] text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-slate-400">Zone :</span>
+              {[
+                ['vue_de_bout', 'Vue de bout'],
+                ['coupe_filetage', 'Coupe / Filetage'],
+                ['cartouche', 'Cartouche / Matière'],
+                ['detail', 'Autre détail']
+              ].map(([val, lbl]) => (
+                <button
+                  key={val}
+                  type="button"
+                  onClick={() => setCropLabel(val)}
+                  className={`px-2 py-1 rounded border text-[11px] cursor-pointer ${
+                    cropLabel === val
+                      ? 'bg-purple-600/25 border-purple-400 text-purple-200 font-semibold'
+                      : 'bg-[#0B0F14] border-[#1E2A38] text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {lbl}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex-1 overflow-auto flex items-center justify-center bg-[#06090e] rounded border border-[#1E2A38] p-2">
+              <div
+                className="relative inline-block select-none cursor-crosshair touch-none"
+                onPointerDown={e => {
+                  const el = cropImgRef.current;
+                  if (!el) return;
+                  const r = el.getBoundingClientRect();
+                  const nx = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+                  const ny = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
+                  setCropDragStart({ x: nx, y: ny });
+                  setCropRect({ x: nx, y: ny, w: 0.01, h: 0.01 });
+                }}
+                onPointerMove={e => {
+                  if (!cropDragStart || !cropImgRef.current) return;
+                  const r = cropImgRef.current.getBoundingClientRect();
+                  const nx = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+                  const ny = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
+                  setCropRect({
+                    x: Math.min(cropDragStart.x, nx),
+                    y: Math.min(cropDragStart.y, ny),
+                    w: Math.abs(nx - cropDragStart.x),
+                    h: Math.abs(ny - cropDragStart.y)
+                  });
+                }}
+                onPointerUp={() => setCropDragStart(null)}
+              >
+                <img
+                  ref={cropImgRef}
+                  src={cropTarget.att.previewUrl}
+                  alt="Plan à recadrer"
+                  draggable={false}
+                  className="max-h-[58vh] max-w-full block rounded pointer-events-none"
+                />
+                {cropRect && (
+                  <div
+                    className="absolute border-2 border-[#22D3EE] bg-[#22D3EE]/15 pointer-events-none shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]"
+                    style={{
+                      left: `${cropRect.x * 100}%`,
+                      top: `${cropRect.y * 100}%`,
+                      width: `${cropRect.w * 100}%`,
+                      height: `${cropRect.h * 100}%`
+                    }}
+                  />
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => { setCropTarget(null); setCropRect(null); setCropDragStart(null); }}
+                className="px-3 py-1.5 rounded bg-[#111821] border border-[#1E2A38] text-slate-300 text-xs cursor-pointer"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                disabled={!cropRect || cropRect.w < 0.03 || cropRect.h < 0.03}
+                onClick={handleApplyCropZoom}
+                className="px-3.5 py-1.5 rounded bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+              >
+                <Crop className="w-3.5 h-3.5" /> + Ajouter ce gros plan HD
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

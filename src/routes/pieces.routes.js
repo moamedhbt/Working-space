@@ -718,13 +718,16 @@ router.post('/be/refine-3d', auth, requireRole('directeur', 'be', 'chef'), async
       history,
       ficheTechnique,
       includePlan = false,
-      errorContext = ''
+      errorContext = '',
+      visualAudit = false
     } = req.body || {};
-    const cleanAttachments = Array.isArray(attachments) ? attachments.filter(a => a && a.base64).slice(0, 4) : [];
+    const cleanAttachments = Array.isArray(attachments) ? attachments.filter(a => a && a.base64).slice(0, 5) : [];
     const cleanPrompt = String(prompt || '').trim() || (
       errorContext
         ? 'Corrige cette erreur de compilation OpenCASCADE dans le code Replicad sans changer les cotes ni la géométrie voulue.'
-        : (cleanAttachments.length > 0 ? 'Analyse ce document joint et génère/mets à jour la pièce 3D B-Rep complète.' : '')
+        : visualAudit
+          ? 'Compare ce rendu 3D (FACE / CÔTÉ / ISO) au plan 2D original, corrige immédiatement toute inversion de volume, proportion fausse ou forme manquante.'
+          : (cleanAttachments.length > 0 ? 'Analyse ce document joint et génère/mets à jour la pièce 3D B-Rep complète.' : '')
     );
     if (!cleanPrompt) {
       return res.status(400).json({ error: 'Écrivez un message ou joignez une image/PDF pour l’IA.' });
@@ -766,7 +769,8 @@ router.post('/be/refine-3d', auth, requireRole('directeur', 'be', 'chef'), async
       filename: name,
       attachments: cleanAttachments,
       ficheTechnique,
-      errorContext: String(errorContext || '')
+      errorContext: String(errorContext || ''),
+      visualAudit: Boolean(visualAudit)
     });
     res.json(result);
   } catch (err) {

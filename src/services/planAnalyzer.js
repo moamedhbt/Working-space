@@ -253,7 +253,7 @@ Retourne STRICTEMENT un JSON valide (aucun texte hors JSON) respectant ce schém
     "name": string,
     "material": string,
     "params": [
-      { "key": string, "label": string, "value": number, "unit": "mm"|"°"|"u", "tolerance"?: string }
+      { "key": string, "label": string, "value": number, "unit": "mm"|"°"|"u", "tolerance"?: string, "confidence": "high"|"check", "sourceView"?: string }
     ],
     "code": string
   }
@@ -604,7 +604,9 @@ function sanitizeParamsList(rawParams) {
       label: String(p.label || key),
       value: Number(val.toFixed(3)),
       unit: String(p.unit || 'mm'),
-      tolerance: p.tolerance ? String(p.tolerance) : ''
+      tolerance: p.tolerance ? String(p.tolerance) : '',
+      confidence: ['high', 'check', 'locked'].includes(p.confidence) ? p.confidence : 'high',
+      sourceView: p.sourceView ? String(p.sourceView).slice(0, 60) : ''
     });
   }
   return out;
@@ -920,7 +922,7 @@ function applyLocalCadPrompt(cadSpec, prompt = '') {
   };
 }
 
-async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer = null, filename = 'plan', attachments = [], ficheTechnique = null, errorContext = '' }) {
+async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer = null, filename = 'plan', attachments = [], ficheTechnique = null, errorContext = '', visualAudit = false }) {
   const cleanSpec = sanitizeCadSpec(cadSpec);
   const ext = path.extname(filename || '').toLowerCase();
   const mimeType =
@@ -936,11 +938,19 @@ async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer =
 
   const machinesCtx = getWorkshopMachinesContext();
   const hasVision = (Array.isArray(attachments) && attachments.some(a => a?.base64)) || (planBuffer && Buffer.isBuffer(planBuffer) && planBuffer.length > 0);
+  const lockedParams = (cleanSpec.params || []).filter(p => p.confidence === 'locked');
+  const lockedNote = lockedParams.length > 0
+    ? `🔒 COTES VERROUILLÉES PAR L'INGÉNIEUR BE (NE PAS MODIFIER sauf demande explicite) : ${lockedParams.map(p => `${p.key}=${p.value}${p.unit || 'mm'}`).join(', ')}.\n`
+    : '';
+
+  const visualAuditNote = visualAudit
+    ? `👁️ MODE CONTRÔLE VISUEL 3D vs PLAN 2D : Tu reçois le PLAN 2D ORIGINAL + le RENDU 3D ACTUEL en 3 vues (FACE / CÔTÉ / ISO). Compare-les impitoyablement ! Repère immédiatement toute inversion de volume (gros corps vs gorge centrale, collerettes vs manchons), toute forme manquante (méplat/profil en D, ergots, rainures, trous, inserts), et tout écart de proportion — puis produis le code Replicad B-Rep CORRIGÉ ("modified": true).\n`
+    : '';
 
   const refineInstruction = `Tu es un Ingénieur Bureau d'Études & Méthodes CNC senior, expert en lecture de plans ISO 2D, DFM atelier et CAO B-Rep OpenCASCADE (Replicad).
 Tu discutes en français naturel avec l'ingénieur BE pour concevoir, vérifier et modifier n'importe quelle pièce mécanique 3D exacte (exportable en .STEP et .STL, précision 0.001 mm).
 Comprends le langage naturel même avec des fautes de frappe ("filtage" = filetage/taraudage, "chanfrin" = chanfrein, "6 pan" = hexagone).
-${machinesCtx ? `${machinesCtx}\n` : ''}
+${machinesCtx ? `${machinesCtx}\n` : ''}${lockedNote}${visualAuditNote}
 Modèle 3D actuel (JSON cadSpec) :
 ${JSON.stringify(cleanSpec, null, 2)}
 
@@ -951,9 +961,9 @@ Nouveau message de l'ingénieur BE :
 "${prompt}"
 
 RÈGLES D'ACTION STRICTES (1 SEULE REQUÊTE = RÉFLEXION + 3D DIRECT) :
-1. PRIORITÉ À L'ACTION : Si l'utilisateur joint une image/plan, demande de créer ou modifier une pièce, ou confirme ("oui", "ok", "vas-y", "corrige", "fais-le"), TU DOIS PRODUIRE IMMÉDIATEMENT LE MODÈLE 3D B-REP COMPLET ("modified": true, "engine": "replicad", "params": [...], "code": "function main(P) { ... }") DÈS CE TOUR ! Ne demande JAMAIS de confirmation inutile et ne refuse jamais d'essayer.
-2. LECTURE CROISÉE ANTI-INVERSION & MODÉLISATION COMPLÈTE : Quand une image/plan est jointe, recoupe TOUTES les vues (face, côté, coupes) pour ne JAMAIS inverser le gros corps principal avec une gorge centrale en creux. IL EST STRICTEMENT INTERDIT d'esquiver ou d'ignorer une forme visible (méplat / profil en D, gorge extérieure, manchons/ergots d'extrémité, rainures, perçages, inserts) en écrivant "non modélisé — à confirmer" : modélise TOUT dans \`main(P)\` et expose chaque cote dans \`params\`.
-3. En cas de doute mineur sur un chiffre peu lisible, vérifie la cohérence des sommes de longueurs et des diamètres/rayons (R60 = Ø120), choisis la valeur mécanique la plus cohérente dans \`params\` (réglable au 0.001 mm par l'ingénieur), et signale le point dans "thinking.points_a_verifier".
+1. PRIORITÉ À L'ACTION : Si l'utilisateur joint une image/plan, lance un contrôle visuel 3D vs Plan, demande de créer ou modifier une pièce, ou confirme ("oui", "ok", "vas-y", "corrige", "fais-le"), TU DOIS PRODUIRE IMMÉDIATEMENT LE MODÈLE 3D B-REP COMPLET ("modified": true, "engine": "replicad", "params": [...], "code": "function main(P) { ... }") DÈS CE TOUR ! Ne demande JAMAIS de confirmation inutile et ne refuse jamais d'essayer.
+2. LECTURE CROISÉE ANTI-INVERSION & MODÉLISATION COMPLÈTE : Quand une image/plan (ou un zoom de vue/cartouche) est jointe, recoupe TOUTES les vues (face, côté, coupes) pour ne JAMAIS inverser le gros corps principal avec une gorge centrale en creux. IL EST STRICTEMENT INTERDIT d'esquiver ou d'ignorer une forme visible (méplat / profil en D, gorge extérieure, manchons/ergots d'extrémité, rainures, perçages, inserts) en écrivant "non modélisé — à confirmer" : modélise TOUT dans \`main(P)\` et expose chaque cote dans \`params\`.
+3. CONFIANCE & MÉMOIRE DES COTES : Marque chaque paramètre dans \`params\` avec \`"confidence": "high"\` (lu clairement), \`"check"\` (chiffre flou ou déduit à vérifier par l'ingénieur), ou conserve \`"locked"\` pour toutes les cotes déjà validées/verrouillées par l'ingénieur (ne change JAMAIS leur valeur sauf demande explicite).
 4. Ne mets "modified": false QUE si l'utilisateur pose une pure question théorique / méthodes sans aucune demande de création ou modification 3D (et sans nouveau plan joint).
 5. Si le modèle actuel était en ancien format "csg" et que l'utilisateur demande une modification ou création, passe-le en "engine": "replicad" propre avec tous ses paramètres dans "params".
 6. Si des images/plans sont joints, extrais ou mets à jour aussi "ficheTechnique" dans la même réponse (0 requête supplémentaire).
@@ -974,7 +984,7 @@ Retourne STRICTEMENT un objet JSON valide (aucun texte hors JSON) — remplis "t
     "name": string,
     "material": string,
     "params": [
-      { "key": string, "label": string, "value": number, "unit": "mm"|"°"|"u", "tolerance"?: string }
+      { "key": string, "label": string, "value": number, "unit": "mm"|"°"|"u", "tolerance"?: string, "confidence": "high"|"check"|"locked", "sourceView"?: string }
     ],
     "code": string
   },
