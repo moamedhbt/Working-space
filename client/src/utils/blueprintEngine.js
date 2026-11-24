@@ -589,6 +589,35 @@ export function createBrepEngine(replicad) {
     if (!code || !String(code).trim()) {
       throw new Error('Aucun code Replicad fourni.');
     }
+    // Proxy replicad so BOTH `centeredCylinder(...)` AND `replicad.centeredCylinder(...)` work seamlessly!
+    const customHelpers = {
+      draw: safeDraw,
+      centeredCylinder,
+      centeredBox,
+      centeredCone,
+      revolveProfile,
+      extrudePolygon,
+      dShapeBody,
+      cutExternalGroove,
+      cutInternalGroove,
+      cutHolePattern,
+      addPinPattern,
+      cutThread,
+      safeFillet,
+      safeChamfer
+    };
+    const replicadWithHelpers = new Proxy(replicad, {
+      get(target, prop, receiver) {
+        if (Object.prototype.hasOwnProperty.call(customHelpers, prop)) {
+          return customHelpers[prop];
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+      has(target, prop) {
+        return Object.prototype.hasOwnProperty.call(customHelpers, prop) || prop in target;
+      }
+    });
+
     const scopeKeys = [
       'replicad',
       'draw', 'drawCircle', 'drawRectangle', 'drawRoundedRectangle', 'drawPolysides', 'drawEllipse',
@@ -601,7 +630,7 @@ export function createBrepEngine(replicad) {
       'P', 'PARAMS'
     ];
     const scopeVals = [
-      replicad,
+      replicadWithHelpers,
       safeDraw, replicad.drawCircle, replicad.drawRectangle, replicad.drawRoundedRectangle, replicad.drawPolysides, replicad.drawEllipse,
       replicad.makeCylinder, replicad.makeBaseBox, replicad.makeBox, replicad.makeSphere, replicad.makeHelix, replicad.makePlane, replicad.makeCompound,
       replicad.Sketcher, replicad.sketchCircle, replicad.sketchRectangle, replicad.sketchRoundedRectangle, replicad.sketchPolysides, replicad.sketchHelix,

@@ -188,7 +188,26 @@ async function run() {
     passed++;
   }
 
-  console.log(`\n🎉 TOUS LES TESTS CAO B-REP OPENCASCADE ONT RÉUSSI (${passed}/6) en ${Date.now() - tStart} ms !`);
+  // 7. Gemini-style `replicad.centeredCylinder(D, L, [0,0,1], [0,0,L/2])` via replicad Proxy
+  {
+    const t0 = Date.now();
+    const parts = engine.executeReplicadCode(`
+      function main(P) {
+        const D1 = P.D1 || 85.5, D3 = P.D3 || 55, L1 = P.L1 || 45;
+        let hub = replicad.centeredCylinder(D1, L1, [0, 0, 1], [0, 0, L1 / 2]);
+        hub = hub.cut(replicad.centeredCylinder(D3, L1 + 10, [0, 0, 1], [0, 0, L1 / 2]));
+        return { name: 'Moyeu_Gemini', color: '#718096', shape: hub };
+      }
+    `, { D1: 85.5, D3: 55, L1: 45 });
+    const d = measureBbox(parts);
+    approx(d.lx, 85.5, 1.0, 'Moyeu Øext X');
+    approx(d.ly, 85.5, 1.0, 'Moyeu Øext Y');
+    approx(d.lz, 45.0, 1.0, 'Moyeu L Z');
+    passed++;
+    console.log(`✅ [7/7] Proxy replicad.centeredCylinder(..., [0,0,1]) validé (${d.lx}×${d.ly}×${d.lz} mm, ${Date.now() - t0} ms)`);
+  }
+
+  console.log(`\n🎉 TOUS LES TESTS CAO B-REP OPENCASCADE ONT RÉUSSI (${passed}/7) en ${Date.now() - tStart} ms !`);
 }
 
 run().catch(err => {

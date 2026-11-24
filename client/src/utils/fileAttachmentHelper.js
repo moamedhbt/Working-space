@@ -297,9 +297,13 @@ export function checkCadParamsCoherence(params = [], dims = null) {
     warnings.push(`Attention paroi fine / sécante : PCD Ø${pcd} − trou Ø${holeD} (${(pcd - holeD).toFixed(1)}) < alésage Ø${boreD} (vérifiez si voulu pour inserts tangents).`);
   }
   if (totalLen && dims && (dims.x > 0 || dims.y > 0 || dims.z > 0)) {
-    const maxBbox = Math.max(dims.x, dims.y, dims.z);
-    if (Math.abs(maxBbox - totalLen) > Math.max(5, totalLen * 0.08)) {
-      warnings.push(`Écart 3D vs cote totale : longueur déclarée ${totalLen} mm mais encombrement 3D max = ${maxBbox.toFixed(1)} mm.`);
+    const axes = [dims.x, dims.y, dims.z];
+    const maxBbox = Math.max(...axes);
+    const expectedMax = Math.max(totalLen, outerD || 0);
+    const tolLen = Math.max(5, totalLen * 0.08);
+    const hasMatchingAxis = axes.some(a => Math.abs(a - totalLen) <= tolLen);
+    if (!hasMatchingAxis && Math.abs(maxBbox - expectedMax) > Math.max(5, expectedMax * 0.08)) {
+      warnings.push(`Écart 3D vs cote totale : longueur déclarée ${totalLen} mm (Ø ext. ${outerD || '?'} mm) mais encombrement 3D = ${dims.x.toFixed(1)}×${dims.y.toFixed(1)}×${dims.z.toFixed(1)} mm.`);
     }
   }
 

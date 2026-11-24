@@ -268,13 +268,22 @@ ${REPLICAD_API_DOC}`;
 function extractJsonFromText(txt) {
   if (!txt) return null;
   let trimmed = String(txt).trim();
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  // 1) Try fenced ```json ... ``` block (closed or unclosed)
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)(?:```|$)/i);
   if (fenced && fenced[1]) {
-    try { return JSON.parse(fenced[1].trim()); } catch {}
+    const candidate = fenced[1].trim();
+    try { return JSON.parse(candidate); } catch {}
+    const fb = candidate.indexOf('{');
+    const lb = candidate.lastIndexOf('}');
+    if (fb !== -1 && lb > fb) {
+      try { return JSON.parse(candidate.slice(fb, lb + 1)); } catch {}
+    }
   }
+  // 2) Direct JSON parse
   try {
     return JSON.parse(trimmed);
   } catch {}
+  // 3) Outermost { ... } slice
   const firstBrace = trimmed.indexOf('{');
   const lastBrace = trimmed.lastIndexOf('}');
   if (firstBrace !== -1 && lastBrace > firstBrace) {
@@ -287,7 +296,7 @@ function extractJsonFromText(txt) {
 
 function defaultModelForProvider(provider) {
   if (provider === 'qwen' || provider === 'qwen_us' || provider === 'qwen_cn') return 'qwen3.8-flash';
-  if (provider === 'gemini') return 'gemini-3.8-flash';
+  if (provider === 'gemini') return 'gemini-3.5-flash';
   if (provider === 'openai') return 'gpt-4o-mini';
   if (provider === 'anthropic') return 'claude-sonnet-4-20250514';
   if (provider === 'openrouter') return 'qwen/qwen3.8-27b:free';
@@ -317,7 +326,7 @@ function resolveRuntimeAiConfig(override = null) {
   return { provider, resolvedProvider, apiKey, model, baseUrl, source: 'override' };
 }
 
-async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'image/jpeg', images = [], overrideConfig = null, expectJson = true, deepThinking = false, imageDetail = 'auto', maxTokens = 3200 }) {
+async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'image/jpeg', images = [], overrideConfig = null, expectJson = true, deepThinking = false, imageDetail = 'auto', maxTokens = 8192 }) {
   const cfg = resolveRuntimeAiConfig(overrideConfig);
   const provider = cfg.resolvedProvider;
   if (!provider || provider === 'offline') return null;
@@ -344,19 +353,29 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
       parts.push({ inline_data: { mime_type: m.mimeType, data: m.base64 } });
     }
 
-    const callOnce = async (mdl) => {
+    const callOnce = async (mdl, useJsonMime = expectJson) => {
       const cleanMdl = String(mdl || '').replace(/^models\//, '');
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanMdl)}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`;
+      const generationConfig = {
+        maxOutputTokens: Math.max(16384, Number(maxTokens) || 16384),
+        temperature: 0.2
+      };
+      if (useJsonMime) {
+        generationConfig.responseMimeType = 'application/json';
+      }
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts }] })
+        body: JSON.stringify({ contents: [{ parts }], generationConfig })
       });
       const json = await res.json().catch(() => ({}));
       return { ok: res.ok, status: res.status, json, model: cleanMdl };
     };
 
-    let attempt = await callOnce(model);
+    let attempt = await callOnce(model, expectJson);
+    if (!attempt.ok && expectJson && attempt.status === 400 && /response_?mime|json/i.test(attempt.json?.error?.message || '')) {
+      attempt = await callOnce(model, false);
+    }
     if (!attempt.ok) {
       const errMsg = attempt.json?.error?.message || `Gemini HTTP ${attempt.status}`;
       if (attempt.status === 404 || /no longer available|not found/i.test(errMsg)) {
@@ -373,7 +392,7 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
           }
         } catch {}
         for (const cand of candidates) {
-          const retry = await callOnce(cand);
+          const retry = await callOnce(cand, expectJson);
           if (retry.ok) {
             attempt = retry;
             break;
@@ -384,8 +403,15 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
         throw new Error(attempt.json?.error?.message || `Gemini HTTP ${attempt.status}`);
       }
     }
-    const txt = attempt.json?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    return { provider, model: attempt.model, text: txt, data: expectJson ? extractJsonFromText(txt) : null };
+    const cand0 = attempt.json?.candidates?.[0] || {};
+    const candParts = Array.isArray(cand0?.content?.parts) ? cand0.content.parts : [];
+    const answerParts = candParts.filter(p => !p?.thought && typeof p?.text === 'string' && p.text.trim());
+    const txt = (answerParts.length ? answerParts : candParts)
+      .map(p => (typeof p?.text === 'string' ? p.text : ''))
+      .join('\n')
+      .trim();
+    const finishReason = cand0?.finishReason || '';
+    return { provider, model: attempt.model, text: txt, finishReason, data: expectJson ? extractJsonFromText(txt) : null };
   }
 
   if (provider === 'anthropic') {
@@ -408,10 +434,10 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
     const callAnthropic = async (useThinking) => {
       const body = {
         model,
-        max_tokens: useThinking ? 8192 : 6144,
+        max_tokens: useThinking ? 12000 : 8192,
         messages: [{ role: 'user', content }]
       };
-      if (useThinking) body.thinking = { type: 'enabled', budget_tokens: 1600 };
+      if (useThinking) body.thinking = { type: 'enabled', budget_tokens: 2048 };
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -471,13 +497,13 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
 
   const isQwenProvider = provider === 'qwen' || provider === 'qwen_us' || provider === 'qwen_cn';
 
-  const callOpenAiStyle = async (thinkingOpt) => {
+  const callOpenAiStyle = async (thinkingOpt, tokensCap = maxTokens) => {
     const payload = {
       model,
-      max_tokens: maxTokens,
+      max_tokens: Math.max(4096, Number(tokensCap) || 8192),
       messages: [{ role: 'user', content: contentParts }]
     };
-    if (expectJson && provider === 'openai') {
+    if (expectJson && (provider === 'openai' || isQwenProvider)) {
       payload.response_format = { type: 'json_object' };
     }
     if (isQwenProvider && thinkingOpt !== 'omit') {
@@ -485,7 +511,7 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
       // Explicitly send enable_thinking: false in Fast/Standard mode!
       if (thinkingOpt === 'on') {
         payload.enable_thinking = true;
-        payload.thinking_budget = 1600;
+        payload.thinking_budget = 2048;
       } else {
         payload.enable_thinking = false;
       }
@@ -504,15 +530,18 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
   const initialThinkingOpt = deepThinking
     ? ((isQwenProvider || provider === 'openrouter') ? 'on' : 'omit')
     : (isQwenProvider ? 'off' : 'omit');
-  let attempt = await callOpenAiStyle(initialThinkingOpt);
-  // Auto-fallback cleanly if a specific model does not accept enable_thinking / reasoning
-  if (!attempt.ok && initialThinkingOpt !== 'omit' && (attempt.status === 400 || attempt.status === 422)) {
-    attempt = await callOpenAiStyle('omit');
+  let attempt = await callOpenAiStyle(initialThinkingOpt, maxTokens);
+  // Auto-fallback cleanly if a specific model rejects enable_thinking / reasoning / large max_tokens
+  if (!attempt.ok && (attempt.status === 400 || attempt.status === 422)) {
+    const errTxt = String(attempt.json?.error?.message || '');
+    const safeCap = /max_tokens|token/i.test(errTxt) ? 4096 : maxTokens;
+    attempt = await callOpenAiStyle('omit', safeCap);
   }
   if (!attempt.ok) throw new Error(attempt.json?.error?.message || `${provider} HTTP ${attempt.status}`);
-  const msgObj = attempt.json?.choices?.[0]?.message || {};
+  const choice0 = attempt.json?.choices?.[0] || {};
+  const msgObj = choice0.message || {};
   const txt = msgObj.content || '';
-  return { provider, model, text: txt, reasoning: msgObj.reasoning_content || '', data: expectJson ? extractJsonFromText(txt) : null };
+  return { provider, model, text: txt, finishReason: choice0.finish_reason || '', reasoning: msgObj.reasoning_content || '', data: expectJson ? extractJsonFromText(txt) : null };
 }
 
 async function listAvailableModels(overrideConfig = null) {
@@ -1007,7 +1036,8 @@ async function refineCadSpecWithAI({ cadSpec, prompt, history = [], planBuffer =
   // Complex  = FREEFORM (step-by-step guided OpenCASCADE Replicad, deep thinking 1600, HD vision)
   const useDeepThinking = isComplexMode && !errorContext;
   const imageDetail = isComplexMode || visualAudit ? 'high' : 'auto';
-  const maxTokens = isComplexRead ? 3000 : isComplexMode ? 6144 : 2800;
+  // Generous output budget so the AI is NEVER artificially cut off mid-JSON or mid-code
+  const maxTokens = isComplexMode ? 12000 : 8192;
 
   const machinesCtx = (isComplexMode && !compactFollowUp && !isComplexRead) ? getWorkshopMachinesContext() : '';
   const lockedParams = (cleanSpec.params || []).filter(p => p.confidence === 'locked');
@@ -1203,6 +1233,10 @@ ${REPLICAD_FREE_DOC}`;
     }
     if (resp?.text && resp.text.trim()) {
       const plain = resp.text.trim();
+      const looksLikeBrokenJson = /^```(?:json)?\s*\{/i.test(plain) || /^\{[\s\S]*"(?:reply|cadSpec|complexBrief)"/i.test(plain);
+      const cleanReply = looksLikeBrokenJson
+        ? `⚠️ La réponse JSON du modèle « ${resp.model} » a été interrompue ou mal formatée${resp.finishReason ? ` (${resp.finishReason})` : ''}. Renvoyez votre demande (ou passez sur « gemini-3.5-flash » plutôt que « flash-lite » dans Administration → Configuration IA).`
+        : plain;
       return {
         mode: `${resp.provider}_vision_ai`,
         workMode: isComplexMode ? 'complex' : 'standard',
@@ -1211,10 +1245,10 @@ ${REPLICAD_FREE_DOC}`;
         model: resp.model,
         usedVision: hasVision,
         thinking: null,
-        reply: plain,
+        reply: cleanReply,
         modified: false,
         cadSpec: cleanSpec,
-        changesSummary: plain
+        changesSummary: cleanReply
       };
     }
     throw new Error(`Réponse vide du modèle IA (${aiCfg.resolvedProvider}).`);
