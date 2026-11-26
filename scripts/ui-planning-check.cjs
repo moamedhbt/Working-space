@@ -25,7 +25,25 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   }
   if(viewport.width<768)await page.locator('nav').getByRole('button',{name:'Planning',exact:true}).click();else await page.getByText('Planning & Gantt',{exact:true}).click();
   await page.getByText('Planning des machines',{exact:true}).waitFor();
-  for(const mode of ['Semaine','Mois','Jour']) await page.getByRole('button',{name:mode,exact:true}).click();
+  const mutations=[];const navListener=req=>{if(req.url().includes('/api/')&&!['GET','HEAD'].includes(req.method()))mutations.push(`${req.method()} ${req.url()}`)};
+  page.on('request',navListener);
+  await page.getByRole('button',{name:'Semaine',exact:true}).click();
+  await page.getByRole('button',{name:'Mois',exact:true}).click();
+  const year=await page.evaluate(()=>new Date().getFullYear());
+  if(await page.getByRole('button',{name:/^Ouvrir .* \d{4}$/}).count()!==12)throw Error('La vue annuelle ne montre pas exactement 12 mois');
+  await page.getByRole('button',{name:'Période suivante'}).click();
+  await page.getByRole('button',{name:`Ouvrir janvier ${year+1}`,exact:true}).waitFor();
+  await page.getByRole('button',{name:'Période précédente'}).click();
+  await page.getByRole('button',{name:`Ouvrir janvier ${year}`,exact:true}).click();
+  await page.getByRole('button',{name:'← Retour aux 12 mois'}).waitFor();
+  await page.getByRole('button',{name:`Ouvrir la journée ${year}-01-01`,exact:true}).click();
+  if(await page.getByRole('button',{name:'Jour',exact:true}).getAttribute('aria-pressed')!=='true')throw Error('Le jour sélectionné ne s’ouvre pas');
+  await page.getByRole('button',{name:'Semaine',exact:true}).click();
+  if(await page.getByRole('button',{name:'Semaine',exact:true}).getAttribute('aria-pressed')!=='true')throw Error('La vue semaine ne s’ouvre pas');
+  await page.getByRole('button',{name:'Aujourd’hui',exact:true}).click();
+  await page.getByRole('button',{name:'Jour',exact:true}).click();
+  page.off('request',navListener);if(mutations.length)throw Error(`Navigation a modifié des données : ${mutations.join(', ')}`);
+  console.log(`✅ UI ${viewport.width} : année, 12 mois, mois → jour et navigation sans modification`);
   if(createdId) await page.getByLabel('OF à avancer').selectOption(createdId);
   const draftResponse=page.waitForResponse(r=>r.url().endsWith('/api/planning/drafts')&&r.request().method()==='POST');
   await page.getByRole('button',{name:'Calculer un brouillon'}).click();await page.getByText('Voir les changements').waitFor();
@@ -33,6 +51,14 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   if(createdId) {
     const item=draft.operations.find(o=>o.pieceId===createdId);if(!item)throw Error('Opération créée absente du brouillon');
     const first=item.segments[0], target=new Date(first.date+'T12:00:00');
+    await page.getByRole('button',{name:'Mois',exact:true}).click();
+    const firstMonth=new Date(first.date+'T12:00:00').toLocaleDateString('fr-FR',{month:'long',year:'numeric'});
+    const firstYear=Number(first.date.slice(0,4)),currentYear=new Date().getFullYear();
+    for(let i=currentYear;i<firstYear;i++)await page.getByRole('button',{name:'Période suivante'}).click();
+    const monthCard=page.getByRole('button',{name:`Ouvrir ${firstMonth}`,exact:true});
+    const monthText=await monthCard.textContent();if(!/[1-9]\d* OF affiché/.test(monthText))throw Error('Le mois du brouillon ne compte pas les OF affichés');
+    await page.getByRole('button',{name:'Aujourd’hui',exact:true}).click();
+    await page.getByRole('button',{name:'Jour',exact:true}).click();
     const diff=await page.evaluate(date=>{const now=new Date();now.setHours(12,0,0,0);return Math.round((new Date(date+'T12:00:00')-now)/86400000)},first.date);
     if(diff<0 || diff>60)throw Error('Date de test inattendue');
     for(let i=0;i<diff;i++)await page.getByRole('button',{name:'Période suivante'}).click();
