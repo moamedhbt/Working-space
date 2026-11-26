@@ -21,6 +21,7 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
     if(state.pieces.find(p=>p.id===created.id)?.operations[0]?.machineTypeRequis!=='Fraisage CNC') throw Error('Le type choisi à la création ne parvient pas à la gamme');
     createdId=created.id;
     await page.evaluate(async id=>{const h={'Content-Type':'application/json',Authorization:`Bearer ${localStorage.getItem('atelier_token')}`}; for(const action of ['be-validate','chef-validate']){const r=await fetch(`/api/pieces/${id}/${action}`,{method:'POST',headers:h,body:'{}'});if(!r.ok)throw Error(`Validation ${action} failed`) }},createdId);
+    await page.evaluate(async()=>{const r=await fetch('/api/machines',{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${localStorage.getItem('atelier_token')}`},body:JSON.stringify({nom:'Fraiseuse alternative UI',type:'Fraisage CNC'})});if(!r.ok)throw Error('Machine alternative non créée')});
     console.log('✅ UI : type choisi lors de la création de l’OF');
   }
   if(viewport.width<768)await page.locator('nav').getByRole('button',{name:'Planning',exact:true}).click();else await page.getByText('Planning & Gantt',{exact:true}).click();
@@ -96,6 +97,19 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   if((await saveInstruction).status()!==200)throw Error('Échec enregistrement consigne');
   await chefPage.getByText('Vérifier le bridage avant démarrage').waitFor();
   console.log('✅ UI chef : tableau de bord, bilan, IA hors ligne et consigne');
+  const beforeProposal=await chefPage.evaluate(async()=>{const h={Authorization:`Bearer ${localStorage.getItem('atelier_token')}`};return (await (await fetch('/api/state',{headers:h})).json()).pieces.find(p=>p.nom==='Essai type UI').operations[0].machineId});
+  const proposeSelect=chefPage.getByLabel(/^Machine à proposer pour/).first();
+  const alternative=await proposeSelect.locator('option').nth(1).getAttribute('value');
+  await proposeSelect.selectOption(alternative);chefPage.once('dialog',dialog=>dialog.accept());
+  const proposed=chefPage.waitForResponse(r=>r.url().endsWith('/api/planning/drafts/reassign')&&r.request().method()==='POST');
+  await chefPage.getByRole('button',{name:'Voir l’impact dans un brouillon'}).first().click();
+  const proposedResponse=await proposed;if(proposedResponse.status()!==201)throw Error(`Proposition fiche : ${await proposedResponse.text()}`);
+  await chefPage.getByText('Voir les changements').waitFor();await chefPage.getByText('Fraiseuse alternative UI',{exact:false}).first().waitFor();
+  const afterProposal=await chefPage.evaluate(async()=>{const h={Authorization:`Bearer ${localStorage.getItem('atelier_token')}`};return (await (await fetch('/api/state',{headers:h})).json()).pieces.find(p=>p.nom==='Essai type UI').operations[0].machineId});
+  if(beforeProposal!==afterProposal)throw Error('La proposition a modifié la machine avant publication');
+  await chefPage.getByRole('button',{name:/Ordres & Gammes/}).click();
+  console.log('✅ UI fiche → brouillon : impacts visibles et machine inchangée avant publication');
+
   await chefPage.getByRole('button',{name:'Estimation matière',exact:true}).click();
   const fixtureId=await chefPage.evaluate(async()=>{const h={Authorization:`Bearer ${localStorage.getItem('atelier_token')}`};return (await (await fetch('/api/state',{headers:h})).json()).pieces.find(p=>p.nom==='Essai type UI').id});
   if(await chefPage.getByLabel('OF associé').inputValue()!==fixtureId)throw Error('L’OF sélectionné n’est pas repris dans matière');

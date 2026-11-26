@@ -107,6 +107,7 @@ try {for(let i=0;i<60;i++){try{if((await fetch(base+'/api/tv')).ok)break;}catch{
  // Machine reassignment is a preview until confirmed; type mismatch is rejected.
  const newMachine=await req('/api/machines','POST',{nom:'Tour CNC supplémentaire',type:'Tournage CNC'},d);assert.equal(newMachine.status,201);
  const beforeMove=await req('/api/state','GET',null,d);const movingOp=beforeMove.data.pieces.find(p=>p.id===id).operations[0].id;
+ db.prepare("UPDATE operations SET machineTypeRequis='Tournage CNC' WHERE id=?").run(movingOp);
  assert.equal((await req('/api/planning/drafts/reassign','POST',{operationId:movingOp,machineId:'m2'},d)).status,400);
  assert.equal((await req('/api/planning/drafts/reassign','POST',{operationId:movingOp,machineId:newMachine.data.id},u)).status,403);
  const move=await req('/api/planning/drafts/reassign','POST',{operationId:movingOp,machineId:newMachine.data.id},d);assert.equal(move.status,201);
@@ -114,6 +115,7 @@ try {for(let i=0;i<60;i++){try{if((await fetch(base+'/api/tv')).ok)break;}catch{
  const beforeConfirm=await req('/api/state','GET',null,d);assert.equal(beforeConfirm.data.pieces.find(p=>p.id===id).operations[0].machineId,'m1');
  assert.equal((await req(`/api/planning/drafts/${move.data.proposal.id}/publish`,'POST',{},d)).status,200);
  const afterConfirm=await req('/api/state','GET',null,d);assert.equal(afterConfirm.data.pieces.find(p=>p.id===id).operations[0].machineId,newMachine.data.id);
+ assert.equal(afterConfirm.data.pieces.find(p=>p.id===id).operations[0].machineTypeRequis,''); // explicit machine remains imposed in later calculations
  // Same operator may run two different machines; declared unavailability blocks starting.
  const p2=await req('/api/pieces','POST',{nom:'Autre machine',chuteDispo:true,machineId:'m2',operateurId:'u4',tempsPrevuMin:40},d);assert.equal(p2.status,201);
  assert.equal((await req(`/api/pieces/${p2.data.id}/be-validate`,'POST',{},d)).status,200);

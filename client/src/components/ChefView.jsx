@@ -24,6 +24,9 @@ export default function ChefView({ state, user, reload, search = '' }) {
   const [editMachineForm, setEditMachineForm] = useState({ nom: '', type: '', tauxHoraire: 2500, capaciteJourMin: 480, intervalleEntretienH: 200 });
   const [newOpByPiece, setNewOpByPiece] = useState({});
   const [materialRequest,setMaterialRequest] = useState(null);
+  const [planningProposal,setPlanningProposal] = useState(null);
+  const [machineProposals,setMachineProposals] = useState({});
+  const [proposalBusy,setProposalBusy] = useState(false);
   const [toast, setToast] = useState({ type: 'ok', text: '' });
 
   function showToast(text, type = 'ok') {
@@ -180,6 +183,20 @@ export default function ChefView({ state, user, reload, search = '' }) {
     }
   }
 
+  async function proposeMachine(piece, op) {
+    const machineId = machineProposals[op.id];
+    if (!machineId || proposalBusy) return;
+    if (!window.confirm(`Préparer un nouveau brouillon pour ${piece.id} · ${op.libelle} ? Il remplacera l’aperçu actuellement ouvert dans Planning, sans modifier la gamme ni publier.`)) return;
+    setProposalBusy(true);
+    try {
+      const result = await api('/api/planning/drafts/reassign', 'POST', {operationId:op.id, machineId});
+      setPlanningProposal(result.proposal);
+      setTab('planning');
+      showToast('Brouillon préparé : vérifiez les changements et la compatibilité avant publication.');
+    } catch (e) { showToast(e.message, 'err'); }
+    finally { setProposalBusy(false); }
+  }
+
   async function updateOperationField(opId, payload, input) {
     const piece = state.pieces.find(p => (p.operations || []).some(o => o.id === opId));
     const op = piece?.operations.find(o => o.id === opId);
@@ -284,7 +301,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
 
       {/* TAB 2: PLANNING & IA */}
       <div className={tab === 'planning' ? 'block' : 'hidden'}>
-        <ChefPlanningTab state={state} reload={reload} showToast={showToast} />
+        <ChefPlanningTab state={state} reload={reload} showToast={showToast} incomingProposal={planningProposal} />
       </div>
 
       {/* TAB 3: ORDRES & GAMMES MULTI-OPERATIONS (REGLAGE vs USINAGE + SOUS-TRAITANCE) */}
@@ -384,7 +401,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
                   </form>
 
                   <div className="rounded border border-cyan-500/20 bg-cyan-500/5 p-2 text-[11px] text-slate-300">
-                    Les machines, opérateurs et temps se règlent dans chaque opération ci-dessous. La validation chef ne publie pas le planning : préparez et publiez un brouillon dans Planning.
+                    Les machines, opérateurs et temps se règlent dans chaque opération ci-dessous. Le changement direct est immédiat ; pour une autre machine de même type, utilisez le brouillon pour voir son impact. La validation chef ne publie pas le planning : préparez et publiez un brouillon dans Planning.
                     <span className="ml-1 font-medium">{p.planningValide ? 'Planning publié.' : 'Planning non publié ou à republier.'}</span>
                   </div>
                   {/* GAMME MULTI-OPERATIONS WITH SETUP + UNIT TIME + SUBCONTRACTING */}
@@ -416,6 +433,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
                             <>
                               <div className="md:col-span-2">
                                 <select
+                                  aria-label={`Machine actuelle pour ${op.libelle}`}
                                   value={op.machineId || ''}
                                   onChange={e => updateOperationField(op.id, { machineId: e.target.value })}
                                   disabled={p.statut === 'Clôturé' || ['Terminée', 'En cours', 'Panne machine'].includes(op.statut)}
@@ -431,6 +449,17 @@ export default function ChefView({ state, user, reload, search = '' }) {
                                   {[...new Set(activeMachines.map(m=>m.type).filter(Boolean))].sort().map(t=><option key={t} value={t}>Auto · {t}</option>)}
                                 </select>
                                 {op.machineTypeRequis && <p className="text-[10px] text-amber-300">Choix par type seulement : vérifiez les capacités.</p>}
+                                {op.statut === 'En attente' && p.statut !== 'Clôturé' && (() => {
+                                  const current = state.machines.find(m => m.id === op.machineId);
+                                  const alternatives = activeMachines.filter(m => m.id !== op.machineId && m.type && m.type === current?.type && !m.enPanne);
+                                  return alternatives.length > 0 && <div className="mt-2 space-y-1">
+                                    <select aria-label={`Machine à proposer pour ${op.libelle}`} value={machineProposals[op.id] || ''} onChange={e => setMachineProposals(prev => ({...prev, [op.id]:e.target.value}))} className="w-full p-1 rounded bg-[#0B0F14] border border-cyan-700 text-[11px]">
+                                      <option value="">Autre machine de même type…</option>
+                                      {alternatives.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
+                                    </select>
+                                    <button type="button" disabled={!machineProposals[op.id] || proposalBusy} onClick={() => proposeMachine(p, op)} className="text-[10px] text-cyan-300 underline disabled:opacity-40">Voir l’impact dans un brouillon</button>
+                                  </div>;
+                                })()}
                               </div>
                               <div className="md:col-span-2">
                                 <select

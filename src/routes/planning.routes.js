@@ -92,6 +92,7 @@ function saveProposal(reqUser, priorityFirst = null, reassignment = null, preser
   const proposal = createProposal({pieces:scenario, machines, users, settings:getSettings(), priorityFirst, unavailable:queryAll('SELECT * FROM planning_unavailability'), preservedSegments});
   if(preservePublished) proposal.warnings.unshift(`Adaptation : ${proposal.preservedPieceIds.length} OF publiés conservés lorsque leurs créneaux restent valides. Les autres sont recalculés ; contrôlez les délais.`);
   if (reassignment) proposal.warnings.push('Changement de machine : vérifiez dimensions, commande CNC, bridage et outillage avant publication.');
+  if (reassignment) proposal.reassignment = reassignment;
   proposal.version = 6;
   proposal.changes = proposalChanges(proposal, pieces);
   const id = crypto.randomUUID();
@@ -286,6 +287,9 @@ router.post('/planning/drafts/:id/publish', auth, requireRole('directeur', 'chef
       if(item.running) continue;
       const first=item.segments[0], last=item.segments[item.segments.length-1];
       runSql('UPDATE operations SET machineId = ?, datePlanifiee = ?, debutStr = ?, finStr = ? WHERE id = ?', [item.machineId,first.date,first.start,last.end,item.opId]);
+      if (plan.reassignment?.operationId === item.opId && plan.reassignment.machineId === item.machineId) {
+        runSql("UPDATE operations SET machineTypeRequis = '' WHERE id = ?", [item.opId]);
+      }
       updated.add(item.pieceId);
     }
     for (const id of plan.blockedPieceIds || []) runSql('UPDATE pieces SET planningValide = 0 WHERE id = ?', [id]);
