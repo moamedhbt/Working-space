@@ -1009,6 +1009,22 @@ router.post('/pieces/:id/operations', auth, requireRole('directeur', 'chef'), (r
   res.status(201).json({ ok: true, id: opId });
 });
 
+// A shop-floor instruction is separate from planning edits: it can be updated
+// while work is running and never changes the publication or assigned resources.
+router.put('/operations/:opId/consigne',auth,requireRole('directeur','chef'),(req,res)=>{
+  const op=queryOne('SELECT o.*, p.statut AS pieceStatut FROM operations o JOIN pieces p ON p.id=o.pieceId WHERE o.id=?',[req.params.opId]);
+  if(!op)return res.status(404).json({error:'Opération introuvable.'});
+  if(op.estSousTraitance || op.statut==='Terminée' || ['Clôturé','Refusé'].includes(op.pieceStatut))return res.status(400).json({error:'Consigne disponible uniquement pour une opération interne non terminée.'});
+  if(typeof req.body?.consigne!=='string'||req.body.consigne.length>500)return res.status(400).json({error:'La consigne doit contenir au maximum 500 caractères.'});
+  const consigne=req.body.consigne.trim();
+  transaction(()=>{
+    runSql('UPDATE operations SET consigneChef=?,consigneAuteur=?,consigneAtMs=? WHERE id=?',[consigne,req.user.nom,Date.now(),op.id]);
+    logPieceEvent(op.pieceId,req.user,'consigne',consigne?'Consigne atelier mise à jour':'Consigne atelier supprimée',`${op.libelle}${consigne?` : ${consigne}`:''}`);
+    logAudit(req.user,'CONSIGNE ATELIER',`${op.pieceId} · ${op.libelle} · ${consigne?'mise à jour':'supprimée'}`);
+  });
+  res.json({ok:true});
+});
+
 router.put('/operations/:opId', auth, requireRole('directeur', 'chef'), (req, res) => {
   const { opId } = req.params;
   const op = queryOne('SELECT * FROM operations WHERE id = ?', [opId]);

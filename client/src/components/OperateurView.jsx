@@ -372,6 +372,8 @@ export default function OperateurView({ state, user, reload }) {
               )}
             </div>
 
+            {op.consigneChef && <div className="p-3 rounded border border-amber-500/40 bg-amber-500/10 text-xs text-amber-100 whitespace-pre-wrap break-words"><strong>Consigne du chef</strong>{op.consigneAuteur ? ` · ${op.consigneAuteur}` : ''}<br/>{op.consigneChef}</div>}
+
             {waitingPrev && op.statut === 'En attente' && (
               <div className="p-2 rounded bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300">
                 Opération précédente en attente : « {prevOp.libelle} » ({prevOp.statut})

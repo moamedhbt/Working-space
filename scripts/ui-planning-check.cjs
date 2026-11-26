@@ -54,12 +54,37 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
  try {
   await chefPage.goto(`http://127.0.0.1:${port}/`);
   await chefPage.getByRole('button',{name:'Chef Atelier',exact:true}).click();
+  await chefPage.getByText('Aujourd’hui dans l’atelier').waitFor();
+  await chefPage.getByText('Blocages à suivre').waitFor();
+  await chefPage.getByText('Bilan du jour et suite').click();
+  await chefPage.getByText('À poursuivre ou préparer', {exact:false}).waitFor();
+  await chefPage.getByRole('button',{name:'Demander une synthèse'}).click();
+  await chefPage.getByText('Aucun fournisseur IA actif.',{exact:false}).waitFor();
+  await chefPage.getByRole('button',{name:/Ordres & Gammes/}).click();
+  await chefPage.getByRole('button',{name:/Essai type UI/}).click();
+  await chefPage.getByRole('button',{name:'Ajouter une consigne opérateur'}).click();
+  await chefPage.getByPlaceholder('Ex. : contrôler le bridage avant usinage').fill('Vérifier le bridage avant démarrage');
+  const saveInstruction=chefPage.waitForResponse(r=>r.url().includes('/consigne')&&r.request().method()==='PUT');
+  await chefPage.getByRole('button',{name:'Enregistrer',exact:true}).click();
+  if((await saveInstruction).status()!==200)throw Error('Échec enregistrement consigne');
+  await chefPage.getByText('Vérifier le bridage avant démarrage').waitFor();
+  console.log('✅ UI chef : tableau de bord, bilan, IA hors ligne et consigne');
+  await chefPage.evaluate(async()=>{
+    const h={'Content-Type':'application/json',Authorization:`Bearer ${localStorage.getItem('atelier_token')}`};
+    const state=await (await fetch('/api/state',{headers:h})).json();const piece=state.pieces.find(p=>p.nom==='Essai type UI');
+    const draft=await (await fetch('/api/planning/drafts',{method:'POST',headers:h,body:JSON.stringify({priorityFirst:piece.id})})).json();
+    const result=await fetch(`/api/planning/drafts/${draft.id}/publish`,{method:'POST',headers:h,body:'{}'});
+    if(!result.ok)throw Error('Publication de la fixture opérateur impossible');
+  });
   await chefPage.getByRole('button',{name:'Planning & IA'}).click();
   await chefPage.getByText('Planning des machines',{exact:true}).waitFor();
   await chefPage.getByRole('button',{name:'Calculer un brouillon'}).click();
   await chefPage.getByText('Voir les changements').waitFor();
   console.log('✅ UI chef mobile : planning et brouillon OK');
  } catch(e) {failed=true;console.error('❌ UI chef mobile',e.message)} finally {await chefPage.close()}
+ const opPage=await browser.newPage({viewport:{width:390,height:844}});
+ try{await opPage.goto(`http://127.0.0.1:${port}/`);await opPage.getByRole('button',{name:'Opérateur',exact:true}).click();await opPage.getByText('Vérifier le bridage avant démarrage').waitFor();console.log('✅ UI opérateur : consigne reçue');}
+ catch(e){failed=true;console.error('❌ UI opérateur consigne',e.message)}finally{await opPage.close()}
 } catch(e){failed=true;console.error(e.message)} finally {if(browser)await browser.close();proc.kill();fs.rmSync(dir,{recursive:true,force:true});}
 if(failed)process.exitCode=1;
 })();

@@ -934,6 +934,9 @@ function createSchema() {
       libelle TEXT NOT NULL,
       machineId TEXT REFERENCES machines(id) ON DELETE SET NULL,
       machineTypeRequis TEXT NOT NULL DEFAULT '',
+      consigneChef TEXT NOT NULL DEFAULT '',
+      consigneAuteur TEXT NOT NULL DEFAULT '',
+      consigneAtMs INTEGER NOT NULL DEFAULT 0,
       operateurId TEXT REFERENCES users(id) ON DELETE SET NULL,
       tempsReglageMin INTEGER DEFAULT 15,
       tempsUnitaireMin REAL DEFAULT 0,
@@ -1105,6 +1108,9 @@ function migrateLegacySchemaIfNeeded() {
   if (tableExists('operations')) {
     const opCols = [
       ['machineTypeRequis', "TEXT NOT NULL DEFAULT ''"],
+      ['consigneChef', "TEXT NOT NULL DEFAULT ''"],
+      ['consigneAuteur', "TEXT NOT NULL DEFAULT ''"],
+      ['consigneAtMs', 'INTEGER NOT NULL DEFAULT 0'],
       ['tempsReglageMin', 'INTEGER DEFAULT 15'],
       ['tempsUnitaireMin', 'REAL DEFAULT 0'],
       ['datePlanifiee', "TEXT DEFAULT ''"],

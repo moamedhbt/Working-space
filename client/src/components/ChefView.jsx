@@ -8,6 +8,8 @@ import MaterialCalculator from './MaterialCalculator';
 import ChefPlanningTab from './ChefPlanningTab';
 import CreateOfModal from './CreateOfModal';
 import TimelineModal from './TimelineModal';
+import OperationInstruction from './OperationInstruction';
+import ChefToday from './ChefToday';
 
 export default function ChefView({ state, user, reload, search = '' }) {
   const [tab, setTab] = useState('dashboard');
@@ -248,7 +250,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
       {/* 5-TAB BAR */}
       <div className="grid grid-cols-5 gap-1 bg-[#111821] border border-[#1E2A38] rounded-[6px] p-1 text-[11px] font-medium">
         {[
-          ['dashboard', 'Dashboard'],
+          ['dashboard', 'Aujourd’hui'],
           ['planning', 'Planning & IA'],
           ['ordres', `Ordres & Gammes (${sortedPieces.length})`],
           ['machines', `Machines${openPannes.length ? ` (${openPannes.length}!)` : ''}`],
@@ -266,116 +268,8 @@ export default function ChefView({ state, user, reload, search = '' }) {
         ))}
       </div>
 
-      {/* TAB 1: DASHBOARD */}
-      <div className={tab === 'dashboard' ? 'block space-y-4' : 'hidden'}>
-        <div className="cyber-card cyber-corners p-4 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <Bot className="w-5 h-5 text-[#22D3EE] shrink-0 mt-0.5" />
-              <div>
-                <h2 className="text-sm font-semibold text-white">Aide à l’ordonnancement</h2>
-                <p className="text-xs text-slate-400">Consultez les machines, préparez un brouillon et vérifiez les changements avant publication.</p>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button onClick={() => setShowCreateModal(true)} className="px-3 py-1.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer">
-                <Plus className="w-3.5 h-3.5" /> Nouvelle pièce
-              </button>
-              <button onClick={() => setTab('planning')} className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] text-[#0B0F14] text-xs font-semibold cursor-pointer">Ouvrir le planning</button>
-            </div>
-          </div>
-
-        </div>
-
-        {/* OPEN QUALIFIED STOPS FOR CHEF (OUTIL / MATIERE) */}
-        {(state.stops || []).filter(s => s.statut === 'Ouvert' && ['outil', 'matiere'].includes(s.categorie)).length > 0 && (
-          <div className="bg-amber-500/10 border border-amber-500/40 rounded-[6px] p-4 space-y-2 text-xs">
-            <div className="font-semibold text-amber-300 flex items-center gap-1.5">
-              <AlertTriangle className="w-4 h-4" /> Blocages Opérateurs (Outillage / Matière)
-            </div>
-            {(state.stops || []).filter(s => s.statut === 'Ouvert' && ['outil', 'matiere'].includes(s.categorie)).map(s => (
-              <div key={s.id} className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded bg-[#0B0F14] border border-amber-500/30">
-                <div>
-                  <span className="uppercase font-semibold text-amber-300">{s.categorie}</span>
-                  <span className="font-mono-num text-[#22D3EE] ml-2">{s.pieceId}</span>
-                  <span className="text-slate-300 ml-1.5">— {s.motif} ({s.operateurNom})</span>
-                </div>
-                <button type="button" onClick={() => resolveStop(s.id)} className="px-3 py-1 rounded bg-emerald-600 text-white font-semibold cursor-pointer">
-                  Résolu
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* ACTIVE BREAKDOWNS PANEL */}
-        {openPannes.length > 0 && (
-          <div className="bg-red-500/10 border border-red-500/40 rounded-[6px] p-4 space-y-2 text-xs">
-            <div className="font-semibold text-red-400 flex items-center gap-1.5">
-              <Wrench className="w-4 h-4" /> Pannes machines actives ({openPannes.length})
-            </div>
-            {openPannes.map(pa => (
-              <div key={pa.id} className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded bg-[#0B0F14] border border-red-500/30">
-                <div>
-                  <span className="font-semibold text-white">{pa.machineNom}</span>
-                  {pa.pieceId && <span className="font-mono-num text-[#22D3EE] ml-2">{pa.pieceId}</span>}
-                  {pa.operationLibelle && <span className="text-slate-400 ml-1">({pa.operationLibelle})</span>}
-                  <div className="text-red-300 mt-0.5">Motif : {pa.motif} · Déclarée par {pa.declarePar} ({pa.createdAt})</div>
-                </div>
-                <button onClick={() => resolvePanne(pa.id)} className="px-3 py-1.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer">
-                  Résoudre la panne
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {activeMachines.map(m => {
-            const ms = machineStatsById.get(m.id);
-            const machineOps = state.pieces
-              .filter(p => p.statut !== 'Clôturé')
-              .flatMap(p => (p.operations || []).filter(o => !o.estSousTraitance && o.machineId === m.id && o.statut !== 'Terminée').map(o => ({ ...o, piece: p })));
-            const hours = machineOps.reduce((s, o) => s + (o.tempsPrevuMin || 60), 0) / 60;
-            const capHours = (m.capaciteJourMin || 480) / 60;
-            const pct = Math.min(100, Math.round((hours / capHours) * 100));
-            const activeOp = machineOps.find(o => o.statut === 'En cours') || machineOps[0];
-            const waitingMat = activeOp && activeOp.piece.statut === 'À acheter';
-            const statusText = m.enPanne ? 'En panne' : waitingMat ? 'En attente matière' : activeOp ? activeOp.statut : 'Disponible';
-
-            return (
-              <div key={m.id} className={`cyber-card p-4 space-y-2.5 ${m.enPanne ? 'border-red-500/50' : ''}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-sm text-white truncate">{m.nom}</span>
-                  <span className={`px-2 py-0.5 rounded-[4px] border text-[10px] whitespace-nowrap ${
-                    m.enPanne ? 'bg-red-500/15 text-red-400 border-red-500/40' :
-                    waitingMat ? 'bg-amber-500/10 text-amber-400 border-amber-500/30' :
-                    'bg-[#0B0F14] text-[#22D3EE] border-[#1E2A38]'
-                  }`}>
-                    {statusText}
-                  </span>
-                </div>
-                <div className="text-xs text-slate-400">{m.type} · {activeOp ? activeOp.operateur : '—'}</div>
-                <div className="w-full h-1.5 bg-[#0B0F14] rounded-full overflow-hidden">
-                  <div className={`h-full ${m.enPanne ? 'bg-red-500' : waitingMat ? 'bg-amber-400' : 'bg-[#22D3EE]'}`} style={{ width: `${pct}%` }}></div>
-                </div>
-                <div className="flex justify-between text-[11px] font-mono-num text-slate-400">
-                  <span>{hours.toFixed(1)} h / {capHours.toFixed(0)} h</span>
-                  <span>{machineOps.length} op.</span>
-                </div>
-                {ms && ms.maintenanceStatut !== 'ok' && (
-                  <div className={`text-[10px] px-2 py-1 rounded border flex items-center gap-1 ${
-                    ms.maintenanceStatut === 'du' ? 'bg-red-500/15 border-red-500/30 text-red-300' : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
-                  }`}>
-                    <ShieldAlert className="w-3 h-3 shrink-0" />
-                    Entretien {ms.maintenanceStatut === 'du' ? 'DÉPASSÉ' : 'proche'} ({ms.heuresDepuisEntretien}h/{ms.intervalleEntretienH}h)
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      {/* Dashboard uses live workshop state and explicit actions, not a second scheduler. */}
+      {tab === 'dashboard' && <ChefToday state={state} onPlanning={()=>setTab('planning')} onNew={()=>setShowCreateModal(true)} onOrder={id=>{setExpanded(p=>({...p,[id]:true}));setTab('ordres')}} onResolveStop={resolveStop} onResolvePanne={resolvePanne}/>}
 
       {/* TAB 2: PLANNING & IA */}
       <div className={tab === 'planning' ? 'block' : 'hidden'}>
@@ -589,6 +483,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
                               </button>
                             )}
                           </div>
+                          {!op.estSousTraitance && op.statut !== 'Terminée' && p.statut !== 'Clôturé' && <OperationInstruction op={op} reload={reload} showToast={showToast}/>}
                         </div>
                       ))}
                     </div>

@@ -14,6 +14,13 @@ try {for(let i=0;i<60;i++){try{if((await fetch(base+'/api/tv')).ok)break;}catch{
  const before=await req('/api/state','GET',null,d);const original=before.data.pieces.find(p=>p.id===id); assert.equal(original.planningValide,false);
  const draft=await req('/api/planning/drafts','POST',{},d);assert.equal(draft.status,201); assert(draft.data.blockedPieceIds.includes(blocked.data.id));assert(draft.data.operations[0].segments.length>=2);
  const state=await req('/api/state','GET',null,d);assert.equal(state.data.pieces.find(p=>p.id===id).planningValide,false); // draft is isolated
+ const instructionOp=state.data.pieces.find(p=>p.id===id).operations[0].id;
+ assert.equal((await req(`/api/operations/${instructionOp}/consigne`,'PUT',{consigne:'Test'},'')).status,401);
+ assert.equal((await req(`/api/operations/${instructionOp}/consigne`,'PUT',{consigne:'Test'},u)).status,403);
+ assert.equal((await req(`/api/operations/${instructionOp}/consigne`,'PUT',{consigne:'x'.repeat(501)},d)).status,400);
+ assert.equal((await req(`/api/operations/${instructionOp}/consigne`,'PUT',{consigne:'Contrôler le bridage'},d)).status,200);
+ const operatorState=await req('/api/state','GET',null,u);assert.equal(operatorState.data.pieces.find(p=>p.id===id).operations[0].consigneChef,'Contrôler le bridage');
+ assert.equal((await req(`/api/planning/drafts/${draft.data.id}`,'GET',null,d)).data.stale,false);
  const absence={resourceType:'operator',resourceId:'u4',startDate:'2030-01-01',startTime:'08:00',endDate:'2030-01-01',endTime:'17:00',reason:'Test'};
  assert.equal((await req('/api/planning/unavailability','POST',absence,u)).status,403);
  const addAbsence=await req('/api/planning/unavailability','POST',absence,d);assert.equal(addAbsence.status,201);
@@ -49,12 +56,14 @@ try {for(let i=0;i<60;i++){try{if((await fetch(base+'/api/tv')).ok)break;}catch{
  assert.equal((await req(`/api/planning/unavailability/${conflictAdded.data.id}`,'DELETE',null,d)).status,200);
  assert.equal((await req(`/api/planning/drafts/${fresh.data.id}/publish`,'POST',{},d)).status,404);
  assert.equal((await req('/api/planning/copilot','POST',{question:'État atelier'},d)).status,503);
+ assert.equal((await req('/api/chef/briefing','POST',{},u)).status,403);assert.equal((await req('/api/chef/briefing','POST',{},d)).status,503);
  let mockAnswer={answer:'Je prépare une proposition.',action:'prioritize',pieceId:id};
  const fake=http.createServer((request,response)=>{request.resume();request.on('end',()=>{response.writeHead(200,{'Content-Type':'application/json'});response.end(JSON.stringify({choices:[{message:{content:typeof mockAnswer==='string'?mockAnswer:JSON.stringify(mockAnswer)},finish_reason:'stop'}]}));});});
  await new Promise(resolve=>fake.listen(0,'127.0.0.1',resolve));
  try {
    const settings=await req('/api/admin/ai-settings','PUT',{provider:'custom',baseUrl:`http://127.0.0.1:${fake.address().port}`,model:'mock'},d);assert.equal(settings.status,200);
    assert.equal((await req('/api/planning/copilot','POST',{question:'avance cet OF'},u)).status,403);
+   const brief=await req('/api/chef/briefing','POST',{},d);assert.equal(brief.status,200);assert.equal(brief.data.answer,'Je prépare une proposition.');
    const beforeAi=await req('/api/state','GET',null,d);
    const ai=await req('/api/planning/copilot','POST',{question:`avance ${id}`},d);assert.equal(ai.status,200);assert(ai.data.proposal && ai.data.proposal.id);
    const afterAi=await req('/api/state','GET',null,d);
@@ -92,6 +101,7 @@ try {for(let i=0;i<60;i++){try{if((await fetch(base+'/api/tv')).ok)break;}catch{
  assert.equal((await req(`/api/operations/${opA}/start`,'POST',{},u)).status,400);
  assert.equal((await req(`/api/planning/unavailability/${nowAbsence.data.id}`,'DELETE',null,d)).status,200);
  assert.equal((await req(`/api/operations/${opA}/start`,'POST',{},u)).status,200);
+ assert.equal((await req(`/api/operations/${opA}/consigne`,'PUT',{consigne:'Contrôler la pièce en cours'},d)).status,200);
  assert.equal((await req(`/api/operations/${opB}/start`,'POST',{},u)).status,200);
  assert.equal((await req(`/api/operations/${opA}`,'PUT',{machineId:'m2'},d)).status,409);
  // A requested machine type is stored and automatically assigned only in the draft.
