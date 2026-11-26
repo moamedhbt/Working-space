@@ -38,9 +38,14 @@ router.get('/settings', auth, (req, res) => {
 
 router.put('/settings', auth, requireRole('directeur', 'chef'), (req, res) => {
   const { workDays, shiftStart, shiftEnd } = req.body || {};
-  if (workDays !== undefined && (!Array.isArray(workDays) || workDays.length === 0)) {
-    return res.status(400).json({ error: 'Sélectionnez au moins un jour ouvré' });
+  if (workDays !== undefined && (!Array.isArray(workDays) || workDays.length === 0 || workDays.some(d => !Number.isInteger(d) || d < 0 || d > 6))) {
+    return res.status(400).json({ error: 'Sélectionnez des jours ouvrés valides' });
   }
+  const current = getSettings();
+  const start = shiftStart !== undefined ? shiftStart : current.shiftStart;
+  const end = shiftEnd !== undefined ? shiftEnd : current.shiftEnd;
+  const validTime = t => typeof t === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
+  if (!validTime(start) || !validTime(end) || start >= end) return res.status(400).json({ error: 'Horaires invalides : la fin doit être après le début.' });
   saveSettings({ workDays, shiftStart, shiftEnd });
   logAudit(req.user, 'CALENDRIER ATELIER MODIFIÉ', `${shiftStart || '08:00'}–${shiftEnd || '17:00'}`);
   res.json({ ok: true, settings: getSettings() });
@@ -283,6 +288,13 @@ router.post('/pannes/:id/resolve', auth, requireRole('directeur', 'chef'), (req,
       "UPDATE pannes SET statut = 'Résolue', dureeArretMin = ?, resolvedAt = ? WHERE id = ?",
       [dureeArretMin, new Date().toLocaleString('fr-FR'), id]
     );
+
+    // Un arrêt qualifié « panne » et son ticket partagent le même horodatage.
+    // Résoudre uniquement l'arrêt associé, jamais les autres blocages de l'opération.
+    if (panne.operationId && panne.createdAtMs) {
+      runSql("UPDATE operation_stops SET statut = 'Résolu', dureeMin = ?, resolvedAt = ?, resolvedBy = ? WHERE operationId = ? AND categorie = 'panne' AND statut = 'Ouvert' AND createdAtMs = ?",
+        [dureeArretMin, new Date().toLocaleString('fr-FR'), req.user.nom, panne.operationId, panne.createdAtMs]);
+    }
 
     if (panne.machineId) {
       const remaining = queryOne(

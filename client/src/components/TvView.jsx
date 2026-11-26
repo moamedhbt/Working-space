@@ -27,7 +27,7 @@ export default function TvView({ state }) {
   // Match by machineId so renaming a machine never hides an OF from the TV!
   const activeMachineIds = new Set(state.machines.filter(m => m.actif).map(m => m.id));
   const active = state.pieces.filter(
-    p => p.planningValide && p.statut !== 'Clôturé' && (!p.machineId || activeMachineIds.has(p.machineId))
+    p => (p.planningValide || (p.operations || []).some(o => ['En cours','En pause','Panne machine'].includes(o.statut) && (o.startedAt > 0 || o.tempsReelMin > 0))) && !['Clôturé','Refusé'].includes(p.statut) && (!p.machineId || activeMachineIds.has(p.machineId))
   );
   const openPannes = (state.pannes || []).filter(pa => pa.statut === 'Ouverte');
 

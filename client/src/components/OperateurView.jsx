@@ -43,11 +43,11 @@ export default function OperateurView({ state, user, reload }) {
   // Match strictly by operateurId === user.id so renaming an operator NEVER breaks their assigned tasks
   const myTasks = [];
   for (const piece of state.pieces) {
-    if (!piece.planningValide || piece.statut === 'Clôturé') continue;
+    if (piece.statut === 'Clôturé' || piece.statut === 'Refusé') continue;
     const ops = piece.operations || [];
     for (let i = 0; i < ops.length; i++) {
       const op = ops[i];
-      if (!op.estSousTraitance && op.operateurId === user.id) {
+      if (!op.estSousTraitance && op.operateurId === user.id && (piece.planningValide || ['En cours', 'En pause', 'Panne machine'].includes(op.statut))) {
         const prevOp = i > 0 ? ops[i - 1] : null;
         myTasks.push({ piece, op, opIndex: i + 1, opsTotal: ops.length, prevOp });
       }
@@ -440,7 +440,7 @@ export default function OperateurView({ state, user, reload }) {
             </div>
 
             {/* START OR RESUME */}
-            {(op.statut === 'En attente' || op.statut === 'En pause') && !matBlocked && (
+            {(op.statut === 'En attente' || op.statut === 'En pause') && !matBlocked && !waitingPrev && (
               <div className="flex flex-col sm:flex-row gap-2">
                 <button
                   type="button"

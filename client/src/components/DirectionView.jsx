@@ -11,6 +11,7 @@ import JSZip from 'jszip';
 import { api, getAuthToken } from '../api';
 import CreateOfModal from './CreateOfModal';
 import TimelineModal from './TimelineModal';
+import ChefPlanningTab from './ChefPlanningTab';
 
 function statusBadge(statut, urgence) {
   if (statut === 'À valider') return 'bg-purple-500/15 text-purple-300 border-purple-500/40';
@@ -30,7 +31,7 @@ function nowLinePercent() {
   return Math.max(0, Math.min(100, ((mins - start) / (end - start)) * 100));
 }
 
-export default function DirectionView({ state, user, reload, activePanel = 'overview', search = '' }) {
+export default function DirectionView({ state, user, reload, activePanel = 'overview', search = '', onOpenPlanning }) {
   const activeMachines = state.machines.filter(m => m.actif);
   const operators = state.users.filter(u => u.role === 'operateur' && u.actif !== 0);
 
@@ -271,7 +272,6 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
     totalReglageMin: 0, totalUsinageMin: 0, setupRatioPct: 0, totalArretPanneMin: 0,
     machineStats: [], operatorStats: [], aiInsights: []
   };
-  const aiRecs = state.aiRecommendations || [];
 
   function proposePriceAI(p) {
     const ops = p.operations || [];
@@ -290,16 +290,6 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
     const matCost = p.chuteDispo ? 1500 : 6000;
     const estimated = Math.round((machineCost + matCost) * 1.3);
     setPrices(prev => ({ ...prev, [p.id]: estimated }));
-  }
-
-  async function applyAiRec(rec) {
-    try {
-      await api('/api/planning/ai-apply', 'POST', { actionType: rec.actionType, payload: rec.payload });
-      showToast(`Action IA exécutée : ${rec.title}`);
-      reload();
-    } catch (e) {
-      showToast(e.message, 'err');
-    }
   }
 
   async function validateMaintenance(m) {
@@ -419,16 +409,6 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
       reload();
     } catch (err) {
       showToast(err.message, 'err');
-    }
-  }
-
-  async function validateAll() {
-    try {
-      await api('/api/planning/validate', 'POST');
-      showToast('Planning validé et publié sur les postes & TV.');
-      reload();
-    } catch (e) {
-      showToast(e.message, 'err');
     }
   }
 
@@ -907,7 +887,7 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
             <div className="min-w-0 cyber-card cyber-corners p-4 flex flex-col justify-between space-y-3">
               <div className="space-y-2">
                 <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-                  <Bot className="w-4 h-4 text-[#22D3EE]" /> Synthèse IA Direction
+                  <Bot className="w-4 h-4 text-[#22D3EE]" /> Synthèse atelier (indicateurs)
                 </h2>
                 <div className="space-y-1.5">
                   {(analytics.aiInsights || []).map((ins, i) => (
@@ -925,8 +905,8 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
                   ))}
                 </div>
               </div>
-              <button onClick={validateAll} className="w-full py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-xs font-medium text-slate-200 cursor-pointer">
-                Valider & Publier Planning
+              <button onClick={onOpenPlanning} className="w-full py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-xs font-medium text-slate-200 cursor-pointer">
+                Ouvrir le planning
               </button>
             </div>
           </div>
@@ -1020,28 +1000,6 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
               </div>
             ))}
           </div>
-
-          {/* IA DIRECTION RECOMMENDATIONS */}
-          {aiRecs.length > 0 && (
-            <div className="cyber-card cyber-corners p-4 space-y-2.5 text-xs">
-              <div className="font-semibold text-sm text-[#22D3EE] flex items-center gap-2">
-                <Bot className="w-4 h-4" /> Actions recommandées par l'IA
-              </div>
-              <div className="grid md:grid-cols-2 gap-2.5">
-                {aiRecs.map(rec => (
-                  <div key={rec.id} className="p-3 rounded bg-[#0B0F14] border border-[#1E2A38] flex items-center justify-between gap-3">
-                    <div>
-                      <div className="font-semibold text-white">{rec.title}</div>
-                      <div className="text-[11px] text-slate-400 mt-0.5">{rec.reason}</div>
-                    </div>
-                    <button onClick={() => applyAiRec(rec)} className="px-2.5 py-1.5 rounded bg-[#22D3EE]/15 border border-[#22D3EE]/40 text-[#22D3EE] hover:bg-[#22D3EE] hover:text-[#0B0F14] font-semibold shrink-0 cursor-pointer">
-                      Appliquer
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
 
           {/* MACHINE PERFORMANCE + PREVENTIVE MAINTENANCE */}
           <div className="cyber-card p-4 space-y-3">
@@ -1168,43 +1126,8 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
         </div>
       )}
 
-      {/* PANEL 3: PLANNING */}
-      {activePanel === 'planning' && (
-        <div className="space-y-4">
-          {filterBar}
-          <div className="cyber-card p-4 space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold text-white">Tableau de Planning Général ({filteredPieces.length})</h2>
-              <div className="flex flex-wrap gap-2">
-                <button onClick={exportPDF} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-xs flex items-center gap-1.5 cursor-pointer"><FileText className="w-3.5 h-3.5" /> PDF</button>
-                <button onClick={exportExcel} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-xs flex items-center gap-1.5 cursor-pointer"><FileSpreadsheet className="w-3.5 h-3.5" /> Excel</button>
-                <button onClick={validateAll} className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] text-[#0B0F14] font-semibold text-xs flex items-center gap-1.5 cursor-pointer"><CheckCircle className="w-3.5 h-3.5" /> Valider TV</button>
-              </div>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs min-w-[780px]">
-                <thead className="text-[10px] text-slate-500 uppercase border-b border-[#1E2A38]">
-                  <tr><th className="py-2">Ordre</th><th className="py-2">OF</th><th className="py-2">Pièce</th><th className="py-2">Machine</th><th className="py-2">Opérateur</th><th className="py-2">Ops</th><th className="py-2">Délai</th><th className="py-2">Statut</th></tr>
-                </thead>
-                <tbody className="divide-y divide-[#1E2A38]">
-                  {filteredPieces.map((p, i) => (
-                    <tr key={p.id}>
-                      <td className="py-2.5 font-mono-num">#{p.ordrePlanning || i + 1}</td>
-                      <td className="py-2.5 font-mono-num">{p.id}</td>
-                      <td className="py-2.5">{p.nom}</td>
-                      <td className="py-2.5 text-slate-400">{p.machine}</td>
-                      <td className="py-2.5 text-slate-400">{p.operateur}</td>
-                      <td className="py-2.5 font-mono-num text-[#22D3EE]">{p.opsTerminees}/{p.opsTotal}</td>
-                      <td className="py-2.5 font-mono-num">{p.delai}</td>
-                      <td className="py-2.5"><span className={`px-2 py-0.5 rounded-[4px] border text-[11px] ${statusBadge(p.statut, p.urgence)}`}>{p.statut}</span></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Planning unique partagé avec le chef d'atelier. */}
+      {activePanel === 'planning' && <ChefPlanningTab state={state} reload={reload} showToast={showToast} />}
 
       {/* PANEL 4: SIMULATOR */}
       {activePanel === 'simulator' && (

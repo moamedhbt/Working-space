@@ -43,7 +43,7 @@ app.get('/occt/replicad_single.wasm', (req, res) => {
   res.sendFile(wasmPath);
 });
 
-const DIST_DIR = path.join(__dirname, '../client/dist');
+const DIST_DIR = process.env.CLIENT_DIST_DIR ? path.resolve(process.env.CLIENT_DIST_DIR) : path.join(__dirname, '../client/dist');
 
 // Serve hashed Vite assets with immutable caching; NEVER cache index.html so Render deploys pick up new worker hashes immediately!
 app.use('/assets', express.static(path.join(DIST_DIR, 'assets'), {

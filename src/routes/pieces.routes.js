@@ -20,6 +20,7 @@ const {
   getMaintenanceLogs
 } = require('../db/database');
 const { analyzeScheduleAndAI } = require('../services/scheduler');
+const { createProposal } = require('../services/workshopPlanner');
 const { analyzePlanDocument, refineCadSpecWithAI } = require('../services/planAnalyzer');
 const { auth, requireRole } = require('../middleware/auth');
 
@@ -85,6 +86,29 @@ function runOperationAction(op, piece, action, body, reqUser) {
   const elapsedSegment = op.startedAt > 0 ? Math.max(1, Math.round((now - op.startedAt) / 60000)) : 0;
 
   if (action === 'start' || action === 'op-start') {
+    if (piece.statut === 'Clôturé' || piece.statut === 'Refusé') return { status: 400, error: 'OF clôturé ou refusé : démarrage impossible' };
+    if (!piece.validationDirection) return { status: 400, error: 'Validation Direction manquante' };
+    if (!piece.beValide && !piece.beNonRequis) return { status: 400, error: 'Validation BE manquante' };
+    if (!piece.chefValide) return { status: 400, error: 'Validation du chef manquante' };
+    if (!piece.planningValide) return { status: 400, error: 'Planning non publié par le chef ou la Direction' };
+    if (op.estSousTraitance) return { status: 400, error: 'Opération sous-traitée : utilisez le suivi de sous-traitance' };
+    if (op.statut === 'En cours') return { status: 400, error: 'Cette opération est déjà en cours' };
+    if (!['En attente', 'En pause'].includes(op.statut)) return { status: 400, error: 'Cette opération ne peut pas être démarrée dans son état actuel' };
+    const machine = op.machineId && queryOne('SELECT * FROM machines WHERE id = ?', [op.machineId]);
+    if (!machine || !machine.actif) return { status: 400, error: 'Machine manquante ou inactive' };
+    if (machine.enPanne) return { status: 400, error: 'Machine en panne : résolution nécessaire avant démarrage' };
+    const localNow = new Intl.DateTimeFormat('sv-SE', {timeZone:'Africa/Algiers', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hourCycle:'h23'}).format(new Date());
+    const unavailable = queryOne(`SELECT resourceType, reason FROM planning_unavailability
+      WHERE ((resourceType = 'machine' AND resourceId = ?) OR (resourceType = 'operator' AND resourceId = ?))
+      AND (startDate || ' ' || startTime) <= ? AND (endDate || ' ' || endTime) > ? LIMIT 1`,
+      [op.machineId, op.operateurId, localNow, localNow]);
+    if (unavailable) return {status:400,error:`${unavailable.resourceType === 'machine' ? 'Machine' : 'Opérateur'} indisponible${unavailable.reason ? ' : '+unavailable.reason : ''}`};
+    const occupying = queryOne("SELECT id FROM operations WHERE machineId = ? AND statut = 'En cours' AND id != ? LIMIT 1", [machine.id, op.id]);
+    if (occupying) return { status: 400, error: 'Machine déjà occupée par une autre opération en cours' };
+    const stop = queryOne("SELECT categorie FROM operation_stops WHERE operationId = ? AND statut = 'Ouvert' LIMIT 1", [op.id]);
+    if (stop) return { status: 400, error: `Blocage non résolu : ${stop.categorie}` };
+    const previous = queryOne("SELECT libelle FROM operations WHERE pieceId = ? AND (ordre < ? OR (ordre = ? AND rowid < (SELECT rowid FROM operations WHERE id = ?))) AND statut != 'Terminée' ORDER BY ordre, rowid LIMIT 1", [piece.id, op.ordre, op.ordre, op.id]);
+    if (previous) return { status: 400, error: `Opération précédente non terminée : ${previous.libelle}` };
     if (!piece.chuteDispo && !piece.achatFait) {
       return { status: 400, error: 'Matière non disponible : achat à valider avant démarrage' };
     }
@@ -166,6 +190,13 @@ function runOperationAction(op, piece, action, body, reqUser) {
   }
 
   if (action === 'finish' || action === 'op-finish') {
+    if (op.statut === 'Terminée') return { status: 400, error: 'Cette opération est déjà terminée' };
+    if (['Clôturé', 'Refusé'].includes(piece.statut)) return { status: 400, error: 'OF clôturé ou refusé' };
+    const previous = queryOne("SELECT libelle FROM operations WHERE pieceId = ? AND (ordre < ? OR (ordre = ? AND rowid < (SELECT rowid FROM operations WHERE id = ?))) AND statut != 'Terminée' ORDER BY ordre, rowid LIMIT 1", [piece.id, op.ordre, op.ordre, op.id]);
+    if (previous) return { status: 400, error: `Opération précédente non terminée : ${previous.libelle}` };
+    if (op.estSousTraitance && !['directeur','chef'].includes(reqUser.role)) return { status: 403, error: 'Retour de sous-traitance réservé au chef ou à la Direction' };
+    if (op.estSousTraitance && (!piece.validationDirection || (!piece.beValide && !piece.beNonRequis) || !piece.chefValide)) return { status: 400, error: 'Validations Direction, BE et chef requises pour enregistrer le retour de sous-traitance' };
+    if (!op.estSousTraitance && op.statut !== 'En cours') return { status: 400, error: 'Démarrez ou reprenez l’opération avant de la terminer' };
     const addMin = op.statut === 'En cours' ? elapsedSegment : 0;
     const newTotal = (op.tempsReelMin || 0) + addMin;
     const finalMins = newTotal > 0 ? newTotal : Math.max(1, op.tempsPrevuMin || 1);
@@ -227,6 +258,19 @@ router.get('/state', auth, (req, res) => {
 
   const analysis = analyzeScheduleAndAI(pieces, machines, users, pannes, settings);
 
+  // Planning alerts come from the same constraint engine as the chef's draft.
+  // Analytics below remain historical workshop indicators, not a second planning source.
+  let planningConflicts = [];
+  try {
+    const preview = createProposal({pieces,machines,users,settings,unavailable:queryAll('SELECT * FROM planning_unavailability')});
+    planningConflicts = [
+      ...preview.blockers.map(text=>({type:'blocage',severity:'high',text})),
+      ...preview.warnings.map(text=>({type:'prevision',severity:'medium',text}))
+    ];
+  } catch(err) {
+    planningConflicts = [{type:'planning',severity:'high',text:`Calcul du planning indisponible : ${err.message}`}];
+  }
+
   // Add stop cause breakdown to analytics
   const stopsByCat = { panne: 0, outil: 0, matiere: 0, plan_be: 0, pause: 0 };
   for (const s of stops) {
@@ -247,8 +291,8 @@ router.get('/state', auth, (req, res) => {
     settings,
     maintenanceLogs,
     auditLogs,
-    conflicts: analysis.conflicts,
-    aiRecommendations: analysis.aiRecommendations,
+    conflicts: planningConflicts,
+    aiRecommendations: [],
     analytics: analysis.analytics
   });
 });
@@ -259,11 +303,16 @@ router.post('/pieces', auth, requireRole('directeur', 'chef', 'be'), (req, res) 
     return res.status(400).json({ error: 'Le nom de la pièce est requis' });
   }
 
+  const requestedType = b.typeMachine === undefined ? '' : typeof b.typeMachine === 'string' ? b.typeMachine.trim() : null;
+  if (requestedType === null || requestedType.length > 150 || (requestedType && !queryOne('SELECT id FROM machines WHERE actif=1 AND type=?',[requestedType]))) return res.status(400).json({error:'Type de machine actif invalide.'});
   const id = getNextOfId();
-  const defaultMach = queryOne('SELECT id FROM machines WHERE actif = 1 ORDER BY id LIMIT 1');
+  const defaultMach = requestedType ? queryOne('SELECT id FROM machines WHERE actif = 1 AND type = ? ORDER BY id LIMIT 1',[requestedType]) : queryOne('SELECT id FROM machines WHERE actif = 1 ORDER BY id LIMIT 1');
   const defaultOp = queryOne("SELECT id FROM users WHERE role = 'operateur' AND actif = 1 ORDER BY id LIMIT 1");
 
-  const machineId = resolveMachineId(b.machineId, b.machine) || defaultMach?.id || null;
+  const requestedMachine = resolveMachineId(b.machineId, b.machine);
+  const matchingMachine = requestedMachine && (!requestedType || queryOne('SELECT id FROM machines WHERE id=? AND type=? AND actif=1',[requestedMachine,requestedType]));
+  if (b.estRepriseEnCours && requestedType && !matchingMachine) return res.status(400).json({error:'Pour une reprise, choisissez la machine réelle du type indiqué.'});
+  const machineId = (matchingMachine ? requestedMachine : null) || defaultMach?.id || null;
   const operateurId = resolveOperateurId(b.operateurId, b.operateur) || defaultOp?.id || null;
   const quantitePrevue = Math.max(1, parseInt(b.quantitePrevue || 10, 10) || 10);
   const tempsReglageMin = Math.max(0, parseInt(b.tempsReglageMin ?? 15, 10) || 0);
@@ -329,7 +378,7 @@ router.post('/pieces', auth, requireRole('directeur', 'chef', 'be'), (req, res) 
         opInitialStatut === 'En cours' ? Date.now() : 0,
         planningValide,
         maxOrder + 1,
-        (b.typeMachine || '').trim(),
+        requestedType,
         req.user.id,
         req.user.nom,
         req.user.role,
@@ -344,7 +393,7 @@ router.post('/pieces', auth, requireRole('directeur', 'chef', 'be'), (req, res) 
 
     const opsInput = Array.isArray(b.operations) && b.operations.length > 0
       ? b.operations
-      : [{ libelle: 'Usinage principal', machineId, operateurId, tempsReglageMin, tempsUnitaireMin, tempsPrevuMin }];
+      : [{ libelle: 'Usinage principal', machineId, operateurId, tempsReglageMin, tempsUnitaireMin, tempsPrevuMin, machineTypeRequis: b.estRepriseEnCours ? '' : requestedType }];
 
     opsInput.forEach((op, idx) => {
       const opMachId = resolveMachineId(op.machineId, op.machine) || machineId;
@@ -355,10 +404,10 @@ router.post('/pieces', auth, requireRole('directeur', 'chef', 'be'), (req, res) 
       const isFirst = idx === 0;
       runSql(
         `INSERT INTO operations (
-          id, pieceId, ordre, libelle, machineId, operateurId,
+          id, pieceId, ordre, libelle, machineId, operateurId, machineTypeRequis,
           tempsReglageMin, tempsUnitaireMin, tempsPrevuMin, tempsReelMin,
           startedAt, statut, quantiteBonne
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
           `op_${id}_${(idx + 1) * 10}_${Math.floor(Math.random() * 1000)}`,
           id,
@@ -366,6 +415,7 @@ router.post('/pieces', auth, requireRole('directeur', 'chef', 'be'), (req, res) 
           (op.libelle || `Opération ${idx + 1}`).trim(),
           opMachId,
           opUserId,
+          typeof op.machineTypeRequis === 'string' && queryOne('SELECT id FROM machines WHERE type=? AND actif=1',[op.machineTypeRequis]) ? op.machineTypeRequis : '',
           reg,
           unit,
           planned,
@@ -477,6 +527,7 @@ router.post('/pieces/:id/be-files', auth, requireRole('directeur', 'be', 'chef')
        VALUES (?,?,?,?,?,?,?,?,1,?,?,?)`,
       [fileId, id, categorie, revision, safeName, url, buf.length, String(notes).trim(), req.user.id, req.user.nom, new Date().toLocaleString('fr-FR')]
     );
+    runSql('UPDATE pieces SET beValide = 0, beNonRequis = 0, planningValide = 0 WHERE id = ?', [id]);
     if (categorie === 'plan') runSql('UPDATE pieces SET beNomFichier = ? WHERE id = ?', [`${safeName} (${revision})`, id]);
     if (categorie === 'cnc') runSql('UPDATE pieces SET beProgramme = ? WHERE id = ?', [`${safeName} (${revision})`, id]);
     if (categorie === '3d') runSql('UPDATE pieces SET beDessin3d = ? WHERE id = ?', [`${safeName} (${revision})`, id]);
@@ -496,7 +547,7 @@ router.post('/pieces/:id/validate-direction', auth, requireRole('directeur'), (r
   if (!piece) return res.status(404).json({ error: 'OF introuvable' });
 
   if (action === 'reject') {
-    runSql("UPDATE pieces SET validationDirection = 0, statut = 'Refusé' WHERE id = ?", [id]);
+    runSql("UPDATE pieces SET validationDirection = 0, planningValide = 0, statut = 'Refusé' WHERE id = ?", [id]);
     logAudit(req.user, 'OF REFUSÉ', `${id} refusé${motif ? ` : ${motif}` : ''}`);
     logPieceEvent(id, req.user, 'refus_direction', 'OF refusé par la Direction', motif || '');
     return res.json({ ok: true, statut: 'Refusé' });
@@ -532,7 +583,7 @@ router.post('/pieces/:id/be-validate', auth, requireRole('be', 'directeur'), (re
     );
     const updated = queryOne('SELECT * FROM pieces WHERE id = ?', [id]);
     if (updated.validationDirection && updated.chefValide && (updated.chuteDispo || updated.achatFait)) {
-      runSql("UPDATE pieces SET planningValide = 1, statut = 'Prêt atelier' WHERE id = ? AND statut IN ('À planifier', 'À acheter')", [id]);
+      runSql("UPDATE pieces SET statut = 'Prêt atelier' WHERE id = ? AND statut IN ('À planifier', 'À acheter')", [id]);
     }
     syncPieceFromOperations(id);
   });
@@ -552,7 +603,7 @@ router.post('/pieces/:id/chef-validate', auth, requireRole('chef', 'directeur'),
     runSql('UPDATE pieces SET chefValide = 1 WHERE id = ?', [id]);
     const updated = queryOne('SELECT * FROM pieces WHERE id = ?', [id]);
     if (updated.validationDirection && (updated.beValide || updated.beNonRequis) && (updated.chuteDispo || updated.achatFait)) {
-      runSql("UPDATE pieces SET planningValide = 1, statut = 'Prêt atelier' WHERE id = ? AND statut IN ('À planifier', 'À acheter')", [id]);
+      runSql("UPDATE pieces SET statut = 'Prêt atelier' WHERE id = ? AND statut IN ('À planifier', 'À acheter')", [id]);
     }
     syncPieceFromOperations(id);
   });
@@ -823,6 +874,9 @@ router.post('/pieces/:id/apply-fiche-ia', auth, requireRole('directeur', 'be', '
   const notesQualite = qualityParts.join(' — ');
 
   transaction(() => {
+    if (mat || notesQualite || replaceOperations) {
+      runSql('UPDATE pieces SET planningValide = 0, chefValide = 0, beValide = 0, beNonRequis = 0 WHERE id = ?', [id]);
+    }
     if (mat) {
       runSql('UPDATE pieces SET matiere = ? WHERE id = ?', [mat, id]);
     }
@@ -886,6 +940,7 @@ router.delete('/be-files/:fileId', auth, requireRole('directeur', 'be'), (req, r
   transaction(() => {
     runSql('DELETE FROM be_files WHERE id = ?', [f.id]);
     if (f.isActive) {
+      runSql('UPDATE pieces SET planningValide = 0, beValide = 0, beNonRequis = 0 WHERE id = ?', [f.pieceId]);
       const latest = queryOne(
         'SELECT * FROM be_files WHERE pieceId = ? AND categorie = ? ORDER BY rowid DESC LIMIT 1',
         [f.pieceId, f.categorie]
@@ -893,6 +948,9 @@ router.delete('/be-files/:fileId', auth, requireRole('directeur', 'be'), (req, r
       if (latest) {
         runSql('UPDATE be_files SET isActive = 1 WHERE id = ?', [latest.id]);
       }
+      const columns = {plan:'beNomFichier',cnc:'beProgramme','3d':'beDessin3d'};
+      const column = columns[f.categorie];
+      if (column) runSql(`UPDATE pieces SET ${column} = ? WHERE id = ?`, [latest ? `${latest.filename} (${latest.revision})` : '', f.pieceId]);
     }
   });
 
@@ -943,7 +1001,7 @@ router.post('/pieces/:id/operations', auth, requireRole('directeur', 'chef'), (r
         estSousTraitance, (b.sousTraitant || '').trim(), b.dateEnvoi || '', b.dateRetourPrevue || ''
       ]
     );
-    runSql('UPDATE pieces SET planningValide = 0 WHERE id = ?', [id]);
+    runSql('UPDATE pieces SET planningValide = 0, chefValide = 0 WHERE id = ?', [id]);
     syncPieceFromOperations(id);
   });
 
@@ -955,9 +1013,12 @@ router.put('/operations/:opId', auth, requireRole('directeur', 'chef'), (req, re
   const { opId } = req.params;
   const op = queryOne('SELECT * FROM operations WHERE id = ?', [opId]);
   if (!op) return res.status(404).json({ error: 'Opération introuvable' });
+  if (op.statut === 'En cours' || op.statut === 'Panne machine') return res.status(409).json({ error: 'Mettez l’opération en pause ou résolvez la panne avant de modifier son affectation ou ses temps.' });
   const piece = queryOne('SELECT * FROM pieces WHERE id = ?', [op.pieceId]);
 
   const b = req.body || {};
+  if (b.machineTypeRequis !== undefined && (typeof b.machineTypeRequis !== 'string' || b.machineTypeRequis.length > 150 || (b.machineTypeRequis && !queryOne('SELECT id FROM machines WHERE type = ? AND actif = 1', [b.machineTypeRequis])))) return res.status(400).json({error:'Type de machine actif invalide.'});
+  const machineTypeRequis = b.machineTypeRequis !== undefined ? b.machineTypeRequis : (op.machineTypeRequis || '');
   const libelle = b.libelle !== undefined && String(b.libelle).trim() ? String(b.libelle).trim() : op.libelle;
   const ordre = b.ordre !== undefined ? parseInt(b.ordre, 10) : op.ordre;
   const estSousTraitance = b.estSousTraitance !== undefined ? (b.estSousTraitance ? 1 : 0) : op.estSousTraitance;
@@ -991,19 +1052,19 @@ router.put('/operations/:opId', auth, requireRole('directeur', 'chef'), (req, re
   transaction(() => {
     runSql(
       `UPDATE operations
-       SET libelle = ?, ordre = ?, machineId = ?, operateurId = ?,
+       SET libelle = ?, ordre = ?, machineId = ?, operateurId = ?, machineTypeRequis = ?,
            tempsReglageMin = ?, tempsUnitaireMin = ?, tempsPrevuMin = ?,
            debutStr = ?, finStr = ?, datePlanifiee = ?,
            estSousTraitance = ?, sousTraitant = ?, dateEnvoi = ?, dateRetourPrevue = ?
        WHERE id = ?`,
       [
-        libelle, ordre, machineId, operateurId,
+        libelle, ordre, machineId, operateurId, machineTypeRequis,
         tempsReglageMin, tempsUnitaireMin, tempsPrevuMin,
         debutStr, finStr, datePlanifiee,
         estSousTraitance, sousTraitant, dateEnvoi, dateRetourPrevue, opId
       ]
     );
-    runSql('UPDATE pieces SET planningValide = 0 WHERE id = ?', [op.pieceId]);
+    runSql('UPDATE pieces SET planningValide = 0, chefValide = 0 WHERE id = ?', [op.pieceId]);
     syncPieceFromOperations(op.pieceId);
   });
 
@@ -1024,7 +1085,7 @@ router.delete('/operations/:opId', auth, requireRole('directeur', 'chef'), (req,
 
   transaction(() => {
     runSql('DELETE FROM operations WHERE id = ?', [opId]);
-    runSql('UPDATE pieces SET planningValide = 0 WHERE id = ?', [op.pieceId]);
+    runSql('UPDATE pieces SET planningValide = 0, chefValide = 0 WHERE id = ?', [op.pieceId]);
     syncPieceFromOperations(op.pieceId);
   });
 
@@ -1086,12 +1147,16 @@ router.post('/pieces/:id/:action', auth, (req, res) => {
       ? Math.max(5, parseInt(b.tempsPrevuMin, 10) || p.tempsPrevuMin)
       : (diffMin > 0 ? diffMin : p.tempsPrevuMin);
 
+    const currentOperation = queryOne("SELECT * FROM operations WHERE pieceId = ? AND statut IN ('En cours','Panne machine') LIMIT 1", [id]);
+    if (currentOperation && (currentOperation.machineId !== machineId || currentOperation.operateurId !== operateurId)) {
+      return res.status(409).json({error:'Mettez l’opération en pause ou résolvez la panne avant de changer son affectation.'});
+    }
     transaction(() => {
       runSql(
         `UPDATE pieces
          SET quantitePrevue = ?, machineId = ?, operateurId = ?, matiere = ?, outils = ?, fournisseur = ?,
              chuteDispo = ?, statut = ?, urgence = ?, delai = ?, ordrePlanning = ?,
-             tempsPrevuMin = ?, debutStr = ?, finStr = ?, planningValide = 0
+             tempsPrevuMin = ?, debutStr = ?, finStr = ?, planningValide = 0, chefValide = 0
          WHERE id = ?`,
         [
           quantitePrevue,

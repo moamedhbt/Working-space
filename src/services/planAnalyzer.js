@@ -1269,6 +1269,7 @@ ${REPLICAD_FREE_DOC}`;
 }
 
 module.exports = {
+  callConfiguredAiRaw,
   analyzePlanDocument,
   refineCadSpecWithAI,
   testAiConnection,

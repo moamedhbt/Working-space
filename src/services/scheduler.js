@@ -235,25 +235,9 @@ function analyzeScheduleAndAI(pieces, machines, users, pannes, settings) {
     }
   }
 
-  // Operator overlap detection (same operator scheduled on 2 machines at the same time)
+  // Un opérateur peut surveiller plusieurs machines simultanément dans cet atelier.
+  // Sans données de présence/temps de surveillance, un chevauchement n'est pas un conflit.
   const opConflictPairs = [];
-  for (let i = 0; i < operatorIntervals.length; i++) {
-    for (let j = i + 1; j < operatorIntervals.length; j++) {
-      const a = operatorIntervals[i];
-      const b = operatorIntervals[j];
-      if (a.operateurId === b.operateurId && a.machineId !== b.machineId && a.startAbs < b.endAbs && b.startAbs < a.endAbs) {
-        opConflictPairs.push([a, b]);
-        conflicts.push({
-          type: 'conflit_operateur',
-          severity: 'high',
-          pieceId: b.pieceId,
-          operationId: b.opId,
-          operateurId: b.operateurId,
-          text: `Conflit opérateur : ${a.operateur} affecté simultanément sur ${a.machine} (${a.pieceId}) et ${b.machine} (${b.pieceId}) le ${a.date}`
-        });
-      }
-    }
-  }
 
   // Machine daily overload & preventive maintenance checks
   const machineLoads = {};
@@ -295,7 +279,7 @@ function analyzeScheduleAndAI(pieces, machines, users, pannes, settings) {
   for (const c of conflicts.filter(x => x.type === 'machine_panne')) {
     const brokenMach = machineById.get(c.machineId);
     const altMach = activeMachines
-      .filter(m => m.id !== c.machineId && !m.enPanne)
+      .filter(m => m.id !== c.machineId && !m.enPanne && brokenMach?.type && m.type === brokenMach.type)
       .sort((a, b) => {
         const sameTypeA = brokenMach && a.type === brokenMach.type ? 0 : 1;
         const sameTypeB = brokenMach && b.type === brokenMach.type ? 0 : 1;
@@ -306,7 +290,7 @@ function analyzeScheduleAndAI(pieces, machines, users, pannes, settings) {
         id: `ai_panne_${c.operationId}`,
         severity: 'high',
         title: `Contourner la panne ${brokenMach?.nom || ''}`,
-        reason: `Basculer l'opération de ${c.pieceId} sur ${altMach.nom} (disponible, ${((machineCursorAbs[altMach.id] || 0) / 60).toFixed(1)}h de charge).`,
+        reason: `Proposer ${altMach.nom} (même type). Vérifier dimensions, commande, outils et disponibilité avant affectation.`,
         actionType: 'reassign_machine',
         payload: { operationId: c.operationId, machineId: altMach.id }
       });
@@ -355,14 +339,14 @@ function analyzeScheduleAndAI(pieces, machines, users, pannes, settings) {
     const overMach = machineById.get(c.machineId);
     const candidateOp = scheduledOps.find(s => s.machineId === c.machineId && !s.estSousTraitance);
     const lighterMach = activeMachines
-      .filter(m => m.id !== c.machineId && !m.enPanne && (machineCursorAbs[m.id] || 0) < (m.capaciteJourMin || 480) * 0.75)
+      .filter(m => m.id !== c.machineId && !m.enPanne && overMach?.type && m.type === overMach.type && (machineCursorAbs[m.id] || 0) < (m.capaciteJourMin || 480) * 0.75)
       .sort((a, b) => (machineCursorAbs[a.id] || 0) - (machineCursorAbs[b.id] || 0))[0];
     if (candidateOp && lighterMach && overMach) {
       aiRecommendations.push({
         id: `ai_bal_${candidateOp.opId}`,
         severity: 'medium',
         title: `Équilibrer la surcharge de ${overMach.nom}`,
-        reason: `Déplacer ${candidateOp.pieceId} (${candidateOp.libelle}) vers ${lighterMach.nom} (${((machineCursorAbs[lighterMach.id] || 0) / 60).toFixed(1)}h chargées).`,
+        reason: `Proposer ${lighterMach.nom} (même type) pour ${candidateOp.pieceId}. Vérifier les capacités et l’outillage avant affectation.`,
         actionType: 'reassign_machine',
         payload: { operationId: candidateOp.opId, machineId: lighterMach.id }
       });
@@ -485,13 +469,6 @@ function analyzeScheduleAndAI(pieces, machines, users, pannes, settings) {
 
   // IA Direction Insights
   const aiInsights = [];
-  const bottleneck = [...machineStats].filter(m => m.actif).sort((a, b) => b.utilisationPct - a.utilisationPct)[0];
-  if (bottleneck && bottleneck.utilisationPct >= 75) {
-    aiInsights.push({
-      level: bottleneck.utilisationPct > 100 ? 'danger' : 'warn',
-      text: `Goulot détecté sur ${bottleneck.nom} (${bottleneck.utilisationPct}% de charge · ${(bottleneck.chargeMin / 60).toFixed(1)}h).`
-    });
-  }
   const dueMaint = machineStats.filter(m => m.maintenanceStatut !== 'ok');
   if (dueMaint.length > 0) {
     aiInsights.push({
@@ -520,7 +497,7 @@ function analyzeScheduleAndAI(pieces, machines, users, pannes, settings) {
   if (aiInsights.length === 0) {
     aiInsights.push({
       level: 'ok',
-      text: `Atelier équilibré : TRS estimé ${trsPct}%, aucun goulot critique ni conflit opérateur.`
+      text: `TRS estimé ${trsPct}% selon les données enregistrées. Consultez le planning pour les contraintes.`
     });
   }
 

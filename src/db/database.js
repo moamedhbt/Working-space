@@ -813,6 +813,33 @@ function createSchema() {
       value TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS planning_drafts (
+      id TEXT PRIMARY KEY,
+      snapshotHash TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      createdAtMs INTEGER NOT NULL,
+      createdBy TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS planning_published_segments (
+      opId TEXT PRIMARY KEY REFERENCES operations(id) ON DELETE CASCADE,
+      fingerprint TEXT NOT NULL,
+      segmentsJson TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS planning_unavailability (
+      id TEXT PRIMARY KEY,
+      resourceType TEXT NOT NULL,
+      resourceId TEXT NOT NULL,
+      startDate TEXT NOT NULL,
+      startTime TEXT NOT NULL,
+      endDate TEXT NOT NULL,
+      endTime TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT '',
+      createdBy TEXT NOT NULL,
+      createdAtMs INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       nom TEXT NOT NULL,
@@ -906,6 +933,7 @@ function createSchema() {
       ordre INTEGER NOT NULL DEFAULT 10,
       libelle TEXT NOT NULL,
       machineId TEXT REFERENCES machines(id) ON DELETE SET NULL,
+      machineTypeRequis TEXT NOT NULL DEFAULT '',
       operateurId TEXT REFERENCES users(id) ON DELETE SET NULL,
       tempsReglageMin INTEGER DEFAULT 15,
       tempsUnitaireMin REAL DEFAULT 0,
@@ -1076,6 +1104,7 @@ function migrateLegacySchemaIfNeeded() {
   }
   if (tableExists('operations')) {
     const opCols = [
+      ['machineTypeRequis', "TEXT NOT NULL DEFAULT ''"],
       ['tempsReglageMin', 'INTEGER DEFAULT 15'],
       ['tempsUnitaireMin', 'REAL DEFAULT 0'],
       ['datePlanifiee', "TEXT DEFAULT ''"],

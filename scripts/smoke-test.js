@@ -3,6 +3,8 @@ const path = require('path');
 const os = require('os');
 const assert = require('assert');
 const { spawn } = require('child_process');
+const Database = require('better-sqlite3');
+function publishOperationFixture(id) { const db = new Database(tmpDb); try { db.prepare('UPDATE pieces SET planningValide = 1 WHERE id = ?').run(id); } finally { db.close(); } }
 
 const tmpDb = path.join(os.tmpdir(), `atelier_smoke_${Date.now()}.db`);
 const PORT = 3456;
@@ -131,19 +133,30 @@ async function run() {
     }, dirToken);
     assert.strictEqual(ctrlOp.status, 201);
 
-    // 7. Calendar settings + IA Optimize + Operator Conflict detection & IA Apply
+    // Calendar segments cross weekends and can extend well beyond 40 days.
+    const { segmentsForOperation } = require('../src/services/planningCalendar');
+    const longSlots = segmentsForOperation({ datePlanifiee: '2026-11-22', debutStr: '08:00', tempsPrevuMin: 540 * 40 }, { workDays: [0,1,2,3,4], shiftStart: '08:00', shiftEnd: '17:00' });
+    assert.strictEqual(longSlots.length, 40);
+    assert.strictEqual(longSlots[0].date, '2026-11-22');
+    assert.strictEqual(longSlots[5].date, '2026-11-29');
+    assert.strictEqual((await req('/api/planning/calendar', 'GET', null, karimToken)).status, 403);
+    assert.strictEqual((await req('/api/planning/calendar', 'GET', null, dirToken)).status, 200);
+
+    // Server-side safeguards: operator cannot publish; incomplete OF cannot start or be published.
+    let guardState = await req('/api/state', 'GET', null, dirToken);
+    const guardOps = guardState.data.pieces.find(p => p.id === c1.data.id).operations;
+    assert.strictEqual((await req('/api/planning/validate', 'POST', {}, karimToken)).status, 403);
+    assert.strictEqual((await req(`/api/operations/${guardOps[0].id}/start`, 'POST', {}, karimToken)).status, 400);
+    assert.strictEqual((await req('/api/planning/validate', 'POST', {}, dirToken)).status, 410);
+    assert.strictEqual((await req('/api/planning/optimize', 'POST', {}, dirToken)).status, 410);
+    assert.strictEqual((await req('/api/planning/save-batch', 'POST', {}, dirToken)).status, 410);
+    assert.strictEqual((await req('/api/planning/ai-apply', 'POST', {}, dirToken)).status, 410);
+
+    // Planning publication is exercised end-to-end in test-planning-integration.js.
+    // This independent operation lifecycle fixture marks the OF as published directly.
     assert.strictEqual((await req('/api/settings', 'PUT', { workDays: [0, 1, 2, 3, 4], shiftStart: '08:00', shiftEnd: '17:00' }, dirToken)).status, 200);
-    const optRes = await req('/api/planning/optimize', 'POST', {}, dirToken);
-    assert.strictEqual(optRes.status, 200);
-    assert.ok(Array.isArray(optRes.data.recommendations));
-
-    // Apply IA recommendation if any
-    if (optRes.data.recommendations.length > 0) {
-      const rec = optRes.data.recommendations[0];
-      assert.strictEqual((await req('/api/planning/ai-apply', 'POST', { actionType: rec.actionType, payload: rec.payload }, dirToken)).status, 200);
-    }
-
-    await req('/api/planning/validate', 'POST', null, dirToken);
+    assert.strictEqual((await req(`/api/pieces/${c1.data.id}/be-validate`, 'POST', {}, dirToken)).status, 200);
+    assert.strictEqual((await req(`/api/pieces/${c1.data.id}/chef-validate`, 'POST', {}, dirToken)).status, 200);
 
     // 8. Start -> Partial Progress -> Pause -> Panne -> Resolve -> Finish with Scrap
     st = await req('/api/state', 'GET', null, dirToken);
@@ -155,9 +168,16 @@ async function run() {
     // Ensure u4 owns op1 & opCtrl (in case IA reassigned u4)
     await req(`/api/operations/${op1.id}`, 'PUT', { operateurId: 'u4' }, dirToken);
     await req(`/api/operations/${opCtrl.id}`, 'PUT', { operateurId: 'u4' }, dirToken);
-    await req('/api/planning/validate', 'POST', null, dirToken);
+    assert.strictEqual((await req(`/api/pieces/${c1.data.id}/chef-validate`, 'POST', {}, dirToken)).status, 200);
+    publishOperationFixture(c1.data.id);
 
+    assert.strictEqual((await req(`/api/operations/${op1.id}/finish`, 'POST', {}, karimToken)).status, 400); // pas commencée
+    assert.strictEqual((await req(`/api/operations/${opSub.id}/finish`, 'POST', {}, dirToken)).status, 400); // étape précédente
+    assert.strictEqual((await req(`/api/operations/${opCtrl.id}/start`, 'POST', {}, karimToken)).status, 400);
+    assert.strictEqual((await req(`/api/operations/${op1.id}/start`, 'POST', {}, karimToken)).status, 400); // machine occupée
+    assert.strictEqual((await req('/api/operations/op_101_10/pause', 'POST', {}, dirToken)).status, 200);
     assert.strictEqual((await req(`/api/operations/${op1.id}/start`, 'POST', {}, karimToken)).status, 200);
+    assert.strictEqual((await req(`/api/operations/${op1.id}/start`, 'POST', {}, karimToken)).status, 400);
     assert.strictEqual((await req(`/api/operations/${op1.id}/progress`, 'POST', { quantiteBonne: 4, quantiteRebut: 0 }, karimToken)).status, 200);
     const pauseRes = await req(`/api/operations/${op1.id}/pause`, 'POST', {}, karimToken);
     assert.strictEqual(pauseRes.status, 200);
@@ -176,7 +196,9 @@ async function run() {
     assert.ok(fin1.data.tempsReelMin >= 2);
 
     // Finish subcontracting & control ops
+    assert.strictEqual((await req(`/api/operations/${opSub.id}/finish`, 'POST', {}, karimToken)).status, 403);
     assert.strictEqual((await req(`/api/operations/${opSub.id}/finish`, 'POST', { quantiteBonne: 9, quantiteRebut: 0 }, dirToken)).status, 200);
+    assert.strictEqual((await req(`/api/operations/${opSub.id}/finish`, 'POST', {}, dirToken)).status, 400);
     assert.strictEqual((await req(`/api/operations/${opCtrl.id}/start`, 'POST', {}, karimToken)).status, 200);
     assert.strictEqual((await req(`/api/operations/${opCtrl.id}/finish`, 'POST', { quantiteBonne: 9, quantiteRebut: 0 }, karimToken)).status, 200);
 
@@ -227,7 +249,8 @@ async function run() {
     st = await req('/api/state', 'GET', null, dirToken);
     const readyOf = st.data.pieces.find(p => p.id === chefOf.data.id);
     assert.strictEqual(readyOf.statut, 'Prêt atelier');
-    assert.strictEqual(readyOf.planningValide, true);
+    assert.strictEqual(readyOf.planningValide, false);
+    assert.strictEqual((await req('/api/planning/validate', 'POST', {}, chefToken)).status, 410);
     assert.ok(readyOf.events.length >= 4, 'Full OF timeline must track every step');
 
     // 13. Fix 3: Reprise d'OF déjà en cours (travail en parallèle)
@@ -256,6 +279,7 @@ async function run() {
     }, karimToken);
     assert.strictEqual(stopRes.status, 200);
     assert.strictEqual(stopRes.data.cibleRole, 'be');
+    assert.strictEqual((await req(`/api/operations/${repOp.id}/start`, 'POST', {}, karimToken)).status, 400); // blocage BE ouvert
     assert.strictEqual((await req(`/api/stops/${stopRes.data.stopId}/resolve`, 'POST', {}, beToken)).status, 200);
 
     const planAna = await req('/api/be/analyze-plan', 'POST', {

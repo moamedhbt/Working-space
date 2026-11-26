@@ -113,6 +113,7 @@ export default function CreateOfModal({ open, onClose, state, user, onCreated })
   async function submit(e) {
     e.preventDefault();
     if (!form.nom.trim()) return setErrMsg('Le nom de la pièce est requis.');
+    if (!form.typeMachine) return setErrMsg('Choisissez le type de machine requis.');
     setSubmitting(true);
     setErrMsg('');
     const qty = Math.max(1, parseInt(form.quantitePrevue, 10) || 1);
@@ -272,6 +273,7 @@ export default function CreateOfModal({ open, onClose, state, user, onCreated })
             </div>
           </div>
 
+          {!estReprise && <p className="text-[11px] text-cyan-300">Choisissez le type requis : le planning proposera une machine disponible de ce type. Vérifiez les capacités et outils avant publication.</p>}
           {/* DELAI + TYPE MACHINE */}
           <div className="grid grid-cols-2 gap-2">
             <div className="min-w-0">
@@ -294,7 +296,7 @@ export default function CreateOfModal({ open, onClose, state, user, onCreated })
                 }}
                 className="w-full px-2 py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] text-base sm:text-xs text-white"
               >
-                <option value="">Tous types</option>
+                <option value="">Choisir un type</option>
                 {machineTypes.map(t => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
@@ -415,7 +417,7 @@ export default function CreateOfModal({ open, onClose, state, user, onCreated })
               onClick={() => setShowAdvanced(v => !v)}
               className="w-full px-3 py-2 flex items-center justify-between text-xs text-slate-300 cursor-pointer"
             >
-              <span>Machine précise, Opérateur, Matière & Temps</span>
+              <span>Machine, opérateur, matière et temps</span>
               <span className="text-[11px] font-mono-num text-[#22D3EE]">{totalMin}m {showAdvanced ? '▲' : '▼'}</span>
             </button>
 
@@ -423,9 +425,9 @@ export default function CreateOfModal({ open, onClose, state, user, onCreated })
               <div className="px-3 pb-3 pt-2 space-y-2.5 border-t border-[#1E2A38]">
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="block text-[10px] text-slate-400 mb-1">Machine</label>
+                    <label className="block text-[10px] text-slate-400 mb-1">{estReprise ? 'Machine réelle de la reprise' : 'Machine indicative (choix automatique au planning)'}</label>
                     <select value={form.machineId} onChange={e => setForm({ ...form, machineId: e.target.value })} className="w-full px-2 py-2 rounded bg-[#0B0F14] border border-[#1E2A38] text-base sm:text-xs text-white">
-                      {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
+                      {activeMachines.filter(m=>!form.typeMachine||m.type===form.typeMachine).map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
                     </select>
                   </div>
                   <div>

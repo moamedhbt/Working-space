@@ -6,7 +6,9 @@
     "start": "node src/server.js",
     "build": "npm --prefix client run build",
     "test": "node scripts/smoke-test.js",
-    "test:cad": "node scripts/test-cad-bricks.mjs"
+    "test:cad": "node scripts/test-cad-bricks.mjs",
+    "test:planning": "node scripts/test-workshop-planner.js && node scripts/test-planning-scenarios.js && node scripts/test-planning-integration.js",
+    "test:planning-ui": "node scripts/ui-planning-check.cjs"
   },
   "keywords": [],
   "author": "",
@@ -15,5 +17,8 @@
   "dependencies": {
     "better-sqlite3": "^12.11.1",
     "express": "^5.3.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.65.1"
   }
 }

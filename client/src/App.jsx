@@ -298,7 +298,7 @@ export default function App() {
           )}
           <ViewErrorBoundary key={tab}>
             {['overview', 'pilotage', 'planning', 'simulator', 'dossiers', 'admin'].includes(tab) && (
-              <DirectionView state={state} user={user} reload={reload} activePanel={tab} search={search} />
+              <DirectionView state={state} user={user} reload={reload} activePanel={tab} search={search} onOpenPlanning={() => setTab('planning')} />
             )}
             {tab === 'chef' && <ChefView state={state} user={user} reload={reload} search={search} />}
             {tab === 'be' && <BeView state={state} user={user} reload={reload} />}

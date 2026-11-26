@@ -21,43 +21,11 @@ export default function ChefView({ state, user, reload, search = '' }) {
   const [editingMachineId, setEditingMachineId] = useState(null);
   const [editMachineForm, setEditMachineForm] = useState({ nom: '', type: '', tauxHoraire: 2500, capaciteJourMin: 480, intervalleEntretienH: 200 });
   const [newOpByPiece, setNewOpByPiece] = useState({});
-  const [aiAlerts, setAiAlerts] = useState([]);
   const [toast, setToast] = useState({ type: 'ok', text: '' });
 
   function showToast(text, type = 'ok') {
     setToast({ type, text });
     setTimeout(() => setToast({ type: 'ok', text: '' }), 4000);
-  }
-
-  async function optimizeAI() {
-    try {
-      const res = await api('/api/planning/optimize', 'POST');
-      setAiAlerts(res.alerts || []);
-      showToast('Ordonnancement IA généré (gammes + calendrier Dim–Jeu). Vérifiez et publiez vers la TV.');
-      reload();
-    } catch (e) {
-      showToast(e.message, 'err');
-    }
-  }
-
-  async function applyAiRec(rec) {
-    try {
-      await api('/api/planning/ai-apply', 'POST', { actionType: rec.actionType, payload: rec.payload });
-      showToast(`Recommandation IA appliquée : ${rec.title}`);
-      reload();
-    } catch (e) {
-      showToast(e.message, 'err');
-    }
-  }
-
-  async function validatePlanning() {
-    try {
-      await api('/api/planning/validate', 'POST');
-      showToast("Planning validé et publié sur l'écran TV.");
-      reload();
-    } catch (e) {
-      showToast(e.message, 'err');
-    }
   }
 
   async function validateChefOf(pieceId) {
@@ -219,6 +187,14 @@ export default function ChefView({ state, user, reload, search = '' }) {
     }
   }
 
+  async function completeSubcontract(op, piece) {
+    const raw = window.prompt(`Quantité bonne reçue pour ${op.libelle} ?`, String(piece.quantitePrevue || 1));
+    if (raw === null) return;
+    if (!/^\d+$/.test(raw.trim())) return showToast('Saisissez une quantité entière positive.', 'err');
+    try { await api(`/api/operations/${op.id}/finish`, 'POST', {quantiteBonne:Number(raw)}); showToast('Retour de sous-traitance enregistré.'); reload(); }
+    catch(e) { showToast(e.message, 'err'); }
+  }
+
   async function deleteOperation(opId) {
     try {
       await api(`/api/operations/${opId}`, 'DELETE');
@@ -242,7 +218,6 @@ export default function ChefView({ state, user, reload, search = '' }) {
   const activeMachines = state.machines.filter(m => m.actif);
   const operators = state.users.filter(u => u.role === 'operateur' && u.actif !== 0);
   const openPannes = (state.pannes || []).filter(p => p.statut === 'Ouverte');
-  const aiRecs = state.aiRecommendations || [];
   const machineStatsById = new Map((state.analytics?.machineStats || []).map(ms => [ms.id, ms]));
   const isDir = user?.role === 'directeur';
 
@@ -298,44 +273,18 @@ export default function ChefView({ state, user, reload, search = '' }) {
             <div className="flex items-start gap-3">
               <Bot className="w-5 h-5 text-[#22D3EE] shrink-0 mt-0.5" />
               <div>
-                <h2 className="text-sm font-semibold text-white">Assistant IA chef d'atelier</h2>
-                <p className="text-xs text-slate-400">Analyse les gammes (Op 10 → Op 20), conflits opérateurs, pannes et calendrier ouvré avant publication TV.</p>
+                <h2 className="text-sm font-semibold text-white">Aide à l’ordonnancement</h2>
+                <p className="text-xs text-slate-400">Consultez les machines, préparez un brouillon et vérifiez les changements avant publication.</p>
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
               <button onClick={() => setShowCreateModal(true)} className="px-3 py-1.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer">
                 <Plus className="w-3.5 h-3.5" /> Nouvelle pièce
               </button>
-              <button onClick={optimizeAI} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-xs font-medium text-slate-200 cursor-pointer">
-                Ordonnancer par IA
-              </button>
-              <button onClick={validatePlanning} className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] hover:bg-cyan-300 text-[#0B0F14] text-xs font-semibold flex items-center gap-1.5 cursor-pointer">
-                <CheckCircle className="w-3.5 h-3.5" /> Valider et envoyer à la TV
-              </button>
+              <button onClick={() => setTab('planning')} className="px-3 py-1.5 rounded-[6px] bg-[#22D3EE] text-[#0B0F14] text-xs font-semibold cursor-pointer">Ouvrir le planning</button>
             </div>
           </div>
 
-          {aiRecs.length > 0 && (
-            <div className="space-y-1.5 pt-2 border-t border-[#1E2A38]">
-              {aiRecs.slice(0, 3).map(rec => (
-                <div key={rec.id} className="flex flex-wrap items-center justify-between gap-2 p-2 rounded bg-[#0B0F14] border border-[#1E2A38] text-xs">
-                  <div>
-                    <span className={`font-semibold ${rec.severity === 'high' ? 'text-red-300' : rec.severity === 'medium' ? 'text-amber-300' : 'text-[#22D3EE]'}`}>
-                      {rec.title}
-                    </span>
-                    <span className="text-slate-400 ml-2">{rec.reason}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => applyAiRec(rec)}
-                    className="px-2.5 py-1 rounded bg-[#22D3EE]/15 border border-[#22D3EE]/40 text-[#22D3EE] hover:bg-[#22D3EE] hover:text-[#0B0F14] text-[11px] font-semibold cursor-pointer"
-                  >
-                    Appliquer IA
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
 
         {/* OPEN QUALIFIED STOPS FOR CHEF (OUTIL / MATIERE) */}
@@ -378,13 +327,6 @@ export default function ChefView({ state, user, reload, search = '' }) {
                 </button>
               </div>
             ))}
-          </div>
-        )}
-
-        {aiAlerts.length > 0 && (
-          <div className="bg-amber-500/10 border border-amber-500/30 rounded-[6px] p-3 text-xs space-y-1">
-            <div className="font-semibold text-amber-400 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" /> Alertes détectées</div>
-            {aiAlerts.map((a, i) => <div key={i} className="text-slate-300">{a}</div>)}
           </div>
         )}
 
@@ -578,17 +520,25 @@ export default function ChefView({ state, user, reload, search = '' }) {
                                 <select
                                   value={op.machineId || ''}
                                   onChange={e => updateOperationField(op.id, { machineId: e.target.value })}
-                                  disabled={p.statut === 'Clôturé' || op.statut === 'Terminée'}
+                                  disabled={p.statut === 'Clôturé' || ['Terminée', 'En cours', 'Panne machine'].includes(op.statut)}
                                   className="w-full p-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-[11px]"
                                 >
                                   {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
                                 </select>
+                                <select aria-label={`Choix machine pour ${op.libelle}`} value={op.machineTypeRequis || ''}
+                                  onChange={e => updateOperationField(op.id, {machineTypeRequis:e.target.value})}
+                                  disabled={p.statut === 'Clôturé' || ['Terminée', 'En cours', 'Panne machine'].includes(op.statut)}
+                                  className="w-full mt-1 p-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-[11px]">
+                                  <option value="">Machine imposée</option>
+                                  {[...new Set(activeMachines.map(m=>m.type).filter(Boolean))].sort().map(t=><option key={t} value={t}>Auto · {t}</option>)}
+                                </select>
+                                {op.machineTypeRequis && <p className="text-[10px] text-amber-300">Choix par type seulement : vérifiez les capacités.</p>}
                               </div>
                               <div className="md:col-span-2">
                                 <select
                                   value={op.operateurId || ''}
                                   onChange={e => updateOperationField(op.id, { operateurId: e.target.value })}
-                                  disabled={p.statut === 'Clôturé' || op.statut === 'Terminée'}
+                                  disabled={p.statut === 'Clôturé' || ['Terminée', 'En cours', 'Panne machine'].includes(op.statut)}
                                   className="w-full p-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-[11px]"
                                 >
                                   {operators.map(o => <option key={o.id} value={o.id}>{o.nom}</option>)}
@@ -599,8 +549,8 @@ export default function ChefView({ state, user, reload, search = '' }) {
                                   type="number"
                                   min="0"
                                   defaultValue={op.tempsReglageMin || 0}
-                                  onBlur={e => updateOperationField(op.id, { tempsReglageMin: Number(e.target.value) })}
-                                  disabled={p.statut === 'Clôturé' || op.statut === 'Terminée'}
+                                  onBlur={e => { if (Number(e.target.value) !== Number(op.tempsReglageMin || 0)) updateOperationField(op.id, { tempsReglageMin: Number(e.target.value) }); }}
+                                  disabled={p.statut === 'Clôturé' || ['Terminée', 'En cours', 'Panne machine'].includes(op.statut)}
                                   className="w-12 p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-center"
                                   title="Temps réglage (min)"
                                 />
@@ -610,8 +560,8 @@ export default function ChefView({ state, user, reload, search = '' }) {
                                   min="0"
                                   step="0.5"
                                   defaultValue={op.tempsUnitaireMin || 0}
-                                  onBlur={e => updateOperationField(op.id, { tempsUnitaireMin: Number(e.target.value) })}
-                                  disabled={p.statut === 'Clôturé' || op.statut === 'Terminée'}
+                                  onBlur={e => { if (Number(e.target.value) !== Number(op.tempsUnitaireMin || 0)) updateOperationField(op.id, { tempsUnitaireMin: Number(e.target.value) }); }}
+                                  disabled={p.statut === 'Clôturé' || ['Terminée', 'En cours', 'Panne machine'].includes(op.statut)}
                                   className="w-12 p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-center"
                                   title="Temps unitaire (min/pièce)"
                                 />
@@ -632,6 +582,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
                               op.statut === 'Panne machine' ? 'bg-red-500/15 text-red-400 border-red-500/40' :
                               'bg-slate-800 text-slate-300 border-slate-700'
                             }`}>{op.statut}</span>
+                            {op.estSousTraitance && op.statut !== 'Terminée' && p.statut !== 'Clôturé' && <button type="button" onClick={() => completeSubcontract(op,p)} className="px-2 py-1 rounded border border-emerald-600 text-emerald-300 text-[10px]">Retour reçu</button>}
                             {p.statut !== 'Clôturé' && op.statut !== 'En cours' && (p.operations || []).length > 1 && (
                               <button type="button" onClick={() => deleteOperation(op.id)} className="p-1 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 cursor-pointer" title="Supprimer">
                                 <Trash2 className="w-3 h-3" />
