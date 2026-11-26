@@ -21,6 +21,20 @@ try {for(let i=0;i<60;i++){try{if((await fetch(base+'/api/tv')).ok)break;}catch{
  assert.equal((await req(`/api/operations/${instructionOp}/consigne`,'PUT',{consigne:'Contrôler le bridage'},d)).status,200);
  const operatorState=await req('/api/state','GET',null,u);assert.equal(operatorState.data.pieces.find(p=>p.id===id).operations[0].consigneChef,'Contrôler le bridage');
  assert.equal((await req(`/api/planning/drafts/${draft.data.id}`,'GET',null,d)).data.stale,false);
+ // Material estimates are server-calculated, role-gated, and must not mutate stock or planning.
+ const material={shape:'rond',materialId:'acier',quantity:10,lengthMm:100,lossMm:3,diameterMm:50};
+ assert.equal((await req('/api/material/estimate','POST',material,u)).status,403);
+ assert.equal((await req('/api/material/estimate','POST',{...material,quantity:1.5},d)).status,400);
+ assert.equal((await req('/api/material/estimate','POST',{...material,lossMm:-1},d)).status,400);
+ assert.equal((await req('/api/material/estimate','POST',{...material,shape:'tube',innerDiameterMm:50},d)).status,400);
+ const calc=await req('/api/material/estimate','POST',material,d);assert.equal(calc.status,200);assert(Math.abs(calc.data.totalLengthM-1.03)<1e-9);
+ const beforeMaterial=await req('/api/state','GET',null,d);
+ assert.equal((await req(`/api/pieces/${id}/material-estimate`,'PUT',material,u)).status,403);
+ const saveMat=await req(`/api/pieces/${id}/material-estimate`,'PUT',material,d);assert.equal(saveMat.status,200);
+ const savedMat=await req(`/api/pieces/${id}/material-estimate`,'GET',null,d);assert.deepEqual(savedMat.data.estimate.inputs,calc.data.inputs);
+ const afterMaterial=await req('/api/state','GET',null,d);
+ for(const key of ['matiere','chuteDispo','achatFait','planningValide','chefValide','beValide'])assert.deepEqual(afterMaterial.data.pieces.find(p=>p.id===id)[key],beforeMaterial.data.pieces.find(p=>p.id===id)[key]);
+ assert.equal((await req(`/api/planning/drafts/${draft.data.id}`,'GET',null,d)).data.stale,false);
  const absence={resourceType:'operator',resourceId:'u4',startDate:'2030-01-01',startTime:'08:00',endDate:'2030-01-01',endTime:'17:00',reason:'Test'};
  assert.equal((await req('/api/planning/unavailability','POST',absence,u)).status,403);
  const addAbsence=await req('/api/planning/unavailability','POST',absence,d);assert.equal(addAbsence.status,201);

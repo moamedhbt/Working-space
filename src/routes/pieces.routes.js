@@ -21,6 +21,7 @@ const {
 } = require('../db/database');
 const { analyzeScheduleAndAI } = require('../services/scheduler');
 const { createProposal } = require('../services/workshopPlanner');
+const { MATERIALS, computeMaterialEstimate } = require('../services/materialEstimate');
 const { analyzePlanDocument, refineCadSpecWithAI } = require('../services/planAnalyzer');
 const { auth, requireRole } = require('../middleware/auth');
 
@@ -611,6 +612,33 @@ router.post('/pieces/:id/chef-validate', auth, requireRole('chef', 'directeur'),
   logAudit(req.user, 'CHEF VALIDÉ', `${id} — Matière, outillage & distribution validés`);
   logPieceEvent(id, req.user, 'chef_valide', 'Matière, outillage & affectation validés (Chef)', `Matière : ${piece.matiere || '—'} · Outillage : ${piece.outils || '—'}`);
   res.json({ ok: true });
+});
+
+// Estimates are advisory only: never adjust stock, buying status or the schedule.
+router.get('/material/catalog',auth,requireRole('directeur','chef'),(req,res)=>res.json({materials:MATERIALS}));
+router.post('/material/estimate',auth,requireRole('directeur','chef'),(req,res)=>{
+  try {res.json(computeMaterialEstimate(req.body));}catch(e){res.status(400).json({error:e.message});}
+});
+router.get('/pieces/:id/material-estimate',auth,requireRole('directeur','chef'),(req,res)=>{
+  const p=queryOne('SELECT id,quantitePrevue FROM pieces WHERE id=?',[req.params.id]);
+  if(!p)return res.status(404).json({error:'OF introuvable.'});
+  const row=queryOne('SELECT payload,updatedBy,updatedAtMs FROM material_estimates WHERE pieceId=?',[p.id]);
+  if(!row)return res.json({estimate:null,ofQuantity:p.quantitePrevue});
+  try {res.json({estimate:JSON.parse(row.payload),updatedBy:row.updatedBy,updatedAtMs:row.updatedAtMs,ofQuantity:p.quantitePrevue});}
+  catch {res.status(500).json({error:'Estimation enregistrée illisible.'});}
+});
+router.put('/pieces/:id/material-estimate',auth,requireRole('directeur','chef'),(req,res)=>{
+  const p=queryOne('SELECT id,statut,archived,quantitePrevue FROM pieces WHERE id=?',[req.params.id]);
+  if(!p)return res.status(404).json({error:'OF introuvable.'});
+  if(p.archived||['Clôturé','Refusé'].includes(p.statut))return res.status(400).json({error:'Cet OF est clôturé, refusé ou archivé.'});
+  let estimate;try {estimate=computeMaterialEstimate(req.body);}catch(e){return res.status(400).json({error:e.message});}
+  const now=Date.now();
+  transaction(()=>{
+    runSql('INSERT INTO material_estimates (pieceId,payload,updatedBy,updatedAtMs) VALUES (?,?,?,?) ON CONFLICT(pieceId) DO UPDATE SET payload=excluded.payload,updatedBy=excluded.updatedBy,updatedAtMs=excluded.updatedAtMs',[p.id,JSON.stringify(estimate),req.user.nom,now]);
+    logPieceEvent(p.id,req.user,'estimation_matiere','Estimation matière enregistrée',`${estimate.material.name} · ${estimate.inputs.quantity} pièces · indicatif, sans réservation de stock`);
+    logAudit(req.user,'ESTIMATION MATIÈRE',`${p.id} · ${estimate.material.name} · ${estimate.inputs.quantity} pièces`);
+  });
+  res.json({ok:true,estimate,updatedBy:req.user.nom,updatedAtMs:now,ofQuantity:p.quantitePrevue});
 });
 
 // --- QUALIFIED OPERATOR STOPS WITH TARGETED ROLE ALERTS ---

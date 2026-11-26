@@ -25,6 +25,7 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   }
   if(viewport.width<768)await page.locator('nav').getByRole('button',{name:'Planning',exact:true}).click();else await page.getByText('Planning & Gantt',{exact:true}).click();
   await page.getByText('Planning des machines',{exact:true}).waitFor();
+  if(viewport.width===1440)await page.locator('aside').getByRole('region',{name:'Copilote atelier'}).waitFor();
   const mutations=[];const navListener=req=>{if(req.url().includes('/api/')&&!['GET','HEAD'].includes(req.method()))mutations.push(`${req.method()} ${req.url()}`)};
   page.on('request',navListener);
   await page.getByRole('button',{name:'Semaine',exact:true}).click();
@@ -95,6 +96,19 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   if((await saveInstruction).status()!==200)throw Error('Échec enregistrement consigne');
   await chefPage.getByText('Vérifier le bridage avant démarrage').waitFor();
   console.log('✅ UI chef : tableau de bord, bilan, IA hors ligne et consigne');
+  await chefPage.getByRole('button',{name:'Estimation matière',exact:true}).click();
+  const fixtureId=await chefPage.evaluate(async()=>{const h={Authorization:`Bearer ${localStorage.getItem('atelier_token')}`};return (await (await fetch('/api/state',{headers:h})).json()).pieces.find(p=>p.nom==='Essai type UI').id});
+  if(await chefPage.getByLabel('OF associé').inputValue()!==fixtureId)throw Error('L’OF sélectionné n’est pas repris dans matière');
+  if(await chefPage.getByLabel('Quantité (pièces)').inputValue()!=='10')throw Error('Quantité OF non reprise');
+  if(await chefPage.getByLabel('Longueur du brut par pièce (mm)').inputValue()!=='')throw Error('Une dimension a été supposée');
+  await chefPage.getByLabel('Forme du brut').selectOption('rond');await chefPage.getByLabel('Matière et densité').selectOption('acier');
+  await chefPage.getByLabel('Longueur du brut par pièce (mm)').fill('100');await chefPage.getByLabel('Diamètre extérieur (mm)').fill('50');await chefPage.getByLabel('Perte de coupe par pièce (mm)').fill('5');
+  await chefPage.getByRole('button',{name:'Calculer l’estimation'}).click();await chefPage.getByText('1.050 m').waitFor();
+  chefPage.once('dialog',dialog=>dialog.accept());const saveMaterial=chefPage.waitForResponse(r=>r.url().includes('/material-estimate')&&r.request().method()==='PUT');
+  await chefPage.getByRole('button',{name:'Associer cette estimation à l’OF'}).click();if((await saveMaterial).status()!==200)throw Error('Estimation non associée');
+  await chefPage.getByLabel('Perte de coupe par pièce (mm)').fill('4');if(await chefPage.getByText('1.050 m').count())throw Error('Estimation périmée encore affichée');
+  await chefPage.getByRole('button',{name:/Charger l’estimation enregistrée/}).click();await chefPage.getByText('1.050 m').waitFor();
+  console.log('✅ UI matière : OF, dimensions explicites, perte modifiable et estimation enregistrée');
   await chefPage.evaluate(async()=>{
     const h={'Content-Type':'application/json',Authorization:`Bearer ${localStorage.getItem('atelier_token')}`};
     const state=await (await fetch('/api/state',{headers:h})).json();const piece=state.pieces.find(p=>p.nom==='Essai type UI');
@@ -104,6 +118,11 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   });
   await chefPage.getByRole('button',{name:'Planning & IA'}).click();
   await chefPage.getByText('Planning des machines',{exact:true}).waitFor();
+  await chefPage.getByRole('button',{name:'Ouvrir le copilote'}).click();
+  const copilot=chefPage.getByRole('dialog',{name:'Copilote atelier'});await copilot.getByLabel('Votre demande au copilote').fill('Quelle est la situation ?');
+  await copilot.getByRole('button',{name:'Demander',exact:true}).click();await copilot.getByRole('alert').getByText('Aucun fournisseur IA actif.',{exact:false}).waitFor();
+  await chefPage.keyboard.press('Escape');if(await copilot.isVisible())throw Error('Le volet copilote ne se ferme pas');
+  console.log('✅ UI mobile : volet copilote, erreur visible et fermeture');
   await chefPage.getByRole('button',{name:'Calculer un brouillon'}).click();
   await chefPage.getByText('Voir les changements').waitFor();
   console.log('✅ UI chef mobile : planning et brouillon OK');

@@ -23,6 +23,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
   const [editingMachineId, setEditingMachineId] = useState(null);
   const [editMachineForm, setEditMachineForm] = useState({ nom: '', type: '', tauxHoraire: 2500, capaciteJourMin: 480, intervalleEntretienH: 200 });
   const [newOpByPiece, setNewOpByPiece] = useState({});
+  const [materialRequest,setMaterialRequest] = useState(null);
   const [toast, setToast] = useState({ type: 'ok', text: '' });
 
   function showToast(text, type = 'ok') {
@@ -364,6 +365,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
                         <input type="checkbox" name="chuteDispo" defaultChecked={p.chuteDispo} className="accent-[#22D3EE]" /> Chute disponible en stock (sinon achat)
                       </label>
                       <div className="flex flex-wrap gap-2 items-center">
+                        <button type="button" onClick={()=>{setMaterialRequest({id:p.id});setTab('matiere')}} className="px-2.5 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-slate-300">Estimation matière</button>
                         <button type="button" onClick={() => setTimelinePiece(p)} className="px-2.5 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-slate-300 flex items-center gap-1 cursor-pointer">
                           <Clock className="w-3.5 h-3.5 text-[#22D3EE]" /> Dossier
                         </button>
@@ -676,7 +678,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
 
       {/* TAB 5: MATIERE */}
       <div className={tab === 'matiere' ? 'block' : 'hidden'}>
-        <MaterialCalculator />
+        <MaterialCalculator state={state} reload={reload} showToast={showToast} materialRequest={materialRequest} />
       </div>
     </div>
   );

@@ -8,7 +8,8 @@
     "test": "node scripts/smoke-test.js",
     "test:cad": "node scripts/test-cad-bricks.mjs",
     "test:planning": "node scripts/test-workshop-planner.js && node scripts/test-planning-scenarios.js && node scripts/test-planning-integration.js",
-    "test:planning-ui": "node scripts/ui-planning-check.cjs"
+    "test:planning-ui": "node scripts/ui-planning-check.cjs",
+    "test:material": "node scripts/test-material-estimate.js"
   },
   "keywords": [],
   "author": "",

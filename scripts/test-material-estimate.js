@@ -1,0 +1,10 @@
+const assert=require('assert');
+const {computeMaterialEstimate,MATERIALS}=require('../src/services/materialEstimate');
+const near=(a,b)=>assert(Math.abs(a-b)<1e-9,`${a} != ${b}`);
+const base={shape:'rond',materialId:'acier',quantity:10,lengthMm:100,lossMm:3,diameterMm:50};
+let r=computeMaterialEstimate(base);near(r.unitKg,Math.PI*25**2*100*7.85/1e6);near(r.totalKg,r.unitKg*10);near(r.totalLengthM,1.03);
+r=computeMaterialEstimate({...base,shape:'plat',widthMm:80,heightMm:20,lossMm:0});near(r.unitKg,80*20*100*7.85/1e6);near(r.totalLengthM,1);
+r=computeMaterialEstimate({...base,shape:'tube',diameterMm:50,innerDiameterMm:20});near(r.unitKg,Math.PI*(50**2-20**2)/4*100*7.85/1e6);
+for(const invalid of [{...base,materialId:'inventé'},{...base,shape:'autre'},{...base,quantity:2.5},{...base,quantity:0},{...base,lossMm:-1},{...base,lengthMm:0},{...base,diameterMm:NaN},{...base,shape:'tube',innerDiameterMm:50},{...base,shape:'tube',innerDiameterMm:-1},{...base,shape:'plat',widthMm:0,heightMm:20}])assert.throws(()=>computeMaterialEstimate(invalid));
+assert.equal(MATERIALS.length,9);
+console.log('✅ Calcul matière : rond, plat, tube, pertes et validations');

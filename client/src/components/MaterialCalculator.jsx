@@ -1,126 +1,49 @@
-import React, { useState } from 'react';
-import { Scale } from 'lucide-react';
+import React, {useEffect,useState} from 'react';
+import {Scale} from 'lucide-react';
+import {api} from '../api';
 
-const MATERIALS = [
-  { name: 'Acier (42CrMo4 / S235)', density: 7.85 },
-  { name: 'Inox (304L / 316L)', density: 7.90 },
-  { name: 'Aluminium (7075 / 6061)', density: 2.70 },
-  { name: 'Bronze (CuSn12)', density: 8.80 },
-  { name: 'Laiton (CuZn39Pb3)', density: 8.50 },
-  { name: 'Fonte', density: 7.20 },
-  { name: 'Plastique POM / Delrin', density: 1.41 },
-  { name: 'Plastique Nylon PA6', density: 1.15 },
-  { name: 'Plastique PTFE / Téflon', density: 2.20 }
-];
-
-export default function MaterialCalculator() {
-  const [shape, setShape] = useState('rond');
-  const [matIdx, setMatIdx] = useState(0);
-  const [d, setD] = useState(50);
-  const [di, setDi] = useState(20);
-  const [w, setW] = useState(80);
-  const [h, setH] = useState(20);
-  const [len, setLen] = useState(100);
-  const [qty, setQty] = useState(10);
-
-  const density = MATERIALS[matIdx].density;
-  let error = '';
-  let volCm3 = 0;
-
-  if (len <= 0 || qty <= 0) {
-    error = 'Longueur et quantité doivent être supérieures à 0.';
-  } else if (shape === 'rond') {
-    if (d <= 0) error = 'Le diamètre doit être > 0.';
-    else volCm3 = Math.PI * Math.pow(d / 20, 2) * (len / 10);
-  } else if (shape === 'plat') {
-    if (w <= 0 || h <= 0) error = 'Largeur et épaisseur doivent être > 0.';
-    else volCm3 = (w / 10) * (h / 10) * (len / 10);
-  } else if (shape === 'tube') {
-    if (d <= 0 || di < 0 || di >= d) error = 'Diamètre intérieur doit être inférieur au diamètre extérieur.';
-    else volCm3 = Math.PI * (Math.pow(d / 20, 2) - Math.pow(di / 20, 2)) * (len / 10);
+const blank=quantity=>({shape:'',materialId:'',quantity:String(quantity||''),lengthMm:'',lossMm:'3',diameterMm:'',innerDiameterMm:'',widthMm:'',heightMm:''});
+export default function MaterialCalculator({state,reload,showToast,materialRequest}) {
+  const [ofId,setOfId]=useState(''),[form,setForm]=useState(()=>blank(''));
+  const [materials,setMaterials]=useState([]),[estimate,setEstimate]=useState(null),[saved,setSaved]=useState(null);
+  const [loading,setLoading]=useState(false),[error,setError]=useState('');
+  const openPieces=state.pieces.filter(p=>!p.archived&&!['Clôturé','Refusé'].includes(p.statut));
+  const selected=openPieces.find(p=>p.id===ofId);
+  useEffect(()=>{let active=true;api('/api/material/catalog').then(r=>{if(active)setMaterials(r.materials)}).catch(e=>{if(active)setError(e.message)});return()=>{active=false}},[]);
+  useEffect(()=>{let active=true;setSaved(null);if(ofId)api(`/api/pieces/${ofId}/material-estimate`).then(r=>{if(active)setSaved(r)}).catch(e=>{if(active)setError(e.message)});return()=>{active=false}},[ofId]);
+  function selectOf(id){setOfId(id);const p=openPieces.find(x=>x.id===id);setForm(blank(p?.quantitePrevue));setEstimate(null);setError('');}
+  useEffect(()=>{if(materialRequest?.id)selectOf(materialRequest.id)},[materialRequest]);
+  function change(field,value){setForm(f=>({...f,[field]:value}));setEstimate(null);setError('');}
+  function inputs(){const n=key=>form[key]===''?null:Number(form[key]);return {shape:form.shape,materialId:form.materialId,quantity:n('quantity'),lengthMm:n('lengthMm'),lossMm:n('lossMm'),...(form.shape==='plat'?{widthMm:n('widthMm'),heightMm:n('heightMm')}:{diameterMm:n('diameterMm'),...(form.shape==='tube'?{innerDiameterMm:n('innerDiameterMm')}:{})})};}
+  async function calculate(e){e.preventDefault();setLoading(true);setError('');try{setEstimate(await api('/api/material/estimate','POST',inputs()))}catch(err){setEstimate(null);setError(err.message)}finally{setLoading(false)}}
+  async function save(){
+    if(!selected||!estimate)return;
+    const different=estimate.inputs.quantity!==selected.quantitePrevue;
+    const msg=`Enregistrer cette estimation dans ${selected.id} ?${different?` Attention : quantité calculée ${estimate.inputs.quantity}, quantité de l’OF ${selected.quantitePrevue}.`:''}\nLe stock, les achats et le planning ne seront pas modifiés.`;
+    if(!window.confirm(msg))return;
+    setLoading(true);setError('');try{const r=await api(`/api/pieces/${ofId}/material-estimate`,'PUT',estimate.inputs);setSaved(r);showToast('Estimation associée à l’OF. Aucun stock n’a été réservé.');await reload()}catch(err){setError(err.message)}finally{setLoading(false)}
   }
-
-  const unitKg = error ? 0 : (volCm3 * density) / 1000;
-  const totalKg = unitKg * qty;
-  const totalLenM = ((len + 3) * qty) / 1000;
-
-  return (
-    <div className="cyber-card p-4 space-y-3">
-      <div className="flex items-center gap-2 text-sm font-semibold text-white">
-        <Scale className="w-4 h-4 text-[#22D3EE]" /> Calculateur matière première
+  function loadSaved(){const inputs=saved?.estimate?.inputs;if(!inputs)return;setForm({...blank(inputs.quantity),...Object.fromEntries(Object.entries(inputs).map(([k,v])=>[k,String(v)]))});setEstimate(saved.estimate);setError('');}
+  const inputClass='w-full mt-1 p-2 rounded bg-[#0B0F14] border border-slate-700 text-white';
+  const field=(label,key,props={})=><label className="block text-xs text-slate-300">{label}<input aria-label={label} type="number" required min={props.min??0} step={props.step??'any'} value={form[key]} onChange={e=>change(key,e.target.value)} className={inputClass}/></label>;
+  return <section className="cyber-card p-4 space-y-4">
+    <div><h2 className="flex items-center gap-2 text-sm font-semibold text-white"><Scale size={16} className="text-cyan-300"/> Estimation matière première</h2><p className="text-xs text-slate-400 mt-1">Calcul indicatif : aucune réservation de stock ni commande. Vérifiez la matière et les dimensions du brut.</p></div>
+    <label className="block text-xs text-slate-300">OF associé (facultatif)<select aria-label="OF associé" value={ofId} onChange={e=>selectOf(e.target.value)} className={inputClass}><option value="">Calcul libre, sans OF</option>{openPieces.map(p=><option key={p.id} value={p.id}>{p.id} · {p.nom}</option>)}</select></label>
+    {selected&&<div className="rounded border border-slate-700 p-3 text-xs text-slate-300"><strong>{selected.id} · {selected.nom}</strong><p className="mt-1">Quantité OF : {selected.quantitePrevue} · Matière renseignée : {selected.matiere||'Non renseignée'}</p><p className="text-slate-400 mt-1">Seule la quantité est reprise. Choisissez la matière et saisissez les dimensions réelles du brut.</p>{saved?.estimate&&<button type="button" onClick={loadSaved} className="text-cyan-300 underline mt-2">Charger l’estimation enregistrée{saved.updatedBy?` · ${saved.updatedBy}`:''}</button>}</div>}
+    <form onSubmit={calculate} className="space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label className="block text-xs text-slate-300">Forme du brut<select required aria-label="Forme du brut" value={form.shape} onChange={e=>change('shape',e.target.value)} className={inputClass}><option value="">Choisir une forme</option><option value="rond">Rond (barre)</option><option value="plat">Plat rectangulaire</option><option value="tube">Tube creux</option></select></label>
+        <label className="block text-xs text-slate-300">Matière et densité<select required aria-label="Matière et densité" value={form.materialId} onChange={e=>change('materialId',e.target.value)} className={inputClass}><option value="">Choisir une matière</option>{materials.map(m=><option key={m.id} value={m.id}>{m.name} · {m.density} g/cm³</option>)}</select></label>
+        {field('Quantité (pièces)','quantity',{min:1,step:1})}{field('Longueur du brut par pièce (mm)','lengthMm',{min:0.001})}
+        {(form.shape==='rond'||form.shape==='tube')&&field('Diamètre extérieur (mm)','diameterMm',{min:0.001})}
+        {form.shape==='tube'&&field('Diamètre intérieur (mm)','innerDiameterMm')}
+        {form.shape==='plat'&&<>{field('Largeur (mm)','widthMm',{min:0.001})}{field('Épaisseur (mm)','heightMm',{min:0.001})}</>}
+        {field('Perte de coupe par pièce (mm)','lossMm')}
       </div>
-
-      <div className="bg-[#0B0F14] border border-[#1E2A38] rounded-[6px] p-2.5 flex items-center justify-center">
-        <svg width="160" height="72" viewBox="0 0 160 72">
-          {shape === 'rond' && (
-            <>
-              <circle cx="42" cy="36" r="22" fill="none" stroke="#22D3EE" strokeWidth="2" />
-              <line x1="20" y1="36" x2="64" y2="36" stroke="#64748B" strokeDasharray="3" />
-              <rect x="82" y="18" width="60" height="36" fill="none" stroke="#38BDF8" strokeWidth="1.5" />
-              <text x="26" y="68" fill="#22D3EE" fontSize="10" fontFamily="JetBrains Mono">Ø {d} mm</text>
-              <text x="94" y="68" fill="#94A3B8" fontSize="10" fontFamily="JetBrains Mono">L={len}</text>
-            </>
-          )}
-          {shape === 'plat' && (
-            <>
-              <rect x="25" y="16" width="110" height="32" fill="none" stroke="#22D3EE" strokeWidth="2" />
-              <text x="45" y="64" fill="#22D3EE" fontSize="10" fontFamily="JetBrains Mono">{w} × {h} × {len} mm</text>
-            </>
-          )}
-          {shape === 'tube' && (
-            <>
-              <circle cx="50" cy="36" r="24" fill="none" stroke="#22D3EE" strokeWidth="2" />
-              <circle cx="50" cy="36" r="12" fill="none" stroke="#F59E0B" strokeWidth="1.5" />
-              <text x="86" y="32" fill="#22D3EE" fontSize="10" fontFamily="JetBrains Mono">Øext {d}</text>
-              <text x="86" y="48" fill="#F59E0B" fontSize="10" fontFamily="JetBrains Mono">Øint {di}</text>
-            </>
-          )}
-        </svg>
-      </div>
-
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <div>
-          <label className="text-[11px] text-slate-400">Forme</label>
-          <select value={shape} onChange={e => setShape(e.target.value)} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]">
-            <option value="rond">Rond (barre)</option>
-            <option value="plat">Plat (rect.)</option>
-            <option value="tube">Tube (creux)</option>
-          </select>
-        </div>
-        <div>
-          <label className="text-[11px] text-slate-400">Matière · densité</label>
-          <select value={matIdx} onChange={e => setMatIdx(+e.target.value)} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]">
-            {MATERIALS.map((m, i) => <option key={m.name} value={i}>{m.name} ({m.density})</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="text-[11px] text-slate-400">Quantité</label>
-          <input type="number" value={qty} onChange={e => setQty(+e.target.value)} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" />
-        </div>
-        {(shape === 'rond' || shape === 'tube') && (
-          <div><label className="text-[11px] text-slate-400">Ø ext. (mm)</label><input type="number" value={d} onChange={e => setD(+e.target.value)} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" /></div>
-        )}
-        {shape === 'tube' && (
-          <div><label className="text-[11px] text-slate-400">Ø int. (mm)</label><input type="number" value={di} onChange={e => setDi(+e.target.value)} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" /></div>
-        )}
-        {shape === 'plat' && (
-          <>
-            <div><label className="text-[11px] text-slate-400">Largeur (mm)</label><input type="number" value={w} onChange={e => setW(+e.target.value)} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" /></div>
-            <div><label className="text-[11px] text-slate-400">Épaisseur (mm)</label><input type="number" value={h} onChange={e => setH(+e.target.value)} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" /></div>
-          </>
-        )}
-        <div className="col-span-2"><label className="text-[11px] text-slate-400">Longueur (mm)</label><input type="number" value={len} onChange={e => setLen(+e.target.value)} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" /></div>
-      </div>
-
-      {error ? (
-        <div className="p-2 rounded-[6px] bg-red-500/10 border border-red-500/30 text-red-400 text-xs">{error}</div>
-      ) : (
-        <div className="grid grid-cols-3 gap-2 bg-[#0B0F14] border border-[#1E2A38] rounded-[6px] p-2.5 text-center">
-          <div><span className="text-[10px] text-slate-500 block">PAR PIÈCE</span><strong className="text-xs font-mono-num text-white">{unitKg.toFixed(2)} KG</strong></div>
-          <div><span className="text-[10px] text-slate-500 block">TOTAL · {qty} PCS</span><strong className="text-xs font-mono-num text-emerald-400">{totalKg.toFixed(2)} KG</strong></div>
-          <div><span className="text-[10px] text-slate-500 block">BARRE (+3 MM)</span><strong className="text-xs font-mono-num text-[#22D3EE]">{totalLenM.toFixed(2)} M</strong></div>
-        </div>
-      )}
-    </div>
-  );
+      <p className="text-[11px] text-slate-500">La perte est ajoutée une fois par pièce à la longueur. Les poids indiqués excluent cette perte ; les densités sont approximatives.</p>
+      <button disabled={loading} className="px-4 py-2 rounded bg-cyan-400 text-slate-950 text-xs font-semibold disabled:opacity-50">Calculer l’estimation</button>
+    </form>
+    {error&&<div role="alert" className="p-2 rounded bg-red-500/10 border border-red-500/30 text-red-300 text-xs">{error}</div>}
+    {estimate&&<div className="space-y-3"><div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs"><div className="p-3 rounded bg-slate-950 border border-slate-800">Poids théorique / pièce<br/><strong className="text-white text-sm">{estimate.unitKg.toFixed(2)} kg</strong></div><div className="p-3 rounded bg-slate-950 border border-slate-800">Poids théorique total<br/><strong className="text-emerald-300 text-sm">{estimate.totalKg.toFixed(2)} kg</strong></div><div className="p-3 rounded bg-slate-950 border border-slate-800">Longueur totale avec pertes<br/><strong className="text-cyan-300 text-sm">{estimate.totalLengthM.toFixed(3)} m</strong></div></div><p className="text-[11px] text-slate-400">Somme théorique des longueurs, sans optimisation des barres, chutes ou stock disponible.</p>{selected&&estimate.inputs.quantity!==selected.quantitePrevue&&<p className="text-xs text-amber-300">Attention : calcul pour {estimate.inputs.quantity} pièces, OF prévu pour {selected.quantitePrevue}.</p>}{selected&&<button type="button" disabled={loading} onClick={save} className="px-4 py-2 rounded bg-emerald-600 text-white text-xs font-semibold disabled:opacity-50">Associer cette estimation à l’OF</button>}</div>}
+  </section>;
 }

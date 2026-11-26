@@ -827,6 +827,13 @@ function createSchema() {
       segmentsJson TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS material_estimates (
+      pieceId TEXT PRIMARY KEY REFERENCES pieces(id) ON DELETE CASCADE,
+      payload TEXT NOT NULL,
+      updatedBy TEXT NOT NULL,
+      updatedAtMs INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS planning_unavailability (
       id TEXT PRIMARY KEY,
       resourceType TEXT NOT NULL,
