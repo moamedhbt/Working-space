@@ -1057,6 +1057,7 @@ router.put('/operations/:opId', auth, requireRole('directeur', 'chef'), (req, re
   const { opId } = req.params;
   const op = queryOne('SELECT * FROM operations WHERE id = ?', [opId]);
   if (!op) return res.status(404).json({ error: 'Opération introuvable' });
+  if (op.statut === 'Terminée') return res.status(409).json({ error: 'Une opération terminée ne peut pas être modifiée.' });
   if (op.statut === 'En cours' || op.statut === 'Panne machine') return res.status(409).json({ error: 'Mettez l’opération en pause ou résolvez la panne avant de modifier son affectation ou ses temps.' });
   const piece = queryOne('SELECT * FROM pieces WHERE id = ?', [op.pieceId]);
 
@@ -1120,7 +1121,7 @@ router.delete('/operations/:opId', auth, requireRole('directeur', 'chef'), (req,
   const { opId } = req.params;
   const op = queryOne('SELECT * FROM operations WHERE id = ?', [opId]);
   if (!op) return res.status(404).json({ error: 'Opération introuvable' });
-  if (op.statut === 'En cours') return res.status(400).json({ error: 'Impossible de supprimer une opération en cours' });
+  if (['En cours', 'Panne machine', 'Terminée'].includes(op.statut)) return res.status(409).json({ error: 'Impossible de supprimer une opération en cours, en panne ou terminée.' });
 
   const count = queryOne('SELECT COUNT(*) AS c FROM operations WHERE pieceId = ?', [op.pieceId]).c;
   if (count <= 1) {
@@ -1191,7 +1192,9 @@ router.post('/pieces/:id/:action', auth, (req, res) => {
       ? Math.max(5, parseInt(b.tempsPrevuMin, 10) || p.tempsPrevuMin)
       : (diffMin > 0 ? diffMin : p.tempsPrevuMin);
 
+    const explicitAssignment = b.machineId !== undefined || b.machine !== undefined || b.operateurId !== undefined || b.operateur !== undefined;
     const currentOperation = queryOne("SELECT * FROM operations WHERE pieceId = ? AND statut IN ('En cours','Panne machine') LIMIT 1", [id]);
+    if (quantitePrevue !== p.quantitePrevue && queryOne("SELECT id FROM operations WHERE pieceId = ? AND statut <> 'En attente' LIMIT 1", [id])) return res.status(409).json({error:'La quantité ne peut pas être changée après le début d’une opération : cela modifierait les temps historiques de la gamme.'});
     if (currentOperation && (currentOperation.machineId !== machineId || currentOperation.operateurId !== operateurId)) {
       return res.status(409).json({error:'Mettez l’opération en pause ou résolvez la panne avant de changer son affectation.'});
     }
@@ -1223,7 +1226,7 @@ router.post('/pieces/:id/:action', auth, (req, res) => {
 
       const ops = queryAll('SELECT * FROM operations WHERE pieceId = ? ORDER BY ordre ASC, rowid ASC', [id]);
       const targetOp = ops.find(o => o.statut !== 'Terminée' && !o.estSousTraitance) || ops[0];
-      if (targetOp) {
+      if (targetOp && (explicitAssignment || b.debutStr !== undefined || b.finStr !== undefined || b.tempsPrevuMin !== undefined)) {
         const updateOpTime = ops.length === 1 && !(targetOp.tempsUnitaireMin > 0) ? tempsPrevuMin : targetOp.tempsPrevuMin;
         runSql(
           `UPDATE operations

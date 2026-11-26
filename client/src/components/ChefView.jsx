@@ -139,11 +139,10 @@ export default function ChefView({ state, user, reload, search = '' }) {
   async function savePiece(id, e) {
     e.preventDefault();
     const f = e.target;
+    if (!window.confirm('Enregistrer ces informations modifie directement l’OF. La validation du chef et le planning publié de cet OF seront retirés : il faudra revalider, recalculer puis publier le planning. Continuer ?')) return;
     try {
       await api(`/api/pieces/${id}/chef`, 'POST', {
         quantitePrevue: Number(f.quantitePrevue.value) || 1,
-        machineId: f.machineId.value,
-        operateurId: f.operateurId.value,
         matiere: f.matiere.value,
         fournisseur: f.fournisseur.value,
         outils: f.outils.value,
@@ -159,6 +158,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
   async function addOperation(pieceId, piece) {
     const form = newOpByPiece[pieceId] || {};
     if (!form.libelle?.trim()) return showToast("Saisissez le libellé de l'opération.", 'err');
+    if (!window.confirm(`Ajouter « ${form.libelle.trim()} » modifie directement la gamme et retire la validation chef et le planning publié de cet OF. Il faudra revalider, recalculer et publier. Continuer ?`)) return;
     try {
       await api(`/api/pieces/${pieceId}/operations`, 'POST', {
         libelle: form.libelle.trim(),
@@ -180,12 +180,19 @@ export default function ChefView({ state, user, reload, search = '' }) {
     }
   }
 
-  async function updateOperationField(opId, payload) {
+  async function updateOperationField(opId, payload, input) {
+    const piece = state.pieces.find(p => (p.operations || []).some(o => o.id === opId));
+    const op = piece?.operations.find(o => o.id === opId);
+    const [field, value] = Object.entries(payload)[0];
+    const label = {machineId:'Machine', operateurId:'Opérateur', machineTypeRequis:'Choix machine', tempsReglageMin:'Temps de réglage', tempsUnitaireMin:'Temps unitaire'}[field] || field;
+    const describe = v => field === 'machineId' ? (state.machines.find(m => m.id === v)?.nom || v || '—') : field === 'operateurId' ? (state.users.find(u => u.id === v)?.nom || v || '—') : field === 'machineTypeRequis' ? (v ? `Auto · ${v}` : 'Machine imposée') : `${v ?? 0} min`;
+    if (!window.confirm(`${piece?.id || 'OF'} · ${op?.libelle || 'Opération'}\n${label} : ${describe(op?.[field])} → ${describe(value)}\n\nCette modification est immédiate : elle retire la validation chef et le planning publié de cet OF. Revalidez, puis recalculez et publiez le planning pour voir les dates et les autres OF touchés. Continuer ?`)) { if (input) input.value = op?.[field] ?? 0; return; }
     try {
       await api(`/api/operations/${opId}`, 'PUT', payload);
       showToast('Opération mise à jour.');
       reload();
     } catch (e) {
+      if (input) input.value = op?.[field] ?? 0;
       showToast(e.message, 'err');
     }
   }
@@ -199,6 +206,9 @@ export default function ChefView({ state, user, reload, search = '' }) {
   }
 
   async function deleteOperation(opId) {
+    const piece = state.pieces.find(p => (p.operations || []).some(o => o.id === opId));
+    const op = piece?.operations.find(o => o.id === opId);
+    if (!window.confirm(`Supprimer « ${op?.libelle || 'cette opération'} » ? La validation chef et le planning publié de cet OF seront retirés. Il faudra revalider, recalculer et publier.`)) return;
     try {
       await api(`/api/operations/${opId}`, 'DELETE');
       showToast('Opération supprimée de la gamme.');
@@ -336,18 +346,6 @@ export default function ChefView({ state, user, reload, search = '' }) {
                         <input name="quantitePrevue" type="number" min="1" defaultValue={p.quantitePrevue} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" />
                       </div>
                       <div>
-                        <label className="text-[10px] text-slate-500">Machine principale</label>
-                        <select name="machineId" defaultValue={p.machineId || ''} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]">
-                          {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="text-[10px] text-slate-500">Opérateur principal</label>
-                        <select name="operateurId" defaultValue={p.operateurId || ''} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]">
-                          {operators.map(o => <option key={o.id} value={o.id}>{o.nom}</option>)}
-                        </select>
-                      </div>
-                      <div>
                         <label className="text-[10px] text-slate-500">Fournisseur matière</label>
                         <input name="fournisseur" defaultValue={p.fournisseur} className="w-full mt-1 p-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38]" />
                       </div>
@@ -385,6 +383,10 @@ export default function ChefView({ state, user, reload, search = '' }) {
                     </div>
                   </form>
 
+                  <div className="rounded border border-cyan-500/20 bg-cyan-500/5 p-2 text-[11px] text-slate-300">
+                    Les machines, opérateurs et temps se règlent dans chaque opération ci-dessous. La validation chef ne publie pas le planning : préparez et publiez un brouillon dans Planning.
+                    <span className="ml-1 font-medium">{p.planningValide ? 'Planning publié.' : 'Planning non publié ou à republier.'}</span>
+                  </div>
                   {/* GAMME MULTI-OPERATIONS WITH SETUP + UNIT TIME + SUBCONTRACTING */}
                   <div className="bg-[#0B0F14] border border-[#1E2A38] rounded-[6px] p-3 space-y-2.5">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -445,7 +447,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
                                   type="number"
                                   min="0"
                                   defaultValue={op.tempsReglageMin || 0}
-                                  onBlur={e => { if (Number(e.target.value) !== Number(op.tempsReglageMin || 0)) updateOperationField(op.id, { tempsReglageMin: Number(e.target.value) }); }}
+                                  onBlur={e => { if (Number(e.target.value) !== Number(op.tempsReglageMin || 0)) updateOperationField(op.id, { tempsReglageMin: Number(e.target.value) }, e.target); }}
                                   disabled={p.statut === 'Clôturé' || ['Terminée', 'En cours', 'Panne machine'].includes(op.statut)}
                                   className="w-12 p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-center"
                                   title="Temps réglage (min)"
@@ -456,7 +458,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
                                   min="0"
                                   step="0.5"
                                   defaultValue={op.tempsUnitaireMin || 0}
-                                  onBlur={e => { if (Number(e.target.value) !== Number(op.tempsUnitaireMin || 0)) updateOperationField(op.id, { tempsUnitaireMin: Number(e.target.value) }); }}
+                                  onBlur={e => { if (Number(e.target.value) !== Number(op.tempsUnitaireMin || 0)) updateOperationField(op.id, { tempsUnitaireMin: Number(e.target.value) }, e.target); }}
                                   disabled={p.statut === 'Clôturé' || ['Terminée', 'En cours', 'Panne machine'].includes(op.statut)}
                                   className="w-12 p-1 rounded bg-[#0B0F14] border border-[#1E2A38] font-mono-num text-center"
                                   title="Temps unitaire (min/pièce)"
@@ -479,7 +481,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
                               'bg-slate-800 text-slate-300 border-slate-700'
                             }`}>{op.statut}</span>
                             {op.estSousTraitance && op.statut !== 'Terminée' && p.statut !== 'Clôturé' && <button type="button" onClick={() => completeSubcontract(op,p)} className="px-2 py-1 rounded border border-emerald-600 text-emerald-300 text-[10px]">Retour reçu</button>}
-                            {p.statut !== 'Clôturé' && op.statut !== 'En cours' && (p.operations || []).length > 1 && (
+                            {p.statut !== 'Clôturé' && !['En cours', 'Panne machine', 'Terminée'].includes(op.statut) && (p.operations || []).length > 1 && (
                               <button type="button" onClick={() => deleteOperation(op.id)} className="p-1 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 cursor-pointer" title="Supprimer">
                                 <Trash2 className="w-3 h-3" />
                               </button>

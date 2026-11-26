@@ -7,6 +7,22 @@ try {for(let i=0;i<60;i++){try{if((await fetch(base+'/api/tv')).ok)break;}catch{
  const d=(await req('/api/login','POST',{username:'directeur',password:'1234'})).data.token;
  const u=(await req('/api/login','POST',{username:'karim',password:'1234'})).data.token;
  assert(d&&u);db=new Database(dbFile);db.pragma('foreign_keys = ON');db.exec('DELETE FROM operation_stops; DELETE FROM pannes; DELETE FROM pieces;');
+ // Saving OF details must not silently rewrite a different operation's assignment.
+ const safety=await req('/api/pieces','POST',{nom:'Contrôle gamme',chuteDispo:true,machineId:'m1',operateurId:'u4'},d); assert.equal(safety.status,201);
+ const sid=safety.data.id;
+ const added=await req(`/api/pieces/${sid}/operations`,'POST',{libelle:'Deuxième étape',machineId:'m2',operateurId:'u4',tempsPrevuMin:60},d); assert.equal(added.status,201);
+ const first=db.prepare('SELECT id FROM operations WHERE pieceId=? ORDER BY ordre LIMIT 1').get(sid).id;
+ db.prepare("UPDATE operations SET statut='Terminée' WHERE id=?").run(first);
+ db.prepare('UPDATE pieces SET machineId=?,planningValide=1,chefValide=1 WHERE id=?').run('m1',sid);
+ assert.equal((await req(`/api/pieces/${sid}/chef`,'POST',{matiere:'Acier'},d)).status,200);
+ assert.equal(db.prepare('SELECT machineId FROM operations WHERE id=?').get(added.data.id).machineId,'m2');
+ assert.deepEqual(db.prepare('SELECT planningValide,chefValide FROM pieces WHERE id=?').get(sid),{planningValide:0,chefValide:0});
+ assert.equal((await req(`/api/pieces/${sid}/chef`,'POST',{quantitePrevue:99},d)).status,409);
+ assert.equal((await req(`/api/operations/${first}`,'PUT',{tempsPrevuMin:20},d)).status,409);
+ assert.equal((await req(`/api/operations/${first}`,'DELETE',null,d)).status,409);
+ db.prepare("UPDATE operations SET statut='Panne machine' WHERE id=?").run(added.data.id);
+ assert.equal((await req(`/api/operations/${added.data.id}`,'DELETE',null,d)).status,409);
+ db.prepare('DELETE FROM pieces WHERE id=?').run(sid);
  const created=await req('/api/pieces','POST',{nom:'Test planning',chuteDispo:true,machineId:'m1',operateurId:'u4',tempsPrevuMin:1100},d); assert.equal(created.status,201);
  const id=created.data.id; assert.equal((await req(`/api/pieces/${id}/be-validate`,'POST',{},d)).status,200);assert.equal((await req(`/api/pieces/${id}/chef-validate`,'POST',{},d)).status,200);
  const blocked=await req('/api/pieces','POST',{nom:'OF incomplet',chuteDispo:false,machineId:'m2',operateurId:'u4'},d); assert.equal(blocked.status,201);
