@@ -23,6 +23,24 @@ try {for(let i=0;i<60;i++){try{if((await fetch(base+'/api/tv')).ok)break;}catch{
  db.prepare("UPDATE operations SET statut='Panne machine' WHERE id=?").run(added.data.id);
  assert.equal((await req(`/api/operations/${added.data.id}`,'DELETE',null,d)).status,409);
  db.prepare('DELETE FROM pieces WHERE id=?').run(sid);
+ // Operator and time edits are isolated scenarios until human publication.
+ const scenario=await req('/api/pieces','POST',{nom:'Proposition durée',chuteDispo:true,machineId:'m1',operateurId:'u4',quantitePrevue:10,tempsPrevuMin:60},d);assert.equal(scenario.status,201);
+ const scenarioId=scenario.data.id;
+ for(const action of ['be-validate','chef-validate']) assert.equal((await req(`/api/pieces/${scenarioId}/${action}`,'POST',{},d)).status,200);
+ const scenarioOp=db.prepare('SELECT * FROM operations WHERE pieceId=?').get(scenarioId);
+ const edit={operationId:scenarioOp.id,operateurId:'u5',tempsReglageMin:20,tempsUnitaireMin:3,tempsPrevuMin:60};
+ assert.equal((await req('/api/planning/drafts/operation','POST',edit,u)).status,403);
+ assert.equal((await req('/api/planning/drafts/operation','POST',{...edit,operateurId:'u1'},d)).status,400);
+ assert.equal((await req('/api/planning/drafts/operation','POST',{...edit,tempsUnitaireMin:-1},d)).status,400);
+ const scenarioDraft=await req('/api/planning/drafts/operation','POST',edit,d);assert.equal(scenarioDraft.status,201);
+ const change=scenarioDraft.data.proposal.changes.find(c=>c.opId===scenarioOp.id);assert(change&&change.detailChanged);assert.equal(change.durationAfter,50);assert.equal(change.operatorAfter,'u5');
+ assert.equal(db.prepare('SELECT operateurId FROM operations WHERE id=?').get(scenarioOp.id).operateurId,'u4');
+ assert.equal((await req(`/api/planning/drafts/${scenarioDraft.data.proposal.id}/publish`,'POST',{},d)).status,200);
+ const applied=db.prepare('SELECT operateurId,tempsPrevuMin,tempsUnitaireMin FROM operations WHERE id=?').get(scenarioOp.id);
+ assert.deepEqual(applied,{operateurId:'u5',tempsPrevuMin:50,tempsUnitaireMin:3});
+ db.prepare("UPDATE operations SET statut='En cours' WHERE id=?").run(scenarioOp.id);
+ assert.equal((await req('/api/planning/drafts/operation','POST',edit,d)).status,400);
+ db.prepare('DELETE FROM pieces WHERE id=?').run(scenarioId);
  const created=await req('/api/pieces','POST',{nom:'Test planning',chuteDispo:true,machineId:'m1',operateurId:'u4',tempsPrevuMin:1100},d); assert.equal(created.status,201);
  const id=created.data.id; assert.equal((await req(`/api/pieces/${id}/be-validate`,'POST',{},d)).status,200);assert.equal((await req(`/api/pieces/${id}/chef-validate`,'POST',{},d)).status,200);
  const blocked=await req('/api/pieces','POST',{nom:'OF incomplet',chuteDispo:false,machineId:'m2',operateurId:'u4'},d); assert.equal(blocked.status,201);

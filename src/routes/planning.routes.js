@@ -10,6 +10,7 @@ const {
   logAudit,
   getSettings,
   syncPieceFromOperations,
+  computeOpPlannedMin,
   getEnrichedPieces
 } = require('../db/database');
 const { estimateNewOfAI } = require('../services/scheduler');
@@ -65,19 +66,22 @@ function proposalChanges(proposal, pieces) {
     if(previous?.published && !prior.length && old) prior=segmentsForOperation(old,getSettings());
     const beforeSlots=canonical(prior), afterSlots=canonical(o.segments);
     const segmentsChanged=JSON.stringify(beforeSlots)!==JSON.stringify(afterSlots);
+    const edit=proposal.operationEdit?.operationId===o.opId ? proposal.operationEdit : null;
+    const detailChanged=!!edit && (edit.operateurId!==old?.operateurId || edit.tempsReglageMin!==old?.tempsReglageMin || edit.tempsUnitaireMin!==old?.tempsUnitaireMin || edit.tempsPrevuMin!==old?.tempsPrevuMin);
     return {opId:o.opId,pieceId:o.pieceId,libelle:o.libelle,
+      operatorBefore:old?.operateurId,operatorAfter:edit?.operateurId, durationBefore:old?.tempsPrevuMin,durationAfter:edit?.tempsPrevuMin,detailChanged,
       before:previous?.published?range(beforeSlots):'Non publié', after:range(afterSlots),
       beforeSlots,afterSlots,segmentsChanged,
       machineBefore:old?.machine || 'Non affectée',machineAfter:o.machineId,
-      changed:!previous?.published || !old || old.machineId!==o.machineId || segmentsChanged};
+      changed:!previous?.published || !old || old.machineId!==o.machineId || segmentsChanged || detailChanged};
   }).filter(x=>x.changed);
 }
-function saveProposal(reqUser, priorityFirst = null, reassignment = null, preservePublished = false) {
+function saveProposal(reqUser, priorityFirst = null, reassignment = null, preservePublished = false, operationEdit = null) {
   const pieces = getEnrichedPieces("WHERE p.statut NOT IN ('Clôturé', 'Refusé')");
   const machines = queryAll('SELECT * FROM machines ORDER BY id');
   const users = queryAll('SELECT id, nom, role, actif FROM users ORDER BY id');
   if (priorityFirst && !pieces.some(p => p.id === priorityFirst)) throw Object.assign(new Error('OF introuvable ou clôturé'),{status:400});
-  const scenario = reassignment ? pieces.map(p=>({...p, operations:(p.operations||[]).map(o=>o.id===reassignment.operationId?{...o,machineId:reassignment.machineId,machineTypeRequis:''}:o)})) : pieces;
+  const scenario = pieces.map(p=>({...p, operations:(p.operations||[]).map(o=>o.id===reassignment?.operationId?{...o,machineId:reassignment.machineId,machineTypeRequis:''}:o.id===operationEdit?.operationId?{...o,...operationEdit}:o)}));
   let preservedSegments=null;
   if(preservePublished) {
     preservedSegments={};
@@ -93,6 +97,7 @@ function saveProposal(reqUser, priorityFirst = null, reassignment = null, preser
   if(preservePublished) proposal.warnings.unshift(`Adaptation : ${proposal.preservedPieceIds.length} OF publiés conservés lorsque leurs créneaux restent valides. Les autres sont recalculés ; contrôlez les délais.`);
   if (reassignment) proposal.warnings.push('Changement de machine : vérifiez dimensions, commande CNC, bridage et outillage avant publication.');
   if (reassignment) proposal.reassignment = reassignment;
+  if (operationEdit) proposal.operationEdit = operationEdit;
   proposal.version = 6;
   proposal.changes = proposalChanges(proposal, pieces);
   const id = crypto.randomUUID();
@@ -186,6 +191,26 @@ router.post('/planning/drafts/reassign',auth,requireRole('directeur','chef'),(re
   const result=makeMachineProposal(req.user,operationId,machineId);
   if(result.error)return res.status(400).json({error:result.error});
   res.status(201).json(result);
+});
+// Stage an operator and/or timing change in exactly the same planning engine.
+router.post('/planning/drafts/operation',auth,requireRole('directeur','chef'),(req,res)=>{
+  const {operationId,operateurId,tempsReglageMin,tempsUnitaireMin,tempsPrevuMin}=req.body||{};
+  if(typeof operationId!=='string'||typeof operateurId!=='string') return res.status(400).json({error:'Opération et opérateur requis.'});
+  const op=queryOne('SELECT * FROM operations WHERE id=?',[operationId]);
+  if(!op || op.statut!=='En attente' || op.estSousTraitance) return res.status(400).json({error:'Seule une opération interne en attente peut être proposée.'});
+  const piece=queryOne('SELECT * FROM pieces WHERE id=?',[op.pieceId]);
+  if(!piece || ['Clôturé','Refusé'].includes(piece.statut)) return res.status(400).json({error:'OF indisponible.'});
+  if(!queryOne("SELECT id FROM users WHERE id=? AND role='operateur' AND actif=1",[operateurId])) return res.status(400).json({error:'Opérateur actif requis.'});
+  if(!Number.isInteger(tempsReglageMin)||tempsReglageMin<0||tempsReglageMin>100000 || typeof tempsUnitaireMin!=='number'||!Number.isFinite(tempsUnitaireMin)||tempsUnitaireMin<0||tempsUnitaireMin>100000 || !Number.isInteger(tempsPrevuMin)||tempsPrevuMin<5||tempsPrevuMin>1000000) return res.status(400).json({error:'Temps invalides : réglage entier positif ou nul, temps unitaire positif ou nul et temps fixe d’au moins 5 minutes.'});
+  const duration=computeOpPlannedMin(tempsReglageMin,tempsUnitaireMin,piece.quantitePrevue,tempsPrevuMin);
+  if(duration>1000000) return res.status(400).json({error:'Durée calculée trop grande.'});
+  const edit={operationId,operateurId,tempsReglageMin,tempsUnitaireMin,tempsPrevuMin:duration};
+  if(edit.operateurId===op.operateurId && edit.tempsReglageMin===op.tempsReglageMin && edit.tempsUnitaireMin===op.tempsUnitaireMin && edit.tempsPrevuMin===op.tempsPrevuMin) return res.status(400).json({error:'Aucun changement à proposer.'});
+  const proposal=saveProposal(req.user,null,null,false,edit);
+  if(!proposal.operations.some(o=>o.opId===operationId)) {runSql('DELETE FROM planning_drafts WHERE id=?',[proposal.id]);return res.status(400).json({error:'Cet OF est bloqué : résolvez ses validations et contraintes avant de préparer une proposition.'});}
+  proposal.warnings.push('Affectation et temps proposés : vérifiez les changements avant publication.');
+  runSql('UPDATE planning_drafts SET payload=? WHERE id=?',[JSON.stringify(proposal),proposal.id]);
+  res.status(201).json({proposal});
 });
 router.post('/planning/drafts/move',auth,requireRole('directeur','chef'),(req,res)=>{
   const {operationId,startDate,startTime,draftId}=req.body||{};
@@ -289,6 +314,10 @@ router.post('/planning/drafts/:id/publish', auth, requireRole('directeur', 'chef
       runSql('UPDATE operations SET machineId = ?, datePlanifiee = ?, debutStr = ?, finStr = ? WHERE id = ?', [item.machineId,first.date,first.start,last.end,item.opId]);
       if (plan.reassignment?.operationId === item.opId && plan.reassignment.machineId === item.machineId) {
         runSql("UPDATE operations SET machineTypeRequis = '' WHERE id = ?", [item.opId]);
+      }
+      if (plan.operationEdit?.operationId === item.opId) {
+        const edit=plan.operationEdit;
+        runSql('UPDATE operations SET operateurId=?, tempsReglageMin=?, tempsUnitaireMin=?, tempsPrevuMin=? WHERE id=?', [edit.operateurId,edit.tempsReglageMin,edit.tempsUnitaireMin,edit.tempsPrevuMin,item.opId]);
       }
       updated.add(item.pieceId);
     }

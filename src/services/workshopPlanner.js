@@ -250,7 +250,7 @@ function moveOperation({proposal,piece,operationId,machines,settings,unavailable
     if(i<index)earliest=Math.max(earliest,end);else latest=Math.min(latest,start);
   }
   const duration=target.segments.reduce((sum,s)=>sum+(parseTime(s.end)-parseTime(s.start)),0);
-  const candidate=allocateAvailable(requested,duration,cal,machine.capaciteJourMin,unavailableIntervals(unavailable,machine.id,op.operateurId));
+  const candidate=allocateAvailable(requested,duration,cal,machine.capaciteJourMin,unavailableIntervals(unavailable,machine.id,target.operateurId || op.operateurId));
   const first=candidate.segments[0], actual=parseDate(first.date)+parseTime(first.start);
   if(actual!==requested) return {error:'Le début demandé est hors horaires ouvrés ou indisponible.'};
   if(actual<earliest || candidate.end>latest) return {error:'Ce déplacement ne respecte pas l’ordre des opérations.'};

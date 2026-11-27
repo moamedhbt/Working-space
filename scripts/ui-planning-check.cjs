@@ -109,6 +109,18 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   if(beforeProposal!==afterProposal)throw Error('La proposition a modifié la machine avant publication');
   await chefPage.getByRole('button',{name:/Ordres & Gammes/}).click();
   console.log('✅ UI fiche → brouillon : impacts visibles et machine inchangée avant publication');
+  await chefPage.getByText('Proposer opérateur ou temps dans le planning').first().click();
+  const editSection=chefPage.locator('details').filter({hasText:'Proposer opérateur ou temps dans le planning'}).first();
+  await editSection.locator('input[name="tempsUnitaireMin"]').fill('3');
+  await editSection.locator('input[name="tempsReglageMin"]').fill('20');
+  chefPage.once('dialog',dialog=>dialog.accept());
+  const editResponse=chefPage.waitForResponse(r=>r.url().endsWith('/api/planning/drafts/operation')&&r.request().method()==='POST');
+  await editSection.getByRole('button',{name:'Calculer l’impact'}).click();
+  const editResult=await editResponse;if(editResult.status()!==201)throw Error(`Proposition durée : ${await editResult.text()}`);
+  await chefPage.getByText('Temps prévu :',{exact:false}).first().waitFor();
+  await chefPage.getByRole('button',{name:/Ordres & Gammes/}).click();
+  console.log('✅ UI fiche → brouillon : proposition de temps');
+
 
   await chefPage.getByRole('button',{name:'Estimation matière',exact:true}).click();
   const fixtureId=await chefPage.evaluate(async()=>{const h={Authorization:`Bearer ${localStorage.getItem('atelier_token')}`};return (await (await fetch('/api/state',{headers:h})).json()).pieces.find(p=>p.nom==='Essai type UI').id});

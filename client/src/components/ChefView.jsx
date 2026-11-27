@@ -197,6 +197,20 @@ export default function ChefView({ state, user, reload, search = '' }) {
     finally { setProposalBusy(false); }
   }
 
+  async function proposeOperation(e, piece, op) {
+    e.preventDefault();
+    if (proposalBusy) return;
+    const data = new FormData(e.currentTarget);
+    const payload = {operationId:op.id, operateurId:data.get('operateurId'), tempsReglageMin:Number(data.get('tempsReglageMin')), tempsUnitaireMin:Number(data.get('tempsUnitaireMin')), tempsPrevuMin:Number(data.get('tempsPrevuMin'))};
+    if (!window.confirm(`Préparer un brouillon pour ${piece.id} · ${op.libelle} ? L’aperçu ouvert dans Planning sera remplacé. Rien ne sera publié.`)) return;
+    setProposalBusy(true);
+    try {
+      const result=await api('/api/planning/drafts/operation','POST',payload);
+      setPlanningProposal(result.proposal);setTab('planning');
+      showToast('Brouillon préparé : vérifiez les changements avant publication.');
+    } catch (err) {showToast(err.message,'err');} finally {setProposalBusy(false);}
+  }
+
   async function updateOperationField(opId, payload, input) {
     const piece = state.pieces.find(p => (p.operations || []).some(o => o.id === opId));
     const op = piece?.operations.find(o => o.id === opId);
@@ -516,6 +530,17 @@ export default function ChefView({ state, user, reload, search = '' }) {
                               </button>
                             )}
                           </div>
+                          {!op.estSousTraitance && op.statut === 'En attente' && p.statut !== 'Clôturé' && <details className="md:col-span-12 border-t border-slate-700 pt-2 text-[11px] text-slate-300">
+                            <summary className="cursor-pointer text-cyan-300">Proposer opérateur ou temps dans le planning</summary>
+                            <form onSubmit={e=>proposeOperation(e,p,op)} className="mt-2 flex flex-wrap items-end gap-2">
+                              <label>Opérateur<select name="operateurId" defaultValue={op.operateurId || ''} required className="block p-1 bg-[#0B0F14] border border-slate-700 rounded">{operators.map(o=><option key={o.id} value={o.id}>{o.nom}</option>)}</select></label>
+                              <label>Réglage (min)<input name="tempsReglageMin" type="number" min="0" max="100000" step="1" required defaultValue={op.tempsReglageMin || 0} className="block w-24 p-1 bg-[#0B0F14] border border-slate-700 rounded"/></label>
+                              <label>Unitaire (min/pièce)<input name="tempsUnitaireMin" type="number" min="0" max="100000" step="any" required defaultValue={op.tempsUnitaireMin || 0} className="block w-24 p-1 bg-[#0B0F14] border border-slate-700 rounded"/></label>
+                              <label>Temps fixe (min)<input name="tempsPrevuMin" type="number" min="5" max="1000000" step="1" required defaultValue={op.tempsPrevuMin || 60} className="block w-24 p-1 bg-[#0B0F14] border border-slate-700 rounded"/></label>
+                              <button disabled={proposalBusy} className="px-2 py-1 rounded bg-cyan-500 text-slate-950 font-semibold disabled:opacity-50">Calculer l’impact</button>
+                              <p className="w-full text-slate-400">Si le temps unitaire est supérieur à zéro, le moteur utilise réglage + quantité × temps unitaire ; sinon il utilise le temps fixe. Aucun changement avant publication.</p>
+                            </form>
+                          </details>}
                           {!op.estSousTraitance && op.statut !== 'Terminée' && p.statut !== 'Clôturé' && <OperationInstruction op={op} reload={reload} showToast={showToast}/>}
                         </div>
                       ))}
