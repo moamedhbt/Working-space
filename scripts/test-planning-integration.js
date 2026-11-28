@@ -7,6 +7,21 @@ try {for(let i=0;i<60;i++){try{if((await fetch(base+'/api/tv')).ok)break;}catch{
  const d=(await req('/api/login','POST',{username:'directeur',password:'1234'})).data.token;
  const u=(await req('/api/login','POST',{username:'karim',password:'1234'})).data.token;
  assert(d&&u);db=new Database(dbFile);db.pragma('foreign_keys = ON');db.exec('DELETE FROM operation_stops; DELETE FROM pannes; DELETE FROM pieces;');
+ assert.equal((await req('/api/tv/board')).status,401);
+ const emptyBoard=await req('/api/tv/board','GET',null,u);assert.equal(emptyBoard.status,200);assert(emptyBoard.data.machines.every(m=>!m.running.length&&!m.queue.length));
+ const tvPiece=await req('/api/pieces','POST',{nom:'TV test',client:'SECRET CLIENT',chuteDispo:true,machineId:'m1',operateurId:'u4',quantitePrevue:10},d);assert.equal(tvPiece.status,201);
+ const tvId=tvPiece.data.id, tvOp=db.prepare('SELECT id FROM operations WHERE pieceId=?').get(tvId).id;
+ db.prepare("UPDATE operations SET datePlanifiee='2030-01-02',debutStr='08:00',finStr='09:00' WHERE id=?").run(tvOp);
+ let board=await req('/api/tv/board','GET',null,u);assert(!JSON.stringify(board.data).includes('TV test'));assert(!JSON.stringify(board.data).includes('SECRET CLIENT'));
+ db.prepare('UPDATE pieces SET planningValide=1 WHERE id=?').run(tvId);
+ board=await req('/api/tv/board','GET',null,d);assert.equal(board.status,200);assert(board.data.machines.find(m=>m.id==='m1').queue.some(o=>o.ofId===tvId));assert(!JSON.stringify(board.data).includes('SECRET CLIENT'));
+ db.prepare("UPDATE operations SET statut='En cours', startedAt=0, tempsReelMin=0 WHERE id=?").run(tvOp);
+ board=await req('/api/tv/board','GET',null,d);assert(!board.data.machines.find(m=>m.id==='m1').running.length);
+ db.prepare("UPDATE operations SET statut='En cours', startedAt=1, quantiteBonne=3 WHERE id=?").run(tvOp);db.prepare('UPDATE pieces SET planningValide=0 WHERE id=?').run(tvId);db.prepare('UPDATE machines SET enPanne=1 WHERE id=?').run('m1');
+ board=await req('/api/tv/board','GET',null,d);assert.equal(board.data.machines.find(m=>m.id==='m1').running[0].quantity,3);assert.equal(board.data.machines.find(m=>m.id==='m1').enPanne,1);assert(!board.data.machines.find(m=>m.id==='m1').running[0].published);
+ db.prepare('UPDATE machines SET enPanne=0 WHERE id=?').run('m1');db.prepare('DELETE FROM pieces WHERE id=?').run(tvId);
+ console.log('✅ TV : authentification, données réelles, publication, panne et projection sans client');
+
  // Saving OF details must not silently rewrite a different operation's assignment.
  const safety=await req('/api/pieces','POST',{nom:'Contrôle gamme',chuteDispo:true,machineId:'m1',operateurId:'u4'},d); assert.equal(safety.status,201);
  const sid=safety.data.id;

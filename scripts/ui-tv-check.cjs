@@ -1,0 +1,16 @@
+const {chromium}=require('playwright');const {spawn}=require('child_process');const fs=require('fs'),os=require('os'),path=require('path');
+const dir=fs.mkdtempSync(path.join(os.tmpdir(),'atelier-tv-')),port=3486,base=`http://127.0.0.1:${port}`;
+(async()=>{const proc=spawn(process.execPath,['src/server.js'],{cwd:path.join(__dirname,'..'),env:{...process.env,PORT:String(port),DB_FILE:path.join(dir,'data.db'),UPLOADS_DIR:path.join(dir,'uploads')},stdio:'ignore'});let browser;
+try{for(let i=0;i<80;i++){try{if((await fetch(base+'/api/tv')).ok)break}catch{}await new Promise(r=>setTimeout(r,100))}browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+for(const viewport of [{width:1920,height:1080},{width:1366,height:768},{width:390,height:844}]){
+ const page=await browser.newPage({viewport});const errors=[];page.on('pageerror',e=>errors.push(e.message));let calls=0,offline=false;
+ const machines=Array.from({length:6},(_,i)=>({id:`m${i}`,nom:`Machine ${i+1}`,type:'Tournage CNC',enPanne:i===1?1:0,running:i===0?[{ofId:'OF-001',piece:'Arbre de transmission',operation:'Tournage finition',operator:'Karim',status:'En cours',quantity:3,totalQuantity:10,published:true}]:[],queueTotal:1,queue:[{ofId:`OF-${i+10}`,operation:'Usinage',plannedDate:'2030-01-02',plannedStart:'08:00',plannedPast:false}]}));
+ await page.route('**/api/tv/board',r=>{calls++;return offline?r.fulfill({status:503,contentType:'application/json',body:'{"error":"offline"}'}):r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({machines})})});
+ await page.goto(base);await page.getByRole('button',{name:'Directeur',exact:true}).click();if(viewport.width<700)await page.locator('nav').getByRole('button',{name:'TV',exact:true}).click();else await page.getByRole('button',{name:'Écran TV',exact:true}).click();
+ await page.getByText('SYNCHRONISÉ').waitFor();await page.getByText('Machine 1',{exact:true}).waitFor();await page.getByText('OF-001',{exact:true}).waitFor();await page.getByRole('button',{name:'Page suivante'}).click();await page.getByText(viewport.width<700?'Machine 3':'Machine 5',{exact:true}).waitFor();
+ await page.getByRole('button',{name:'Page précédente'}).click();await page.getByText('Machine 1',{exact:true}).waitFor();
+ if(viewport.width===1920){await page.screenshot({path:'/home/user/tv-atelier-desktop.png'});await page.getByRole('button',{name:'Plein écran'}).click();await page.getByRole('button',{name:'Quitter le plein écran'}).waitFor();await page.getByRole('button',{name:'Quitter le plein écran'}).click();offline=true;await page.getByText('CONNEXION PERDUE').waitFor({timeout:8000});await page.getByText('Machine 1',{exact:true}).waitFor();offline=false;await page.getByText('SYNCHRONISÉ').waitFor({timeout:8000});if(calls<3)throw Error('Polling absent');}
+ if(viewport.width===390)await page.screenshot({path:'/home/user/tv-atelier-mobile.png'});
+ if(errors.length)throw Error(errors.join('; '));console.log(`✅ TV ${viewport.width} : rendu et pagination${viewport.width===1920?', plein écran, perte et reprise connexion':''}`);await page.close();
+}
+}finally{if(browser)await browser.close();proc.kill('SIGTERM');fs.rmSync(dir,{recursive:true,force:true})}})().catch(e=>{console.error(e);process.exitCode=1});

@@ -34,6 +34,38 @@ router.get('/tv', (req, res) => {
   res.json({ pieces, machines });
 });
 
+// Dedicated, read-only display projection. Never expose drafts, prices or file details.
+router.get('/tv/board', auth, (req,res)=>{
+  const machines=queryAll('SELECT id,nom,type,enPanne FROM machines WHERE actif=1 ORDER BY nom');
+  const pieces=getEnrichedPieces("WHERE p.archived=0 AND p.statut NOT IN ('Clôturé','Refusé')");
+  const saved=new Map(queryAll('SELECT * FROM planning_published_segments').map(row=>[row.opId,row]));
+  const settings=getSettings();
+  const nowParts=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:'Africa/Algiers',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date()).map(x=>[x.type,x.value]));
+  const now=`${nowParts.year}-${nowParts.month}-${nowParts.day} ${nowParts.hour}:${nowParts.minute}`;
+  const entries=new Map(machines.map(m=>[m.id,{...m,running:[],queue:[]}])) ;
+  for(const p of pieces) for(const op of p.operations||[]) {
+    const m=entries.get(op.machineId);if(!m || op.estSousTraitance || op.statut==='Terminée') continue;
+    const clean={operationId:op.id,ofId:p.id,piece:p.nom,operation:op.libelle,operator:op.operateur||'Non affecté',status:op.statut,quantity:op.quantiteBonne||0,totalQuantity:p.quantitePrevue||0,published:!!p.planningValide};
+    if(['En cours','En pause','Panne machine'].includes(op.statut) && (op.startedAt>0 || op.tempsReelMin>0)) {m.running.push(clean);continue;}
+    if(!p.planningValide || op.statut!=='En attente')continue;
+    const row=saved.get(op.id);let slots=[];
+    if(row && row.fingerprint===segmentFingerprint(op)) {try {const parsed=JSON.parse(row.segmentsJson);if(Array.isArray(parsed))slots=parsed;} catch{}}
+    if(!slots.length)slots=segmentsForOperation(op,settings);
+    slots=slots.filter(x=>/^\d{4}-\d{2}-\d{2}$/.test(x.date||'') && /^\d{2}:\d{2}$/.test(x.start||'') && /^\d{2}:\d{2}$/.test(x.end||''));
+    if(!slots.length)continue;
+    const upcoming=slots.find(x=>`${x.date} ${x.end}`>=now);
+    const slot=upcoming || slots[slots.length-1];
+    m.queue.push({...clean,plannedDate:slot.date,plannedStart:slot.start,plannedEnd:slot.end,plannedPast:!upcoming});
+  }
+  for(const m of entries.values()) {
+    m.running.sort((a,b)=>(a.status==='En cours'?-1:0)-(b.status==='En cours'?-1:0));
+    m.queue.sort((a,b)=>`${a.plannedDate} ${a.plannedStart}`.localeCompare(`${b.plannedDate} ${b.plannedStart}`)||String(a.ofId).localeCompare(String(b.ofId)));
+    m.queueTotal=m.queue.length;
+    m.queue=m.queue.slice(0,2);
+  }
+  res.json({generatedAt:new Date().toISOString(),timezone:'Africa/Algiers',machines:[...entries.values()]});
+});
+
 // Snapshot excludes secret credentials but includes every value that can change a proposal.
 function planningSnapshot() {
   return {
