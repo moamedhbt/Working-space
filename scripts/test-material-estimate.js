@@ -10,5 +10,10 @@ for(const invalid of [{...base,materialId:'inventé'},{...base,shape:'autre'},{.
 r=computeMaterialEstimate({shape:'plat',materialId:'acier',quantity:4,lengthMm:1000,lossMm:5,widthMm:100,heightMm:10});near(r.unitKg,7.85);near(r.totalKg,31.4);near(r.totalLengthM,4.02);
 r=computeMaterialEstimate({shape:'rond',materialId:'aluminium',quantity:1,lengthMm:1000,lossMm:0,diameterMm:20});near(r.unitKg,0.8482300164692442);
 r=computeMaterialEstimate({shape:'tube',materialId:'acier',quantity:2,lengthMm:1000,lossMm:10,diameterMm:100,innerDiameterMm:80});near(r.unitKg,22.195352097611885);near(r.totalLengthM,2.02);
-assert.equal(MATERIALS.length,9);
+// Known sections: 20²=400 mm²; hex AF 20 → 200√3 mm²; RHS 100×50×5 → 1400 mm².
+r=computeMaterialEstimate({shape:'carre',materialId:'acier',quantity:2,lengthMm:1000,lossMm:5,sideMm:20});near(r.unitKg,3.14);near(r.totalKg,6.28);near(r.totalLengthM,2.01);
+r=computeMaterialEstimate({shape:'hexagonal',materialId:'acier',quantity:1,lengthMm:1000,lossMm:0,acrossFlatsMm:20});near(r.unitKg,2.719319767883617);
+r=computeMaterialEstimate({shape:'tube_rectangulaire',materialId:'acier',quantity:1,lengthMm:1000,lossMm:0,widthMm:100,heightMm:50,wallMm:5});near(r.unitKg,10.99);
+for(const invalid of [{...base,shape:'carre',sideMm:0},{...base,shape:'hexagonal',acrossFlatsMm:-1},{...base,shape:'tube_rectangulaire',widthMm:50,heightMm:20,wallMm:10},{...base,shape:'tube_rectangulaire',widthMm:100,heightMm:50,wallMm:0}])assert.throws(()=>computeMaterialEstimate(invalid));
+assert.equal(MATERIALS.length,12);
 console.log('✅ Calcul matière : rond, plat, tube, pertes et validations');

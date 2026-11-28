@@ -28,9 +28,6 @@ export default function ChefView({ state, user, reload, search = '' }) {
   const [editMachineForm, setEditMachineForm] = useState({ nom: '', type: '', tauxHoraire: 2500, capaciteJourMin: 480, intervalleEntretienH: 200 });
   const [newOpByPiece, setNewOpByPiece] = useState({});
   const [materialRequest,setMaterialRequest] = useState(null);
-  const [planningProposal,setPlanningProposal] = useState(null);
-  const [machineProposals,setMachineProposals] = useState({});
-  const [proposalBusy,setProposalBusy] = useState(false);
   const [toast, setToast] = useState({ type: 'ok', text: '' });
 
   function showToast(text, type = 'ok') {
@@ -194,34 +191,6 @@ export default function ChefView({ state, user, reload, search = '' }) {
     }
   }
 
-  async function proposeMachine(piece, op) {
-    const machineId = machineProposals[op.id];
-    if (!machineId || proposalBusy) return;
-    if (!await ask(`Préparer un nouveau brouillon pour ${piece.id} · ${op.libelle} ? Il remplacera l’aperçu actuellement ouvert dans Planning, sans modifier la gamme ni publier.`)) return;
-    setProposalBusy(true);
-    try {
-      const result = await api('/api/planning/drafts/reassign', 'POST', {operationId:op.id, machineId});
-      setPlanningProposal(result.proposal);
-      setTab('planning');
-      showToast('Brouillon préparé : vérifiez les changements et la compatibilité avant publication.');
-    } catch (e) { showToast(e.message, 'err'); }
-    finally { setProposalBusy(false); }
-  }
-
-  async function proposeOperation(e, piece, op) {
-    e.preventDefault();
-    if (proposalBusy) return;
-    const data = new FormData(e.currentTarget);
-    const payload = {operationId:op.id, operateurId:data.get('operateurId'), tempsReglageMin:Number(data.get('tempsReglageMin')), tempsUnitaireMin:Number(data.get('tempsUnitaireMin')), tempsPrevuMin:Number(data.get('tempsPrevuMin'))};
-    if (!await ask(`Préparer un brouillon pour ${piece.id} · ${op.libelle} ? L’aperçu ouvert dans Planning sera remplacé. Rien ne sera publié.`)) return;
-    setProposalBusy(true);
-    try {
-      const result=await api('/api/planning/drafts/operation','POST',payload);
-      setPlanningProposal(result.proposal);setTab('planning');
-      showToast('Brouillon préparé : vérifiez les changements avant publication.');
-    } catch (err) {showToast(err.message,'err');} finally {setProposalBusy(false);}
-  }
-
   async function updateOperationField(opId, payload, input) {
     const piece = state.pieces.find(p => (p.operations || []).some(o => o.id === opId));
     const op = piece?.operations.find(o => o.id === opId);
@@ -327,7 +296,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
 
       {/* TAB 2: PLANNING & IA */}
       <div className={tab === 'planning' ? 'block' : 'hidden'}>
-        <ChefPlanningTab state={state} reload={reload} showToast={showToast} incomingProposal={planningProposal} ask={ask} />
+        <ChefPlanningTab state={state} reload={reload} showToast={showToast} ask={ask} />
       </div>
 
       {/* TAB 3: ORDRES & GAMMES MULTI-OPERATIONS (REGLAGE vs USINAGE + SOUS-TRAITANCE) */}
@@ -473,17 +442,6 @@ export default function ChefView({ state, user, reload, search = '' }) {
                                     {activeMachines.map(m=><option key={m.id} value={m.id}>{m.nom}</option>)}
                                   </select></label>}
                                 {op.machineTypeRequis && <p className="text-[10px] text-amber-300">Vérifiez capacités et outillage avant publication.</p>}
-                                {op.statut === 'En attente' && p.statut !== 'Clôturé' && (() => {
-                                  const current = state.machines.find(m => m.id === op.machineId);
-                                  const alternatives = activeMachines.filter(m => m.id !== op.machineId && m.type && m.type === current?.type && !m.enPanne);
-                                  return alternatives.length > 0 && <div className="mt-2 space-y-1">
-                                    <select aria-label={`Machine à proposer pour ${op.libelle}`} value={machineProposals[op.id] || ''} onChange={e => setMachineProposals(prev => ({...prev, [op.id]:e.target.value}))} className="w-full p-1 rounded bg-[#0B0F14] border border-cyan-700 text-[11px]">
-                                      <option value="">Autre machine de même type…</option>
-                                      {alternatives.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
-                                    </select>
-                                    <button type="button" disabled={!machineProposals[op.id] || proposalBusy} onClick={() => proposeMachine(p, op)} className="text-[10px] text-cyan-300 underline disabled:opacity-40">Voir l’impact dans un brouillon</button>
-                                  </div>;
-                                })()}
                               </div>
                               <div className="md:col-span-2">
                                 <label className="block text-[10px] text-slate-400 mb-1">Opérateur</label>
@@ -541,17 +499,6 @@ export default function ChefView({ state, user, reload, search = '' }) {
                               </button>
                             )}
                           </div>
-                          {!op.estSousTraitance && op.statut === 'En attente' && p.statut !== 'Clôturé' && <details className="md:col-span-12 border-t border-slate-700 pt-2 text-[11px] text-slate-300">
-                            <summary className="cursor-pointer text-cyan-300">Proposer opérateur ou temps dans le planning</summary>
-                            <form onSubmit={e=>proposeOperation(e,p,op)} className="mt-2 flex flex-wrap items-end gap-2">
-                              <label>Opérateur<select name="operateurId" defaultValue={op.operateurId || ''} required className="block p-1 bg-[#0B0F14] border border-slate-700 rounded">{operators.map(o=><option key={o.id} value={o.id}>{o.nom}</option>)}</select></label>
-                              <label>Réglage (min)<input name="tempsReglageMin" type="number" min="0" max="100000" step="1" required defaultValue={op.tempsReglageMin || 0} className="block w-24 p-1 bg-[#0B0F14] border border-slate-700 rounded"/></label>
-                              <label>Unitaire (min/pièce)<input name="tempsUnitaireMin" type="number" min="0" max="100000" step="any" required defaultValue={op.tempsUnitaireMin || 0} className="block w-24 p-1 bg-[#0B0F14] border border-slate-700 rounded"/></label>
-                              <label>Temps fixe (min)<input name="tempsPrevuMin" type="number" min="5" max="1000000" step="1" required defaultValue={op.tempsPrevuMin || 60} className="block w-24 p-1 bg-[#0B0F14] border border-slate-700 rounded"/></label>
-                              <button disabled={proposalBusy} className="px-2 py-1 rounded bg-cyan-500 text-slate-950 font-semibold disabled:opacity-50">Calculer l’impact</button>
-                              <p className="w-full text-slate-400">Si le temps unitaire est supérieur à zéro, le moteur utilise réglage + quantité × temps unitaire ; sinon il utilise le temps fixe. Aucun changement avant publication.</p>
-                            </form>
-                          </details>}
                           {!op.estSousTraitance && op.statut !== 'Terminée' && p.statut !== 'Clôturé' && <OperationInstruction op={op} reload={reload} showToast={showToast}/>}
                         </div>
                       ))}

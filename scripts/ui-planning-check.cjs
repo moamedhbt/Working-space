@@ -7,7 +7,7 @@ try {
 for(let i=0;i<60;i++){try{if((await fetch(`http://127.0.0.1:${port}/api/tv`)).ok)break;}catch{} await new Promise(r=>setTimeout(r,100));}
 browser=await chromium.launch({headless:true,args:['--no-sandbox']});
 for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
- const page=await browser.newPage({viewport});const errors=[];let createdId='';page.on('pageerror',e=>errors.push(e.message));
+ const page=await browser.newPage({viewport});const errors=[];let createdId='';page.on('pageerror',e=>errors.push(e.stack));
  try{
   await page.goto(`http://127.0.0.1:${port}/`);await page.getByRole('button',{name:'Directeur',exact:true}).click();
   if(viewport.width===1440) {
@@ -65,6 +65,19 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
     if(diff<0 || diff>60)throw Error('Date de test inattendue');
     for(let i=0;i<diff;i++)await page.getByRole('button',{name:'Période suivante'}).click();
     await page.locator('button[title]').filter({hasText:createdId}).first().click();
+    await page.getByText('Tester un autre opérateur ou temps').click();
+    const proposedEdit=page.locator('details').filter({hasText:'Tester un autre opérateur ou temps'});
+    await proposedEdit.locator('input[name="tempsUnitaireMin"]').fill('3');
+    await proposedEdit.locator('input[name="tempsReglageMin"]').fill('20');
+    const editRequest=page.waitForResponse(r=>r.url().endsWith('/api/planning/drafts/operation')&&r.request().method()==='POST',{timeout:10000}).catch(()=>null);
+    await proposedEdit.getByRole('button',{name:'Voir l’effet sur le planning'}).click();
+    await page.getByRole('dialog',{name:'Calculer une nouvelle proposition'}).getByRole('button',{name:'Calculer'}).click({timeout:7000});
+    const editResult=await editRequest;if(!editResult)throw Error('Requête de proposition non envoyée');if(editResult.status()!==201)throw Error(`Proposition planning : ${await editResult.text()}`);
+    await page.getByText('Proposition à vérifier · non publiée').waitFor();
+    await page.getByText('Temps prévu :',{exact:false}).first().waitFor();
+    console.log('✅ UI planning : proposition opérateur/temps et résultat visible');
+    await page.getByRole('button',{name:'Calculer un brouillon'}).click();
+    await page.locator('button[title]').filter({hasText:createdId}).first().click();
     await page.getByLabel('Date proposée').waitFor();
     target.setDate(target.getDate()+35);
     while(![0,1,2,3,4].includes(target.getDay()))target.setDate(target.getDate()+1);
@@ -101,37 +114,13 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   if((await saveInstruction).status()!==200)throw Error('Échec enregistrement consigne');
   await chefPage.getByText('Vérifier le bridage avant démarrage').waitFor();
   console.log('✅ UI chef : tableau de bord, bilan, IA hors ligne et consigne');
-  const beforeProposal=await chefPage.evaluate(async()=>{const h={Authorization:`Bearer ${localStorage.getItem('atelier_token')}`};return (await (await fetch('/api/state',{headers:h})).json()).pieces.find(p=>p.nom==='Essai type UI').operations[0].machineId});
-  const proposeSelect=chefPage.getByLabel(/^Machine à proposer pour/).first();
-  const alternative=await proposeSelect.locator('option').nth(1).getAttribute('value');
-  await proposeSelect.selectOption(alternative);
-  const proposed=chefPage.waitForResponse(r=>r.url().endsWith('/api/planning/drafts/reassign')&&r.request().method()==='POST');
-  await chefPage.getByRole('button',{name:'Voir l’impact dans un brouillon'}).first().click();
-  await chefPage.getByRole('dialog',{name:'Confirmer l’action'}).getByRole('button',{name:'Continuer'}).click();
-  const proposedResponse=await proposed;if(proposedResponse.status()!==201)throw Error(`Proposition fiche : ${await proposedResponse.text()}`);
-  await chefPage.getByText('Voir les changements').waitFor();await chefPage.getByText('Fraiseuse alternative UI',{exact:false}).first().waitFor();
-  const afterProposal=await chefPage.evaluate(async()=>{const h={Authorization:`Bearer ${localStorage.getItem('atelier_token')}`};return (await (await fetch('/api/state',{headers:h})).json()).pieces.find(p=>p.nom==='Essai type UI').operations[0].machineId});
-  if(beforeProposal!==afterProposal)throw Error('La proposition a modifié la machine avant publication');
-  await chefPage.getByRole('button',{name:/Ordres & Gammes/}).click();
-  console.log('✅ UI fiche → brouillon : impacts visibles et machine inchangée avant publication');
-  await chefPage.getByText('Proposer opérateur ou temps dans le planning').first().click();
-  const editSection=chefPage.locator('details').filter({hasText:'Proposer opérateur ou temps dans le planning'}).first();
-  await editSection.locator('input[name="tempsUnitaireMin"]').fill('3');
-  await editSection.locator('input[name="tempsReglageMin"]').fill('20');
-  const editResponse=chefPage.waitForResponse(r=>r.url().endsWith('/api/planning/drafts/operation')&&r.request().method()==='POST');
-  await editSection.getByRole('button',{name:'Calculer l’impact'}).click();
-  await chefPage.getByRole('dialog',{name:'Confirmer l’action'}).getByRole('button',{name:'Continuer'}).click();
-  const editResult=await editResponse;if(editResult.status()!==201)throw Error(`Proposition durée : ${await editResult.text()}`);
-  await chefPage.getByText('Temps prévu :',{exact:false}).first().waitFor();
-  await chefPage.getByRole('button',{name:/Ordres & Gammes/}).click();
-  console.log('✅ UI fiche → brouillon : proposition de temps');
-
-
+  if(await chefPage.getByText('Proposer opérateur ou temps dans le planning').count())throw Error('Formulaire en double encore présent dans la fiche');
   await chefPage.getByRole('button',{name:'Estimation matière',exact:true}).click();
   const fixtureId=await chefPage.evaluate(async()=>{const h={Authorization:`Bearer ${localStorage.getItem('atelier_token')}`};return (await (await fetch('/api/state',{headers:h})).json()).pieces.find(p=>p.nom==='Essai type UI').id});
   if(await chefPage.getByLabel('OF associé').inputValue()!==fixtureId)throw Error('L’OF sélectionné n’est pas repris dans matière');
   if(await chefPage.getByLabel('Quantité (pièces)').inputValue()!=='10')throw Error('Quantité OF non reprise');
   if(await chefPage.getByLabel('Longueur du brut par pièce (mm)').inputValue()!=='')throw Error('Une dimension a été supposée');
+  for(const [shape,label] of [['carre','Barre carrée'],['hexagonal','Barre hexagonale'],['tube_rectangulaire','Tube rectangulaire']]){await chefPage.getByLabel('Forme du brut').selectOption(shape);await chefPage.getByLabel(`Schéma ${label}`).waitFor();}
   await chefPage.getByLabel('Forme du brut').selectOption('rond');await chefPage.getByLabel('Matière et densité').selectOption('acier');
   await chefPage.getByLabel('Longueur du brut par pièce (mm)').fill('100');await chefPage.getByLabel('Diamètre extérieur (mm)').fill('50');await chefPage.getByLabel('Perte de coupe par pièce (mm)').fill('5');
   await chefPage.getByLabel('Schéma Barre ronde').waitFor();
@@ -141,6 +130,10 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   await chefPage.getByRole('button',{name:'Associer cette estimation à l’OF'}).click();await chefPage.getByRole('dialog',{name:'Associer à l’OF'}).getByRole('button',{name:'Associer'}).click();if((await saveMaterial).status()!==200)throw Error('Estimation non associée');
   await chefPage.getByLabel('Perte de coupe par pièce (mm)').fill('4');if(await materialPanel.getByText('1.050 m').count())throw Error('Estimation périmée encore affichée');
   await chefPage.getByRole('button',{name:/Charger l’estimation enregistrée/}).click();await materialPanel.getByText('1.050 m').waitFor();
+  // Calculate each new section in the real UI, without changing the saved estimate.
+  await chefPage.getByLabel('Forme du brut').selectOption('carre');await chefPage.getByLabel('Côté du carré (mm)').fill('20');await chefPage.getByRole('button',{name:'Calculer l’estimation'}).click();await materialPanel.getByText('3.14 kg').waitFor();
+  await chefPage.getByLabel('Forme du brut').selectOption('hexagonal');await chefPage.getByLabel('Distance entre plats (mm)').fill('20');await chefPage.getByRole('button',{name:'Calculer l’estimation'}).click();await materialPanel.getByText('2.72 kg').waitFor();
+  await chefPage.getByLabel('Forme du brut').selectOption('tube_rectangulaire');await chefPage.getByLabel('Largeur extérieure (mm)').fill('100');await chefPage.getByLabel('Hauteur extérieure (mm)').fill('50');await chefPage.getByLabel('Épaisseur de paroi (mm)').fill('5');await chefPage.getByRole('button',{name:'Calculer l’estimation'}).click();await materialPanel.getByText('10.99 kg').waitFor();
   await chefPage.getByText('Estimation enregistrée dans',{exact:false}).waitFor();
   await chefPage.getByRole('button',{name:/Ordres & Gammes/}).click();
   await chefPage.getByText('Estimation matière associée',{exact:true}).first().waitFor();
@@ -162,7 +155,11 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   console.log('✅ UI mobile : volet copilote, erreur visible et fermeture');
   await chefPage.getByRole('button',{name:'Calculer un brouillon'}).click();
   await chefPage.getByText('Voir les changements').waitFor();
-  console.log('✅ UI chef mobile : planning et brouillon OK');
+  const publishResponse=chefPage.waitForResponse(r=>/\/api\/planning\/drafts\/[^/]+\/publish$/.test(r.url())&&r.request().method()==='POST');
+  await chefPage.getByRole('button',{name:'Confirmer et publier'}).click();
+  await chefPage.getByRole('dialog',{name:'Publier le planning'}).getByRole('button',{name:'Publier'}).click();
+  const published=await publishResponse;if(published.status()!==200)throw Error(`Publication UI : ${await published.text()}`);
+  console.log('✅ UI chef mobile : planning, confirmation intégrée et publication réelle');
  } catch(e) {failed=true;console.error('❌ UI chef mobile',e.message)} finally {await chefPage.close()}
  const opPage=await browser.newPage({viewport:{width:390,height:844}});
  try{await opPage.goto(`http://127.0.0.1:${port}/`);await opPage.getByRole('button',{name:'Opérateur',exact:true}).click();await opPage.getByText('Vérifier le bridage avant démarrage').waitFor();console.log('✅ UI opérateur : consigne reçue');}
