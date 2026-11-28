@@ -13,6 +13,7 @@ import { api, getAuthToken } from '../api';
 import CreateOfModal from './CreateOfModal';
 import TimelineModal from './TimelineModal';
 import ChefPlanningTab from './ChefPlanningTab';
+import DirectionAssistant, { AttentionDirection, DirectionMachines } from './DirectionAssistant';
 
 function statusBadge(statut, urgence) {
   if (statut === 'À valider') return 'bg-purple-500/15 text-purple-300 border-purple-500/40';
@@ -268,7 +269,7 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
   const clotures = state.pieces.filter(p => p.statut === 'Clôturé').length;
   const openPannes = (state.pannes || []).filter(p => p.statut === 'Ouverte');
   const analytics = state.analytics || {
-    trsPct: 100, disponibilitePct: 100, performancePct: 100, qualitePct: 100,
+    trsPct: null, disponibilitePct: null, performancePct: null, qualitePct: null,
     tauxRebutPct: 0, totalBonnes: 0, totalRebuts: 0, totalPrevuMin: 0, totalReelMin: 0,
     totalReglageMin: 0, totalUsinageMin: 0, setupRatioPct: 0, totalArretPanneMin: 0,
     machineStats: [], operatorStats: [], aiInsights: []
@@ -763,7 +764,7 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
             <div>
               <h1 className="text-lg font-semibold text-white">Vue d'ensemble de l'atelier</h1>
               <p className="text-xs text-slate-400">
-                {new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })} · {activeMachines.length} machine(s) active(s) · TRS estimé <strong className="text-[#22D3EE] font-mono-num">{analytics.trsPct}%</strong>
+                {new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })} · {activeMachines.length} machine(s) active(s) · indicateurs à vérifier · TRS non disponible
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -822,10 +823,10 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
           {/* 4 KPI CARDS */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             {[
-              ['TRS GLOBAL', `${analytics.trsPct}%`, '#22D3EE', `Disp. ${analytics.disponibilitePct}% · Qual. ${analytics.qualitePct}%`],
+              ['TRS', '—', '#94a3b8', 'Non disponible · calcul à fiabiliser'],
               ['EN FABRICATION', enCours, '#22D3EE', `${openPannes.length} panne(s) active(s)`],
               ['ACHATS EN ATTENTE', aAcheter, '#F59E0B', `${(state.conflicts || []).length} conflit(s) planning`],
-              ['CLÔTURÉS', clotures, '#10B981', `Rebuts : ${analytics.tauxRebutPct}% (${analytics.totalRebuts} pcs)`]
+              ['CLÔTURÉS', clotures, '#10B981', `Rebuts enregistrés : ${analytics.totalRebuts} pièces`]
             ].map(([lbl, val, col, sub]) => (
               <div key={lbl} className="cyber-card cyber-corners p-4 flex flex-col justify-between">
                 <div className="text-[10px] font-semibold tracking-wider text-slate-400">{lbl}</div>
@@ -835,86 +836,10 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
             ))}
           </div>
 
-          {/* GANTT + IA SYNTHESIS */}
+          <DirectionAssistant />
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div className="lg:col-span-2 min-w-0 cyber-card p-4 overflow-hidden">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-sm font-semibold text-white">Charge & opérations par machine</h2>
-                <span className="flex items-center gap-1.5 text-[10px] font-mono-num text-emerald-400">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> LIVE
-                </span>
-              </div>
-              <div className="overflow-x-auto">
-                <div className="min-w-[540px]">
-                  <div className="grid grid-cols-10 text-[10px] font-mono-num text-slate-500 border-b border-[#1E2A38] pb-1.5 mb-2 pl-32">
-                    {hoursAxis.map(h => <div key={h}>{h}</div>)}
-                  </div>
-                  <div className="space-y-2.5 relative">
-                    {nowPct > 0 && nowPct < 100 && (
-                      <div
-                        className="absolute top-0 bottom-0 w-px bg-[#22D3EE]/70 shadow-[0_0_8px_#22D3EE] pointer-events-none"
-                        style={{ left: `calc(8rem + (100% - 8rem) * ${nowPct / 100})` }}
-                      ></div>
-                    )}
-                    {activeMachines.map(m => {
-                      const machineOps = state.pieces
-                        .filter(p => p.statut !== 'Clôturé' && !p.archived)
-                        .flatMap(p => (p.operations || []).filter(o => !o.estSousTraitance && o.machineId === m.id && o.statut !== 'Terminée').map(o => ({ ...o, piece: p })));
-                      return (
-                        <div key={m.id} className="flex items-center gap-3 text-xs">
-                          <div className="w-28 shrink-0">
-                            <div className="font-medium text-slate-200 truncate flex items-center gap-1">
-                              <span className="truncate">{m.nom}</span>
-                              {m.enPanne ? <span className="text-[9px] text-red-400 font-bold">PANNE</span> : null}
-                            </div>
-                            <div className="text-[10px] text-slate-500 truncate">
-                              {machineOps[0] ? machineOps[0].operateur : 'Disponible'}
-                            </div>
-                          </div>
-                          <div className={`flex-1 min-h-[30px] bg-[#0B0F14] border rounded-[4px] flex flex-wrap items-center gap-1 p-1 ${m.enPanne ? 'border-red-500/40' : 'border-[#1E2A38]'}`}>
-                            {machineOps.map(op => (
-                              <div
-                                key={op.id}
-                                title={`${op.piece.id} · ${op.libelle} (${op.operateur})`}
-                                className={`px-2 py-0.5 rounded-[4px] border text-[10px] font-mono-num truncate max-w-[210px] ${statusBadge(op.statut === 'Panne machine' ? 'Panne machine' : op.piece.statut, op.piece.urgence)}`}
-                              >
-                                {op.piece.id} · {op.libelle} ({(op.tempsPrevuMin / 60).toFixed(1)}h)
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="min-w-0 cyber-card cyber-corners p-4 flex flex-col justify-between space-y-3">
-              <div className="space-y-2">
-                <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-                  <Bot className="w-4 h-4 text-[#22D3EE]" /> Synthèse atelier (indicateurs)
-                </h2>
-                <div className="space-y-1.5">
-                  {(analytics.aiInsights || []).map((ins, i) => (
-                    <div
-                      key={i}
-                      className={`p-2 rounded border text-[11px] leading-snug ${
-                        ins.level === 'danger' ? 'bg-red-500/15 border-red-500/40 text-red-300' :
-                        ins.level === 'warn' ? 'bg-amber-500/10 border-amber-500/30 text-amber-300' :
-                        ins.level === 'info' ? 'bg-[#22D3EE]/10 border-[#22D3EE]/30 text-cyan-200' :
-                        'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                      }`}
-                    >
-                      {ins.text}
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <button onClick={onOpenPlanning} className="w-full py-2 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] text-xs font-medium text-slate-200 cursor-pointer">
-                Ouvrir le planning
-              </button>
-            </div>
+            <div className="lg:col-span-2 min-w-0"><DirectionMachines onOpenPlanning={onOpenPlanning}/></div>
+            <AttentionDirection state={state} onOpenPlanning={onOpenPlanning} onOpenChef={onOpenChef} onOpenPiece={setTimelinePiece}/>
           </div>
 
           {filterBar}
@@ -986,18 +911,20 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
               <h1 className="text-lg font-semibold text-white flex items-center gap-2">
                 <Activity className="w-5 h-5 text-[#22D3EE]" /> Pilotage Atelier — TRS, Qualité & Maintenance Préventive
               </h1>
-              <p className="text-xs text-slate-400">Indicateurs temps réel calculés à partir des gammes, pointages opérateurs, pannes et compteurs machines.</p>
+              <p className="text-xs text-slate-400">Cumul des données enregistrées, toutes périodes confondues. Les valeurs dépendent des saisies et ne constituent pas un TRS normalisé.</p>
             </div>
           </div>
 
+          <DirectionAssistant />
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-100">Les totaux mélangent les données enregistrées sur toutes les périodes. La charge compare les opérations ouvertes à une capacité journalière ; ce n’est pas une charge du jour. Les écarts prévu/réel ne mesurent pas à eux seuls la performance d’une personne.</div>
           {/* 5 TRS & SETUP KPIS */}
           <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
             {[
-              ['TRS GLOBAL', `${analytics.trsPct}%`, '#22D3EE', 'Disp × Perf × Qualité'],
-              ['DISPONIBILITÉ', `${analytics.disponibilitePct}%`, '#10B981', `${analytics.totalArretPanneMin} min d'arrêt panne`],
-              ['PERFORMANCE', `${analytics.performancePct}%`, '#38BDF8', `${analytics.totalReelMin}/${analytics.totalPrevuMin} min`],
-              ['QUALITÉ', `${analytics.qualitePct}%`, analytics.tauxRebutPct > 3 ? '#F59E0B' : '#10B981', `${analytics.totalBonnes} ok · ${analytics.totalRebuts} NC (${analytics.tauxRebutPct}%)`],
-              ['PART RÉGLAGE', `${analytics.setupRatioPct}%`, '#A78BFA', `${analytics.totalReglageMin}m régl. / ${analytics.totalUsinageMin}m usin.`]
+              ['TRS', '—', '#94a3b8', 'Non disponible · calcul à fiabiliser'],
+              ['ARRÊTS PANNE', `${analytics.totalArretPanneMin} min`, '#F59E0B', 'Pannes enregistrées · cumul'],
+              ['TEMPS POINTÉ', `${analytics.totalReelMin} min`, '#38BDF8', `${analytics.totalPrevuMin} min prévues · toutes opérations`],
+              ['QUALITÉ DÉCLARÉE', (analytics.totalBonnes + analytics.totalRebuts)>0 ? `${analytics.qualitePct}%` : '—', '#10B981', `${analytics.totalBonnes} bonnes · ${analytics.totalRebuts} rebuts déclarés`],
+              ['RÉGLAGE PRÉVU', analytics.totalPrevuMin>0 ? `${analytics.setupRatioPct}%` : '—', '#A78BFA', `${analytics.totalReglageMin} min sur ${analytics.totalPrevuMin} min prévues`]
             ].map(([lbl, val, col, sub]) => (
               <div key={lbl} className="cyber-card cyber-corners p-4">
                 <div className="text-[10px] font-semibold tracking-wider text-slate-400">{lbl}</div>
@@ -1084,7 +1011,7 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
           {/* OPERATOR STATS + MAINTENANCE HISTORY */}
           <div className="grid md:grid-cols-2 gap-4">
             <div className="cyber-card p-4 space-y-3">
-              <h3 className="text-sm font-semibold text-white">Qualité & Temps par Opérateur</h3>
+              <h3 className="text-sm font-semibold text-white">Déclarations & temps par opérateur</h3>
               <table className="w-full text-left text-xs">
                 <thead className="text-[10px] text-slate-500 uppercase border-b border-[#1E2A38]">
                   <tr>
@@ -1270,7 +1197,8 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
                   )}
                   {p.statut === 'À clôturer' && (
                     <div className="flex flex-wrap gap-2 items-center">
-                      <button onClick={() => proposePriceAI(p)} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] cursor-pointer">Calculer Prix IA</button>
+                      <button onClick={() => proposePriceAI(p)} className="px-3 py-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] hover:border-[#22D3EE] cursor-pointer">Calcul indicatif (sans IA)</button>
+                      <span className="text-amber-300 text-[10px]">Montants par défaut approximatifs · vérifier avant clôture.</span>
                       <input type="number" placeholder="Prix final (DZD)" value={prices[p.id] ?? ''} onChange={e => setPrices(prev => ({ ...prev, [p.id]: e.target.value }))} className="w-36 p-1.5 rounded-[6px] bg-[#0B0F14] border border-[#1E2A38] font-mono-num" />
                       <button onClick={() => closePiece(p)} className="px-3 py-1.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1.5 cursor-pointer"><FolderCheck className="w-3.5 h-3.5" /> Clôturer</button>
                     </div>

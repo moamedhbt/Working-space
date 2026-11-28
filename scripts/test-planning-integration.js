@@ -131,6 +131,16 @@ try {for(let i=0;i<60;i++){try{if((await fetch(base+'/api/tv')).ok)break;}catch{
  try {
    const settings=await req('/api/admin/ai-settings','PUT',{provider:'custom',baseUrl:`http://127.0.0.1:${fake.address().port}`,model:'mock'},d);assert.equal(settings.status,200);
    assert.equal((await req('/api/planning/copilot','POST',{question:'avance cet OF'},u)).status,403);
+   assert.equal((await req('/api/direction/assistant','POST',{question:'test'},u)).status,403);
+   assert.equal((await req('/api/direction/assistant','POST',{question:''},d)).status,400);
+   const beforeDirection=db.prepare('SELECT id,planningValide FROM pieces ORDER BY id').all();
+   mockAnswer={answer:'Vérifiez les pannes enregistrées.'};mockUsage={prompt_tokens:5,completion_tokens:3,total_tokens:8};
+   const directionReply=await req('/api/direction/assistant','POST',{question:'Quoi vérifier ?',history:[{role:'user',text:'Bonjour'}]},d);
+   assert.equal(directionReply.status,200);assert.equal(directionReply.data.answer,'Vérifiez les pannes enregistrées.');assert(lastPrompt.includes('Bonjour'));assert(!lastPrompt.includes('SECRET CLIENT'));
+   assert.deepEqual(db.prepare('SELECT id,planningValide FROM pieces ORDER BY id').all(),beforeDirection);
+   assert((await req('/api/admin/ai-usage','GET',null,d)).data.users.find(x=>x.id==='u1').totalTokens>=8);
+   console.log('✅ Assistant Direction : droits, contexte, lecture seule et comptage IA');
+
    const chef=(await req('/api/login','POST',{username:'chef',password:'1234'})).data.token;assert(chef);
    assert.equal((await req('/api/admin/ai-usage','GET',null,chef)).status,403);
    assert.equal((await req('/api/admin/ai-usage/u3/limit','PUT',{dailyLimit:-1},d)).status,400);
