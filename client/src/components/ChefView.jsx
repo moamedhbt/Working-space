@@ -15,6 +15,7 @@ import MaterialSummary from './MaterialSummary';
 
 export default function ChefView({ state, user, reload, search = '' }) {
   const [tab, setTab] = useState('dashboard');
+  const [adaptRequest,setAdaptRequest]=useState(null);
   const {ask, dialog} = useWorkshopDialog();
   const [materialRevision,setMaterialRevision] = useState(0);
   const [expanded, setExpanded] = useState({});
@@ -292,11 +293,11 @@ export default function ChefView({ state, user, reload, search = '' }) {
       </div>
 
       {/* Dashboard uses live workshop state and explicit actions, not a second scheduler. */}
-      {tab === 'dashboard' && <ChefToday state={state} onPlanning={()=>setTab('planning')} onNew={()=>setShowCreateModal(true)} onOrder={id=>{setExpanded(p=>({...p,[id]:true}));setTab('ordres')}} onResolveStop={resolveStop} onResolvePanne={resolvePanne}/>}
+      {tab === 'dashboard' && <ChefToday state={state} ask={ask} onAdapt={()=>{setAdaptRequest({at:Date.now()});setTab('planning')}} onPlanning={()=>setTab('planning')} onNew={()=>setShowCreateModal(true)} onOrder={id=>{setExpanded(p=>({...p,[id]:true}));setTab('ordres')}} onResolveStop={resolveStop} onResolvePanne={resolvePanne}/>}
 
       {/* TAB 2: PLANNING & IA */}
       <div className={tab === 'planning' ? 'block' : 'hidden'}>
-        <ChefPlanningTab state={state} reload={reload} showToast={showToast} ask={ask} />
+        <ChefPlanningTab state={state} reload={reload} showToast={showToast} ask={ask} adaptRequest={adaptRequest} />
       </div>
 
       {/* TAB 3: ORDRES & GAMMES MULTI-OPERATIONS (REGLAGE vs USINAGE + SOUS-TRAITANCE) */}

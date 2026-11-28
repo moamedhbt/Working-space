@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { queryOne } = require('../db/database');
+const {inUser}=require('../services/aiUsage');
 
 const SECRET_FILE = path.join(__dirname, '../../.app-secret');
 
@@ -74,7 +75,7 @@ function auth(req, res, next) {
     username: liveUser.username,
     role: liveUser.role
   };
-  next();
+  inUser(req.user, next);
 }
 
 function requireRole(...roles) {

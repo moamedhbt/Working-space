@@ -1,3 +1,4 @@
+import AiUsagePanel from './AiUsagePanel';
 import React, { useState, useEffect } from 'react';
 import {
   Bot, CheckCircle, Plus, FolderCheck, UserPlus, ShoppingCart,
@@ -1284,6 +1285,7 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
       {/* PANEL 6: ADMIN */}
       {activePanel === 'admin' && (
         <div className="space-y-4">
+          <AiUsagePanel />
           {/* MULTI-PROVIDER AI VAULT CARD (DIRECTEUR ONLY) */}
           <div className="cyber-card p-4 border-purple-500/30 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">

@@ -97,6 +97,13 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   await chefPage.getByRole('button',{name:'Chef Atelier',exact:true}).click();
   await chefPage.getByText('Aujourd’hui dans l’atelier').waitFor();
   await chefPage.getByText('Blocages à suivre').waitFor();
+  await chefPage.getByText('À surveiller aujourd’hui').waitFor();await chefPage.getByText('Matière à suivre',{exact:false}).waitFor();
+  const adaptive=chefPage.waitForResponse(r=>r.url().endsWith('/api/planning/drafts')&&r.request().method()==='POST');
+  await chefPage.getByRole('button',{name:'Proposer une adaptation du planning'}).click();
+  const adaptResult=await adaptive;if(adaptResult.status()!==201)throw Error(`Adaptation tableau de bord : ${await adaptResult.text()}`);
+  await chefPage.getByText('Proposition à vérifier · non publiée').waitFor();
+  await chefPage.getByRole('button',{name:'Aujourd’hui',exact:true}).first().click();
+
   await chefPage.getByText('Bilan du jour et suite').click();
   await chefPage.getByText('À poursuivre ou préparer', {exact:false}).waitFor();
   await chefPage.getByRole('button',{name:'Demander une synthèse'}).click();
@@ -150,7 +157,7 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   await chefPage.getByText('Planning des machines',{exact:true}).waitFor();
   await chefPage.getByRole('button',{name:'Ouvrir le copilote'}).click();
   const copilot=chefPage.getByRole('dialog',{name:'Copilote atelier'});await copilot.getByLabel('Votre demande au copilote').fill('Quelle est la situation ?');
-  await copilot.getByRole('button',{name:'Demander',exact:true}).click();await copilot.getByRole('alert').getByText('Aucun fournisseur IA actif.',{exact:false}).waitFor();
+  await copilot.getByRole('button',{name:'Demander',exact:true}).click();await copilot.getByRole('alert').getByText('Aucun fournisseur IA actif.',{exact:false}).waitFor();await copilot.getByRole('log').getByText('Quelle est la situation ?').waitFor();
   await chefPage.keyboard.press('Escape');if(await copilot.isVisible())throw Error('Le volet copilote ne se ferme pas');
   console.log('✅ UI mobile : volet copilote, erreur visible et fermeture');
   await chefPage.getByRole('button',{name:'Calculer un brouillon'}).click();
@@ -161,6 +168,8 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   const published=await publishResponse;if(published.status()!==200)throw Error(`Publication UI : ${await published.text()}`);
   console.log('✅ UI chef mobile : planning, confirmation intégrée et publication réelle');
  } catch(e) {failed=true;console.error('❌ UI chef mobile',e.message)} finally {await chefPage.close()}
+ const adminPage=await browser.newPage({viewport:{width:1440,height:900}});
+ try {await adminPage.goto(`http://127.0.0.1:${port}/`);await adminPage.getByRole('button',{name:'Directeur',exact:true}).click();await adminPage.getByText('Comptes & Audit',{exact:true}).click();await adminPage.getByText('Tokens IA par utilisateur').waitFor();await adminPage.getByLabel('Limite quotidienne Chef Atelier').fill('12345');const row=adminPage.locator('form').filter({has:adminPage.getByLabel('Limite quotidienne Chef Atelier')});const saved=adminPage.waitForResponse(r=>r.url().endsWith('/api/admin/ai-usage/u3/limit'));await row.getByRole('button',{name:'Enregistrer'}).click();if((await saved).status()!==200)throw Error('Limite non enregistrée');console.log('✅ UI directeur : compteur et limite par utilisateur');}catch(e){failed=true;console.error('❌ UI directeur limites',e.message)}finally{await adminPage.close()}
  const opPage=await browser.newPage({viewport:{width:390,height:844}});
  try{await opPage.goto(`http://127.0.0.1:${port}/`);await opPage.getByRole('button',{name:'Opérateur',exact:true}).click();await opPage.getByText('Vérifier le bridage avant démarrage').waitFor();console.log('✅ UI opérateur : consigne reçue');}
  catch(e){failed=true;console.error('❌ UI opérateur consigne',e.message)}finally{await opPage.close()}

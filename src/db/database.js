@@ -808,6 +808,9 @@ function getMaintenanceLogs() {
 
 function createSchema() {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_user_limits (userId TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, dailyLimit INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS ai_daily_usage (userId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, day TEXT NOT NULL, inputTokens INTEGER NOT NULL DEFAULT 0, outputTokens INTEGER NOT NULL DEFAULT 0, totalTokens INTEGER NOT NULL DEFAULT 0, calls INTEGER NOT NULL DEFAULT 0, unknownCalls INTEGER NOT NULL DEFAULT 0, inflightAt INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(userId,day));
+
     CREATE TABLE IF NOT EXISTS atelier_settings (
       key TEXT PRIMARY KEY,
       value TEXT

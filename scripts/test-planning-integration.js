@@ -110,11 +110,36 @@ try {for(let i=0;i<60;i++){try{if((await fetch(base+'/api/tv')).ok)break;}catch{
  assert.equal((await req('/api/planning/copilot','POST',{question:'État atelier'},d)).status,503);
  assert.equal((await req('/api/chef/briefing','POST',{},u)).status,403);assert.equal((await req('/api/chef/briefing','POST',{},d)).status,503);
  let mockAnswer={answer:'Je prépare une proposition.',action:'prioritize',pieceId:id};
- const fake=http.createServer((request,response)=>{request.resume();request.on('end',()=>{response.writeHead(200,{'Content-Type':'application/json'});response.end(JSON.stringify({choices:[{message:{content:typeof mockAnswer==='string'?mockAnswer:JSON.stringify(mockAnswer)},finish_reason:'stop'}]}));});});
+ let mockUsage=null,lastPrompt='',mockDelay=0;
+ const fake=http.createServer((request,response)=>{let body='';request.on('data',c=>body+=c);request.on('end',()=>{try{lastPrompt=JSON.parse(body).messages?.[0]?.content?.[0]?.text || ''}catch{}setTimeout(()=>{response.writeHead(200,{'Content-Type':'application/json'});response.end(JSON.stringify({choices:[{message:{content:typeof mockAnswer==='string'?mockAnswer:JSON.stringify(mockAnswer)},finish_reason:'stop'}],...(mockUsage?{usage:mockUsage}:{})}));},mockDelay);});});
  await new Promise(resolve=>fake.listen(0,'127.0.0.1',resolve));
  try {
    const settings=await req('/api/admin/ai-settings','PUT',{provider:'custom',baseUrl:`http://127.0.0.1:${fake.address().port}`,model:'mock'},d);assert.equal(settings.status,200);
    assert.equal((await req('/api/planning/copilot','POST',{question:'avance cet OF'},u)).status,403);
+   const chef=(await req('/api/login','POST',{username:'chef',password:'1234'})).data.token;assert(chef);
+   assert.equal((await req('/api/admin/ai-usage','GET',null,chef)).status,403);
+   assert.equal((await req('/api/admin/ai-usage/u3/limit','PUT',{dailyLimit:-1},d)).status,400);
+   assert.equal((await req('/api/admin/ai-usage/u3/limit','PUT',{dailyLimit:20},d)).status,200);
+   mockUsage={prompt_tokens:10,completion_tokens:5,total_tokens:15};mockAnswer={answer:'Réponse du copilote',action:'none'};
+   const firstChat=await req('/api/planning/copilot','POST',{question:'Deuxième question',history:[{role:'user',text:'Première question'},{role:'assistant',text:'Première réponse'}]},chef);
+   assert.equal(firstChat.status,200);assert(lastPrompt.includes('Première question'));assert(lastPrompt.includes('Première réponse'));
+   const usage1=(await req('/api/admin/ai-usage','GET',null,d)).data.users.find(x=>x.id==='u3');assert.equal(usage1.totalTokens,15);assert.equal(usage1.inputTokens,10);assert.equal(usage1.outputTokens,5);
+   assert.equal((await req('/api/planning/copilot','POST',{question:'Encore'},chef)).status,200); // last call may exceed threshold
+   assert.equal((await req('/api/planning/copilot','POST',{question:'Bloqué'},chef)).status,429);
+   const usage2=(await req('/api/admin/ai-usage','GET',null,d)).data.users.find(x=>x.id==='u3');assert.equal(usage2.totalTokens,30);assert.equal(usage2.calls,2);
+   assert.equal((await req('/api/admin/ai-usage/u3/limit','PUT',{dailyLimit:0},d)).status,200);
+   mockUsage=null;mockAnswer={answer:'Test inconnu',action:'none'};
+   assert.equal((await req('/api/planning/copilot','POST',{question:'Sans usage'},chef)).status,200);
+   assert.equal((await req('/api/admin/ai-usage/u3/limit','PUT',{dailyLimit:1000},d)).status,200);
+   assert.equal((await req('/api/planning/copilot','POST',{question:'Bloqué si inconnu'},chef)).status,429);
+   assert.equal((await req('/api/admin/ai-usage/u3/limit','PUT',{dailyLimit:0},d)).status,200);
+   db.prepare('DELETE FROM ai_daily_usage WHERE userId=?').run('u3');
+   assert.equal((await req('/api/admin/ai-usage/u3/limit','PUT',{dailyLimit:1000},d)).status,200);
+   mockUsage={prompt_tokens:10,completion_tokens:5,total_tokens:15};mockDelay=150;
+   const simultaneous=await Promise.all([req('/api/planning/copilot','POST',{question:'Première requête'},chef),req('/api/planning/copilot','POST',{question:'Deuxième requête'},chef)]);
+   assert.deepEqual(simultaneous.map(x=>x.status).sort(),[200,429]);mockDelay=0;mockUsage=null;
+   assert.equal((await req('/api/admin/ai-usage/u3/limit','PUT',{dailyLimit:0},d)).status,200);
+   mockAnswer={answer:'Je prépare une proposition.',action:'prioritize',pieceId:id};
    const brief=await req('/api/chef/briefing','POST',{},d);assert.equal(brief.status,200);assert.equal(brief.data.answer,'Je prépare une proposition.');
    const beforeAi=await req('/api/state','GET',null,d);
    const ai=await req('/api/planning/copilot','POST',{question:`avance ${id}`},d);assert.equal(ai.status,200);assert(ai.data.proposal && ai.data.proposal.id);

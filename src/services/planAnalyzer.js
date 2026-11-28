@@ -1,4 +1,5 @@
 const path = require('path');
+const {trackedFetch}=require('./aiUsage');
 const { getAiSettings, getAiProfileById, queryAll } = require('../db/database');
 
 function getWorkshopMachinesContext() {
@@ -363,11 +364,11 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
       if (useJsonMime) {
         generationConfig.responseMimeType = 'application/json';
       }
-      const res = await fetch(url, {
+      const res = await trackedFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contents: [{ parts }], generationConfig })
-      });
+      },provider);
       const json = await res.json().catch(() => ({}));
       return { ok: res.ok, status: res.status, json, model: cleanMdl };
     };
@@ -438,7 +439,7 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
         messages: [{ role: 'user', content }]
       };
       if (useThinking) body.thinking = { type: 'enabled', budget_tokens: 2048 };
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
+      const res = await trackedFetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -446,7 +447,7 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
           'anthropic-version': '2023-06-01'
         },
         body: JSON.stringify(body)
-      });
+      },provider);
       const json = await res.json().catch(() => ({}));
       return { ok: res.ok, status: res.status, json };
     };
@@ -518,11 +519,11 @@ async function callConfiguredAiRaw({ promptText, buffer = null, mimeType = 'imag
     } else if (provider === 'openrouter' && thinkingOpt === 'on') {
       payload.reasoning = { effort: 'medium' };
     }
-    const res = await fetch(endpoint, {
+    const res = await trackedFetch(endpoint, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload)
-    });
+    },provider);
     const json = await res.json().catch(() => ({}));
     return { ok: res.ok, status: res.status, json };
   };

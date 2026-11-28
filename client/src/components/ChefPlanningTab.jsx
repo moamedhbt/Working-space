@@ -6,17 +6,19 @@ import PlanningAvailability from './PlanningAvailability';
 import {useWorkshopDialog} from './WorkshopDialog';
 
 const DAYS = [[0,'Dim'],[1,'Lun'],[2,'Mar'],[3,'Mer'],[4,'Jeu'],[5,'Ven'],[6,'Sam']];
-export default function ChefPlanningTab({state, reload, showToast, incomingProposal, ask}) {
+export default function ChefPlanningTab({state, reload, showToast, incomingProposal, ask, adaptRequest}) {
   const fallbackDialog=useWorkshopDialog();
   const confirmAction=ask || fallbackDialog.ask;
   const [proposal,setProposal]=useState(null), [busy,setBusy]=useState(false);
-  const [question,setQuestion]=useState(''), [reply,setReply]=useState(null), [copilotOpen,setCopilotOpen]=useState(false), [copilotError,setCopilotError]=useState('');
+  const [question,setQuestion]=useState(''), [messages,setMessages]=useState([]), [copilotOpen,setCopilotOpen]=useState(false), [copilotError,setCopilotError]=useState('');
   const proposalRef=useRef(null);
+  useEffect(()=>{document.querySelectorAll('[aria-label="Conversation avec le copilote"]').forEach(el=>{el.scrollTop=el.scrollHeight})},[messages,busy,copilotOpen]);
   useEffect(()=>{if(incomingProposal){setProposal(incomingProposal);setTimeout(()=>proposalRef.current?.scrollIntoView({behavior:'smooth',block:'start'}),50)}},[incomingProposal]);
   useEffect(()=>{if(!copilotOpen)return;const onKey=e=>{if(e.key==='Escape')setCopilotOpen(false)};window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey)},[copilotOpen]);
   const [priority,setPriority]=useState(''), [showSettings,setShowSettings]=useState(false);
   const [calendar,setCalendar]=useState({workDays:[0,1,2,3,4],shiftStart:'08:00',shiftEnd:'17:00'});
   useEffect(()=>{if(state.settings && !showSettings)setCalendar(state.settings)},[state.settings, showSettings]);
+  useEffect(()=>{if(!adaptRequest)return;let active=true;(async()=>{if(proposal && !await confirmAction('Une proposition est déjà ouverte. Calculer une adaptation remplacera cet aperçu, sans publier.',{title:'Adapter le planning',confirmLabel:'Calculer'}))return;if(active)await calculate(true)})();return()=>{active=false}},[adaptRequest]);
   const openPieces=state.pieces.filter(p=>!p.archived&&!['Clôturé','Refusé'].includes(p.statut));
   async function calculate(preservePublished = false) {
     setBusy(true);
@@ -56,16 +58,28 @@ export default function ChefPlanningTab({state, reload, showToast, incomingPropo
     catch(e){showToast(e.message,'err')} finally{setBusy(false)}
   }
   async function askCopilot(e) {
-    e.preventDefault(); if(!question.trim())return;setBusy(true);setReply(null);setCopilotError('');
-    try{const r=await api('/api/planning/copilot','POST',{question});setReply(r);if(r.proposal)setProposal(r.proposal)}
-    catch(e){setCopilotError(e.message)}finally{setBusy(false)}
+    e.preventDefault();const text=question.trim();if(!text||busy)return;
+    const prior=messages.filter(m=>m.role==='user'||m.role==='assistant').map(({role,text})=>({role,text})).slice(-12);
+    setMessages(prev=>[...prev,{role:'user',text}]);setQuestion('');setBusy(true);setCopilotError('');
+    try{const r=await api('/api/planning/copilot','POST',{question:text,history:prior});setMessages(prev=>[...prev,{role:'assistant',text:r.answer,model:r.model,proposalId:r.proposal?.id}]);if(r.proposal)setProposal(r.proposal)}
+    catch(err){setCopilotError(err.message)}finally{setBusy(false)}
   }
   async function saveSettings(){
     setBusy(true);try{await api('/api/settings','PUT',calendar);setShowSettings(false);showToast('Calendrier enregistré. Recalculez le brouillon.');reload()}
     catch(e){showToast(e.message,'err')}finally{setBusy(false)}
   }
   function showProposal(){setCopilotOpen(false);setTimeout(()=>proposalRef.current?.scrollIntoView({behavior:'smooth',block:'start'}),50)}
-  const copilot=(location)=><section className="cyber-card p-4 space-y-3" aria-label="Copilote atelier"><div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2 text-sm font-semibold text-white"><Bot size={17} className="text-cyan-400"/> Copilote atelier</div><button type="button" aria-label="Fermer le copilote" onClick={()=>setCopilotOpen(false)} className="lg:hidden text-slate-300"><X size={19}/></button></div><p className="text-xs text-slate-400">Posez une question ou demandez une proposition. Le copilote peut s’appuyer sur un précédent comparable pour suggérer opérateur et durée. Sans référence fiable, il vous le dira. Vous décidez et publiez.</p><form onSubmit={askCopilot} className="space-y-2"><label className="sr-only" htmlFor={`copilot-${location}`} >Votre demande au copilote</label><input id={`copilot-${location}`} autoFocus={location==='mobile'} value={question} onChange={e=>setQuestion(e.target.value)} maxLength={2000} placeholder="Ex. : propose opérateur et durée pour l’OF-2026-0101" className="w-full p-2 rounded bg-[#0B0F14] border border-slate-700 text-sm"/><button disabled={busy||!question.trim()} className="w-full px-4 py-2 rounded bg-cyan-500 text-slate-950 text-xs font-semibold disabled:opacity-40">Demander</button></form>{copilotError&&<div role="alert" className="rounded border border-red-500/40 bg-red-500/10 p-2 text-xs text-red-300">{copilotError}</div>}{reply&&<div className="rounded bg-[#0B0F14] border border-slate-700 p-3 text-xs text-slate-200 whitespace-pre-wrap break-words">{reply.answer}<div className="text-slate-500 mt-2">{reply.model||'Copilote'} · {reply.proposal?'Brouillon préparé':'Aucun changement préparé'}</div>{reply.proposal&&proposal?.id===reply.proposal.id&&<button type="button" onClick={showProposal} className="text-cyan-300 underline mt-2">Voir le brouillon et ses changements</button>}</div>}<p className="text-[10px] text-slate-500">La demande, un résumé des OF, machines, opérateurs et opérations terminées sont envoyés au fournisseur IA configuré. Un précédent ne garantit ni les compétences ni la compatibilité. Une nouvelle proposition remplace l’aperçu ouvert.</p></section>;
+  const copilot=(location)=><section className="cyber-card p-4 flex flex-col gap-3" aria-label="Copilote atelier">
+    <div className="flex items-center justify-between gap-2"><div><div className="flex items-center gap-2 text-sm font-semibold text-white"><Bot size={17} className="text-cyan-400"/> Copilote atelier</div><p className="text-[11px] text-slate-400 mt-1">Discutez, préparez une proposition ; vous publiez.</p></div><div className="flex gap-3"><button type="button" onClick={()=>{setMessages([]);setCopilotError('')}} className="text-[11px] text-slate-400 underline">Nouvelle discussion</button><button type="button" aria-label="Fermer le copilote" onClick={()=>setCopilotOpen(false)} className="lg:hidden text-slate-300"><X size={19}/></button></div></div>
+    <div role="log" aria-label="Conversation avec le copilote" aria-live="polite" className="h-72 overflow-y-auto space-y-3 rounded-lg bg-[#0B0F14] border border-slate-800 p-3">
+      {!messages.length&&<div className="rounded-xl bg-slate-800 p-3 text-xs text-slate-200">Bonjour ! Je peux vous aider à examiner le planning, avancer un OF ou préparer une proposition. Que voulez-vous faire ?</div>}
+      {messages.map((m,i)=><div key={i} className={`flex ${m.role==='user'?'justify-end':'justify-start'}`}><div className={`max-w-[92%] rounded-xl px-3 py-2 text-xs whitespace-pre-wrap break-words ${m.role==='user'?'bg-cyan-600 text-white':'bg-slate-800 text-slate-100'}`}><p>{m.text}</p>{m.role==='assistant'&&<p className="mt-2 text-[10px] text-slate-400">{m.model||'Copilote'} · {m.proposalId?'Proposition préparée':'Aucune modification'}</p>}{m.proposalId&&proposal?.id===m.proposalId&&<button type="button" onClick={showProposal} className="text-cyan-300 underline mt-2">Voir la proposition</button>}</div></div>)}
+      {busy&&<div className="text-xs text-slate-400">Le copilote réfléchit…</div>}
+    </div>
+    {copilotError&&<div role="alert" className="rounded border border-red-500/40 bg-red-500/10 p-2 text-xs text-red-300">{copilotError}</div>}
+    <form onSubmit={askCopilot} className="flex gap-2"><label className="sr-only" htmlFor={`copilot-${location}`}>Votre demande au copilote</label><input id={`copilot-${location}`} value={question} onChange={e=>setQuestion(e.target.value)} maxLength={2000} placeholder="Écrivez votre demande…" className="min-w-0 flex-1 p-2 rounded-lg bg-[#0B0F14] border border-slate-700 text-sm"/><button disabled={busy||!question.trim()} className="px-3 py-2 rounded-lg bg-cyan-500 text-slate-950 text-xs font-semibold disabled:opacity-40">Demander</button></form>
+    <p className="text-[10px] text-slate-500">Historique conservé dans cette session uniquement. La demande, les échanges récents et un résumé atelier sont envoyés au fournisseur IA configuré. Vérifiez les propositions avant publication.</p>
+  </section>;
   return <div className="space-y-4">{fallbackDialog.dialog}
     <div className="flex flex-wrap justify-between items-center gap-2"><div><h2 className="text-lg font-semibold text-white">Planning atelier</h2><p className="text-xs text-slate-400 mt-1">Préparez, vérifiez puis publiez pour les opérateurs et la TV.</p></div><button type="button" onClick={()=>setShowSettings(!showSettings)} className="px-3 py-2 rounded-lg border border-slate-700 text-xs text-slate-300 flex items-center gap-2"><CalendarDays size={15}/>{DAYS.filter(([d])=>calendar.workDays.includes(d)).map(([,label])=>label).join(' · ')} | {calendar.shiftStart}–{calendar.shiftEnd}</button></div>
     {showSettings && <div className="cyber-card p-4 flex flex-wrap items-center gap-3 text-xs"><span className="text-slate-400">Jours ouvrés</span>{DAYS.map(([n,label])=><button type="button" key={n} onClick={()=>setCalendar(p=>({...p,workDays:p.workDays.includes(n)?p.workDays.filter(d=>d!==n):[...p.workDays,n].sort()}))} className={`px-2 py-1 rounded border ${calendar.workDays.includes(n)?'text-cyan-300 border-cyan-500':'text-slate-500 border-slate-700'}`}>{label}</button>)}<input type="time" value={calendar.shiftStart} onChange={e=>setCalendar({...calendar,shiftStart:e.target.value})} className="p-1 bg-slate-900 border border-slate-700 rounded"/><span>–</span><input type="time" value={calendar.shiftEnd} onChange={e=>setCalendar({...calendar,shiftEnd:e.target.value})} className="p-1 bg-slate-900 border border-slate-700 rounded"/><button type="button" disabled={busy} onClick={saveSettings} className="px-3 py-1 rounded bg-cyan-500 text-slate-950 font-semibold">Enregistrer</button></div>}

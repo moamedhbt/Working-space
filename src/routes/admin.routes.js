@@ -28,6 +28,7 @@ const {
 } = require('../db/database');
 const { testAiConnection, listAvailableModels } = require('../services/planAnalyzer');
 const { auth, requireRole } = require('../middleware/auth');
+const {day:usageDay}=require('../services/aiUsage');
 
 const router = express.Router();
 const ALLOWED_ROLES = ['directeur', 'chef', 'be', 'operateur', 'tv'];
@@ -51,6 +52,20 @@ router.put('/settings', auth, requireRole('directeur', 'chef'), (req, res) => {
   res.json({ ok: true, settings: getSettings() });
 });
 
+// The counter tracks provider-reported tokens per authenticated user, all AI features.
+router.get('/admin/ai-usage',auth,requireRole('directeur'),(req,res)=>{
+ const today=usageDay();
+ const users=queryAll(`SELECT u.id,u.nom,u.role,u.actif,COALESCE(l.dailyLimit,0) AS dailyLimit,COALESCE(a.inputTokens,0) AS inputTokens,COALESCE(a.outputTokens,0) AS outputTokens,COALESCE(a.totalTokens,0) AS totalTokens,COALESCE(a.calls,0) AS calls,COALESCE(a.unknownCalls,0) AS unknownCalls FROM users u LEFT JOIN ai_user_limits l ON l.userId=u.id LEFT JOIN ai_daily_usage a ON a.userId=u.id AND a.day=? WHERE u.role<>'tv' ORDER BY u.nom`,[today]);
+ res.json({day:today,timezone:'Africa/Algiers',users});
+});
+router.put('/admin/ai-usage/:userId/limit',auth,requireRole('directeur'),(req,res)=>{
+ const {dailyLimit}=req.body||{};const id=req.params.userId;
+ if(!queryOne('SELECT id FROM users WHERE id=?',[id]))return res.status(404).json({error:'Utilisateur introuvable.'});
+ if(!Number.isSafeInteger(dailyLimit)||dailyLimit<0||dailyLimit>1000000000)return res.status(400).json({error:'La limite doit être un entier entre 0 et 1 milliard ; 0 désactive la limite.'});
+ runSql('INSERT INTO ai_user_limits(userId,dailyLimit) VALUES (?,?) ON CONFLICT(userId) DO UPDATE SET dailyLimit=excluded.dailyLimit',[id,dailyLimit]);
+ logAudit(req.user,'LIMITE IA MODIFIÉE',`${id} · ${dailyLimit||'sans limite'} tokens / jour`);
+ res.json({ok:true});
+});
 router.get('/admin/ai-settings', auth, requireRole('directeur'), (req, res) => {
   res.json(getAiSettingsPublic());
 });
