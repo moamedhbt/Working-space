@@ -120,6 +120,21 @@ try {for(let i=0;i<60;i++){try{if((await fetch(base+'/api/tv')).ok)break;}catch{
    const ai=await req('/api/planning/copilot','POST',{question:`avance ${id}`},d);assert.equal(ai.status,200);assert(ai.data.proposal && ai.data.proposal.id);
    const afterAi=await req('/api/state','GET',null,d);
    assert.deepEqual(afterAi.data.pieces.find(p=>p.id===id).operations.map(o=>[o.datePlanifiee,o.debutStr,o.finStr]),beforeAi.data.pieces.find(p=>p.id===id).operations.map(o=>[o.datePlanifiee,o.debutStr,o.finStr]));
+   // Historical AI proposals must be grounded in a real, comparable completed operation.
+   const targetRecord=db.prepare('SELECT o.*,p.quantitePrevue FROM operations o JOIN pieces p ON p.id=o.pieceId WHERE o.pieceId=? LIMIT 1').get(id);
+   const historyOf=await req('/api/pieces','POST',{nom:'Historique comparable',chuteDispo:true,machineId:'m1',operateurId:'u5',quantitePrevue:targetRecord.quantitePrevue},d);assert.equal(historyOf.status,201);
+   const historyOp=db.prepare('SELECT id FROM operations WHERE pieceId=? LIMIT 1').get(historyOf.data.id).id;
+   db.prepare("UPDATE operations SET libelle=?,statut='Terminée',tempsReelMin=75,quantiteBonne=?,operateurId='u5' WHERE id=?").run(targetRecord.libelle,targetRecord.quantitePrevue,historyOp);
+   mockAnswer={answer:'Proposition historique',action:'historical_operation',operationId:targetRecord.id,referenceOperationId:historyOp};
+   const historical=await req('/api/planning/copilot','POST',{question:`Propose opérateur et durée pour ${id} selon historique`},d);
+   assert.equal(historical.status,200);assert(historical.data.proposal);assert(historical.data.answer.includes(historyOf.data.id));
+   assert.equal(historical.data.proposal.operationEdit.operateurId,'u5');assert.equal(historical.data.proposal.operationEdit.tempsPrevuMin,75);
+   assert.equal(db.prepare('SELECT operateurId FROM operations WHERE id=?').get(targetRecord.id).operateurId,targetRecord.operateurId);
+   db.prepare('UPDATE operations SET quantiteBonne=? WHERE id=?').run(targetRecord.quantitePrevue+1,historyOp);
+   const incompatible=await req('/api/planning/copilot','POST',{question:'Propose selon historique'},d);assert.equal(incompatible.status,200);assert.equal(incompatible.data.proposal,null);
+   mockAnswer={answer:'Fausse référence',action:'historical_operation',operationId:targetRecord.id,referenceOperationId:'id-inventé'};
+   assert.equal((await req('/api/planning/copilot','POST',{question:'Propose selon historique'},d)).data.proposal,null);
+   db.prepare('DELETE FROM pieces WHERE id=?').run(historyOf.data.id);
    mockAnswer={answer:'Je ne sais pas.',action:'none'};
    assert.equal((await req('/api/planning/copilot','POST',{question:'Question simple'},d)).data.proposal,null);
    mockAnswer={answer:'Essai.',action:'reassign',operationId:'inexistant',machineId:'m1'};
