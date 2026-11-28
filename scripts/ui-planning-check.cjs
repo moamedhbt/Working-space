@@ -96,6 +96,12 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   await chefPage.goto(`http://127.0.0.1:${port}/`);
   await chefPage.getByRole('button',{name:'Chef Atelier',exact:true}).click();
   await chefPage.getByText('Aujourd’hui dans l’atelier').waitFor();
+  const tools=chefPage.getByRole('region',{name:'Les quatre outils du chef'});await tools.waitFor();
+  for(const name of [/À surveiller/,/Réagir à un imprévu/,/Matières à suivre/,/Bilan du jour/])await tools.getByRole('button',{name}).waitFor();
+  await tools.getByRole('button',{name:/Matières à suivre/}).click();await chefPage.getByText('Matière à suivre',{exact:false}).waitFor();
+  await tools.getByRole('button',{name:/Bilan du jour/}).click();await chefPage.getByText('À poursuivre ou préparer',{exact:false}).waitFor();
+  console.log('✅ UI chef : quatre cartes visibles et accessibles');
+
   await chefPage.getByText('Blocages à suivre').waitFor();
   await chefPage.getByText('À surveiller aujourd’hui').waitFor();await chefPage.getByText('Matière à suivre',{exact:false}).waitFor();
   const adaptive=chefPage.waitForResponse(r=>r.url().endsWith('/api/planning/drafts')&&r.request().method()==='POST');
@@ -103,7 +109,6 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   const adaptResult=await adaptive;if(adaptResult.status()!==201)throw Error(`Adaptation tableau de bord : ${await adaptResult.text()}`);
   await chefPage.getByText('Proposition à vérifier · non publiée').waitFor();
   await chefPage.getByRole('button',{name:'Aujourd’hui',exact:true}).first().click();
-
   await chefPage.getByText('Bilan du jour et suite').click();
   await chefPage.getByText('À poursuivre ou préparer', {exact:false}).waitFor();
   await chefPage.getByRole('button',{name:'Demander une synthèse'}).click();
@@ -155,9 +160,15 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   });
   await chefPage.getByRole('button',{name:'Planning & IA'}).click();
   await chefPage.getByText('Planning des machines',{exact:true}).waitFor();
-  await chefPage.getByRole('button',{name:'Ouvrir le copilote'}).click();
+  await chefPage.getByRole('button',{name:/Discuter avec le copilote/}).click();
   const copilot=chefPage.getByRole('dialog',{name:'Copilote atelier'});await copilot.getByLabel('Votre demande au copilote').fill('Quelle est la situation ?');
   await copilot.getByRole('button',{name:'Demander',exact:true}).click();await copilot.getByRole('alert').getByText('Aucun fournisseur IA actif.',{exact:false}).waitFor();await copilot.getByRole('log').getByText('Quelle est la situation ?').waitFor();
+  let messagesSent=[];await chefPage.route('**/api/planning/copilot',async route=>{const body=route.request().postDataJSON();messagesSent.push(body);await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({answer:`Réponse test ${messagesSent.length}`,proposal:null,model:'simulé'})})});
+  await copilot.getByLabel('Votre demande au copilote').fill('Première question');await copilot.getByRole('button',{name:'Demander',exact:true}).click();await copilot.getByRole('log').getByText('Réponse test 1').waitFor();
+  await copilot.getByLabel('Votre demande au copilote').fill('Et ensuite ?');await copilot.getByRole('button',{name:'Demander',exact:true}).click();await copilot.getByRole('log').getByText('Réponse test 2').waitFor();
+  if(!messagesSent[1].history.some(x=>x.text==='Première question')||!messagesSent[1].history.some(x=>x.text==='Réponse test 1'))throw Error('La discussion ne transmet pas le contexte précédent');
+  await chefPage.unroute('**/api/planning/copilot');
+
   await chefPage.keyboard.press('Escape');if(await copilot.isVisible())throw Error('Le volet copilote ne se ferme pas');
   console.log('✅ UI mobile : volet copilote, erreur visible et fermeture');
   await chefPage.getByRole('button',{name:'Calculer un brouillon'}).click();
