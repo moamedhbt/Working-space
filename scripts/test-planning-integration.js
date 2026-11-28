@@ -11,6 +11,10 @@ try {for(let i=0;i<60;i++){try{if((await fetch(base+'/api/tv')).ok)break;}catch{
  const safety=await req('/api/pieces','POST',{nom:'Contrôle gamme',chuteDispo:true,machineId:'m1',operateurId:'u4'},d); assert.equal(safety.status,201);
  const sid=safety.data.id;
  const added=await req(`/api/pieces/${sid}/operations`,'POST',{libelle:'Deuxième étape',machineId:'m2',operateurId:'u4',tempsPrevuMin:60},d); assert.equal(added.status,201);
+ const autoStep=await req(`/api/pieces/${sid}/operations`,'POST',{libelle:'Étape automatique',machineTypeRequis:'Fraisage CNC',operateurId:'u4',tempsPrevuMin:30},d);assert.equal(autoStep.status,201);
+ assert.equal(db.prepare('SELECT machineTypeRequis FROM operations WHERE id=?').get(autoStep.data.id).machineTypeRequis,'Fraisage CNC');
+ assert.equal(db.prepare('SELECT m.type FROM operations o JOIN machines m ON m.id=o.machineId WHERE o.id=?').get(autoStep.data.id).type,'Fraisage CNC');
+ assert.equal((await req(`/api/pieces/${sid}/operations`,'POST',{libelle:'Type erroné',machineTypeRequis:'Inexistant'},d)).status,400);
  const first=db.prepare('SELECT id FROM operations WHERE pieceId=? ORDER BY ordre LIMIT 1').get(sid).id;
  db.prepare("UPDATE operations SET statut='Terminée' WHERE id=?").run(first);
  db.prepare('UPDATE pieces SET machineId=?,planningValide=1,chefValide=1 WHERE id=?').run('m1',sid);

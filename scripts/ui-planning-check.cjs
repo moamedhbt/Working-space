@@ -90,6 +90,10 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   await chefPage.getByText('Aucun fournisseur IA actif.',{exact:false}).waitFor();
   await chefPage.getByRole('button',{name:/Ordres & Gammes/}).click();
   await chefPage.getByRole('button',{name:/Essai type UI/}).click();
+  const newMode=chefPage.getByLabel('Mode machine nouvelle étape').first();
+  await newMode.selectOption('Fraisage CNC');
+  if(await chefPage.getByLabel('Machine imposée nouvelle étape').isVisible())throw Error('Une machine exacte reste imposée en mode automatique');
+  await newMode.selectOption('');
   await chefPage.getByRole('button',{name:'Ajouter une consigne opérateur'}).click();
   await chefPage.getByPlaceholder('Ex. : contrôler le bridage avant usinage').fill('Vérifier le bridage avant démarrage');
   const saveInstruction=chefPage.waitForResponse(r=>r.url().includes('/consigne')&&r.request().method()==='PUT');
@@ -100,9 +104,10 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   const beforeProposal=await chefPage.evaluate(async()=>{const h={Authorization:`Bearer ${localStorage.getItem('atelier_token')}`};return (await (await fetch('/api/state',{headers:h})).json()).pieces.find(p=>p.nom==='Essai type UI').operations[0].machineId});
   const proposeSelect=chefPage.getByLabel(/^Machine à proposer pour/).first();
   const alternative=await proposeSelect.locator('option').nth(1).getAttribute('value');
-  await proposeSelect.selectOption(alternative);chefPage.once('dialog',dialog=>dialog.accept());
+  await proposeSelect.selectOption(alternative);
   const proposed=chefPage.waitForResponse(r=>r.url().endsWith('/api/planning/drafts/reassign')&&r.request().method()==='POST');
   await chefPage.getByRole('button',{name:'Voir l’impact dans un brouillon'}).first().click();
+  await chefPage.getByRole('dialog',{name:'Confirmer l’action'}).getByRole('button',{name:'Continuer'}).click();
   const proposedResponse=await proposed;if(proposedResponse.status()!==201)throw Error(`Proposition fiche : ${await proposedResponse.text()}`);
   await chefPage.getByText('Voir les changements').waitFor();await chefPage.getByText('Fraiseuse alternative UI',{exact:false}).first().waitFor();
   const afterProposal=await chefPage.evaluate(async()=>{const h={Authorization:`Bearer ${localStorage.getItem('atelier_token')}`};return (await (await fetch('/api/state',{headers:h})).json()).pieces.find(p=>p.nom==='Essai type UI').operations[0].machineId});
@@ -113,9 +118,9 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   const editSection=chefPage.locator('details').filter({hasText:'Proposer opérateur ou temps dans le planning'}).first();
   await editSection.locator('input[name="tempsUnitaireMin"]').fill('3');
   await editSection.locator('input[name="tempsReglageMin"]').fill('20');
-  chefPage.once('dialog',dialog=>dialog.accept());
   const editResponse=chefPage.waitForResponse(r=>r.url().endsWith('/api/planning/drafts/operation')&&r.request().method()==='POST');
   await editSection.getByRole('button',{name:'Calculer l’impact'}).click();
+  await chefPage.getByRole('dialog',{name:'Confirmer l’action'}).getByRole('button',{name:'Continuer'}).click();
   const editResult=await editResponse;if(editResult.status()!==201)throw Error(`Proposition durée : ${await editResult.text()}`);
   await chefPage.getByText('Temps prévu :',{exact:false}).first().waitFor();
   await chefPage.getByRole('button',{name:/Ordres & Gammes/}).click();
@@ -129,12 +134,18 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   if(await chefPage.getByLabel('Longueur du brut par pièce (mm)').inputValue()!=='')throw Error('Une dimension a été supposée');
   await chefPage.getByLabel('Forme du brut').selectOption('rond');await chefPage.getByLabel('Matière et densité').selectOption('acier');
   await chefPage.getByLabel('Longueur du brut par pièce (mm)').fill('100');await chefPage.getByLabel('Diamètre extérieur (mm)').fill('50');await chefPage.getByLabel('Perte de coupe par pièce (mm)').fill('5');
-  await chefPage.getByRole('button',{name:'Calculer l’estimation'}).click();await chefPage.getByText('1.050 m').waitFor();
-  chefPage.once('dialog',dialog=>dialog.accept());const saveMaterial=chefPage.waitForResponse(r=>r.url().includes('/material-estimate')&&r.request().method()==='PUT');
-  await chefPage.getByRole('button',{name:'Associer cette estimation à l’OF'}).click();if((await saveMaterial).status()!==200)throw Error('Estimation non associée');
-  await chefPage.getByLabel('Perte de coupe par pièce (mm)').fill('4');if(await chefPage.getByText('1.050 m').count())throw Error('Estimation périmée encore affichée');
-  await chefPage.getByRole('button',{name:/Charger l’estimation enregistrée/}).click();await chefPage.getByText('1.050 m').waitFor();
-  console.log('✅ UI matière : OF, dimensions explicites, perte modifiable et estimation enregistrée');
+  await chefPage.getByLabel('Schéma Barre ronde').waitFor();
+  const materialPanel=chefPage.locator('section').filter({has:chefPage.getByRole('heading',{name:'Estimation matière première'})});
+  await chefPage.getByRole('button',{name:'Calculer l’estimation'}).click();await materialPanel.getByText('1.050 m').waitFor();
+  const saveMaterial=chefPage.waitForResponse(r=>r.url().includes('/material-estimate')&&r.request().method()==='PUT');
+  await chefPage.getByRole('button',{name:'Associer cette estimation à l’OF'}).click();await chefPage.getByRole('dialog',{name:'Associer à l’OF'}).getByRole('button',{name:'Associer'}).click();if((await saveMaterial).status()!==200)throw Error('Estimation non associée');
+  await chefPage.getByLabel('Perte de coupe par pièce (mm)').fill('4');if(await materialPanel.getByText('1.050 m').count())throw Error('Estimation périmée encore affichée');
+  await chefPage.getByRole('button',{name:/Charger l’estimation enregistrée/}).click();await materialPanel.getByText('1.050 m').waitFor();
+  await chefPage.getByText('Estimation enregistrée dans',{exact:false}).waitFor();
+  await chefPage.getByRole('button',{name:/Ordres & Gammes/}).click();
+  await chefPage.getByText('Estimation matière associée',{exact:true}).first().waitFor();
+  await chefPage.getByText('1.050 m',{exact:false}).first().waitFor();
+  console.log('✅ UI matière : schéma, confirmation intégrée et estimation visible dans la fiche');
   await chefPage.evaluate(async()=>{
     const h={'Content-Type':'application/json',Authorization:`Bearer ${localStorage.getItem('atelier_token')}`};
     const state=await (await fetch('/api/state',{headers:h})).json();const piece=state.pieces.find(p=>p.nom==='Essai type UI');

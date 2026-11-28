@@ -615,8 +615,8 @@ router.post('/pieces/:id/chef-validate', auth, requireRole('chef', 'directeur'),
 });
 
 // Estimates are advisory only: never adjust stock, buying status or the schedule.
-router.get('/material/catalog',auth,requireRole('directeur','chef'),(req,res)=>res.json({materials:MATERIALS}));
-router.post('/material/estimate',auth,requireRole('directeur','chef'),(req,res)=>{
+router.get('/material/catalog',auth,requireRole('directeur','chef','be'),(req,res)=>res.json({materials:MATERIALS}));
+router.post('/material/estimate',auth,requireRole('directeur','chef','be'),(req,res)=>{
   try {res.json(computeMaterialEstimate(req.body));}catch(e){res.status(400).json({error:e.message});}
 });
 router.get('/pieces/:id/material-estimate',auth,requireRole('directeur','chef'),(req,res)=>{
@@ -1002,7 +1002,11 @@ router.post('/pieces/:id/operations', auth, requireRole('directeur', 'chef'), (r
   if (!libelle) return res.status(400).json({ error: "Libellé d'opération requis" });
 
   const estSousTraitance = b.estSousTraitance ? 1 : 0;
-  const machineId = estSousTraitance ? null : (resolveMachineId(b.machineId, b.machine) || piece.machineId);
+  if (b.machineTypeRequis !== undefined && (typeof b.machineTypeRequis !== 'string' || b.machineTypeRequis.length > 150)) return res.status(400).json({error:'Type de machine invalide.'});
+  const machineTypeRequis = estSousTraitance ? '' : (b.machineTypeRequis || '');
+  const typeMachine = machineTypeRequis ? queryOne('SELECT id FROM machines WHERE type=? AND actif=1 AND enPanne=0 ORDER BY nom LIMIT 1',[machineTypeRequis]) : null;
+  if (machineTypeRequis && !typeMachine) return res.status(400).json({error:'Aucune machine active et disponible pour ce type.'});
+  const machineId = estSousTraitance ? null : (typeMachine?.id || resolveMachineId(b.machineId, b.machine) || piece.machineId);
   const operateurId = estSousTraitance ? null : (resolveOperateurId(b.operateurId, b.operateur) || piece.operateurId);
   const maxOrd = queryOne('SELECT COALESCE(MAX(ordre), 0) AS m FROM operations WHERE pieceId = ?', [id]).m;
   const ordre = b.ordre !== undefined ? parseInt(b.ordre, 10) : maxOrd + 10;
@@ -1018,12 +1022,12 @@ router.post('/pieces/:id/operations', auth, requireRole('directeur', 'chef'), (r
   transaction(() => {
     runSql(
       `INSERT INTO operations (
-        id, pieceId, ordre, libelle, machineId, operateurId,
+        id, pieceId, ordre, libelle, machineId, operateurId, machineTypeRequis,
         tempsReglageMin, tempsUnitaireMin, tempsPrevuMin, statut,
         debutStr, finStr, datePlanifiee, estSousTraitance, sousTraitant, dateEnvoi, dateRetourPrevue
-      ) VALUES (?,?,?,?,?,?,?,?,?,'En attente',?,?,?,?,?,?,?)`,
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,'En attente',?,?,?,?,?,?,?)`,
       [
-        opId, id, ordre, libelle, machineId, operateurId,
+        opId, id, ordre, libelle, machineId, operateurId, machineTypeRequis,
         tempsReglageMin, tempsUnitaireMin, tempsPrevuMin,
         b.debutStr || '', b.finStr || '', b.datePlanifiee || '',
         estSousTraitance, (b.sousTraitant || '').trim(), b.dateEnvoi || '', b.dateRetourPrevue || ''

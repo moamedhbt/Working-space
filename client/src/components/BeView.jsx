@@ -248,7 +248,7 @@ export default function BeView({ state, user, reload }) {
           />
         </div>
         <div className="lg:col-span-4">
-          <MaterialCalculator />
+          <MaterialCalculator state={state} allowAssociation={false} />
         </div>
       </div>
 

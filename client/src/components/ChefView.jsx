@@ -10,9 +10,13 @@ import CreateOfModal from './CreateOfModal';
 import TimelineModal from './TimelineModal';
 import OperationInstruction from './OperationInstruction';
 import ChefToday from './ChefToday';
+import {useWorkshopDialog} from './WorkshopDialog';
+import MaterialSummary from './MaterialSummary';
 
 export default function ChefView({ state, user, reload, search = '' }) {
   const [tab, setTab] = useState('dashboard');
+  const {ask, dialog} = useWorkshopDialog();
+  const [materialRevision,setMaterialRevision] = useState(0);
   const [expanded, setExpanded] = useState({});
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [timelinePiece, setTimelinePiece] = useState(null);
@@ -65,7 +69,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
   }
 
   async function validateMaintenance(m) {
-    const desc = window.prompt(`Description de l'entretien préventif sur ${m.nom} :`, 'Graissage, niveaux, contrôle géométrie');
+    const desc = await ask(`Description de l'entretien préventif sur ${m.nom} :`, {title:'Entretien préventif',defaultValue:'Graissage, niveaux, contrôle géométrie',confirmLabel:'Enregistrer'});
     if (desc === null) return;
     try {
       await api(`/api/machines/${m.id}/maintenance`, 'POST', { description: desc });
@@ -129,7 +133,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
   }
 
   async function deleteMachine(m) {
-    if (!window.confirm(`Supprimer définitivement la machine "${m.nom}" ?`)) return;
+    if (!await ask(`Supprimer définitivement la machine "${m.nom}" ?`)) return;
     try {
       await api(`/api/machines/${m.id}`, 'DELETE');
       showToast(`Machine ${m.nom} supprimée.`);
@@ -139,10 +143,16 @@ export default function ChefView({ state, user, reload, search = '' }) {
     }
   }
 
+  function hasUnsavedPiece(form, piece) {
+    if (!form || !piece) return false;
+    return Number(form.quantitePrevue.value)!==Number(piece.quantitePrevue) || form.matiere.value!==(piece.matiere || '') || form.fournisseur.value!==(piece.fournisseur || '') || form.outils.value!==(piece.outils || '') || form.chuteDispo.checked!==!!piece.chuteDispo;
+  }
+
   async function savePiece(id, e) {
     e.preventDefault();
     const f = e.target;
-    if (!window.confirm('Enregistrer ces informations modifie directement l’OF. La validation du chef et le planning publié de cet OF seront retirés : il faudra revalider, recalculer puis publier le planning. Continuer ?')) return;
+    if (!hasUnsavedPiece(f,state.pieces.find(p=>p.id===id))) {showToast('Aucune modification à enregistrer.');return;}
+    if (!await ask('Enregistrer ces informations modifie directement l’OF. La validation du chef et le planning publié de cet OF seront retirés : il faudra revalider, recalculer puis publier le planning. Continuer ?')) return;
     try {
       await api(`/api/pieces/${id}/chef`, 'POST', {
         quantitePrevue: Number(f.quantitePrevue.value) || 1,
@@ -161,7 +171,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
   async function addOperation(pieceId, piece) {
     const form = newOpByPiece[pieceId] || {};
     if (!form.libelle?.trim()) return showToast("Saisissez le libellé de l'opération.", 'err');
-    if (!window.confirm(`Ajouter « ${form.libelle.trim()} » modifie directement la gamme et retire la validation chef et le planning publié de cet OF. Il faudra revalider, recalculer et publier. Continuer ?`)) return;
+    if (!await ask(`Ajouter « ${form.libelle.trim()} » modifie directement la gamme et retire la validation chef et le planning publié de cet OF. Il faudra revalider, recalculer et publier. Continuer ?`)) return;
     try {
       await api(`/api/pieces/${pieceId}/operations`, 'POST', {
         libelle: form.libelle.trim(),
@@ -170,6 +180,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
         dateEnvoi: form.dateEnvoi || '',
         dateRetourPrevue: form.dateRetourPrevue || '',
         machineId: form.machineId || piece.machineId || activeMachines[0]?.id,
+        machineTypeRequis: form.machineTypeRequis || '',
         operateurId: form.operateurId || piece.operateurId || operators[0]?.id,
         tempsReglageMin: Number(form.tempsReglageMin ?? 15),
         tempsUnitaireMin: Number(form.tempsUnitaireMin ?? 0),
@@ -186,7 +197,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
   async function proposeMachine(piece, op) {
     const machineId = machineProposals[op.id];
     if (!machineId || proposalBusy) return;
-    if (!window.confirm(`Préparer un nouveau brouillon pour ${piece.id} · ${op.libelle} ? Il remplacera l’aperçu actuellement ouvert dans Planning, sans modifier la gamme ni publier.`)) return;
+    if (!await ask(`Préparer un nouveau brouillon pour ${piece.id} · ${op.libelle} ? Il remplacera l’aperçu actuellement ouvert dans Planning, sans modifier la gamme ni publier.`)) return;
     setProposalBusy(true);
     try {
       const result = await api('/api/planning/drafts/reassign', 'POST', {operationId:op.id, machineId});
@@ -202,7 +213,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
     if (proposalBusy) return;
     const data = new FormData(e.currentTarget);
     const payload = {operationId:op.id, operateurId:data.get('operateurId'), tempsReglageMin:Number(data.get('tempsReglageMin')), tempsUnitaireMin:Number(data.get('tempsUnitaireMin')), tempsPrevuMin:Number(data.get('tempsPrevuMin'))};
-    if (!window.confirm(`Préparer un brouillon pour ${piece.id} · ${op.libelle} ? L’aperçu ouvert dans Planning sera remplacé. Rien ne sera publié.`)) return;
+    if (!await ask(`Préparer un brouillon pour ${piece.id} · ${op.libelle} ? L’aperçu ouvert dans Planning sera remplacé. Rien ne sera publié.`)) return;
     setProposalBusy(true);
     try {
       const result=await api('/api/planning/drafts/operation','POST',payload);
@@ -217,7 +228,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
     const [field, value] = Object.entries(payload)[0];
     const label = {machineId:'Machine', operateurId:'Opérateur', machineTypeRequis:'Choix machine', tempsReglageMin:'Temps de réglage', tempsUnitaireMin:'Temps unitaire'}[field] || field;
     const describe = v => field === 'machineId' ? (state.machines.find(m => m.id === v)?.nom || v || '—') : field === 'operateurId' ? (state.users.find(u => u.id === v)?.nom || v || '—') : field === 'machineTypeRequis' ? (v ? `Auto · ${v}` : 'Machine imposée') : `${v ?? 0} min`;
-    if (!window.confirm(`${piece?.id || 'OF'} · ${op?.libelle || 'Opération'}\n${label} : ${describe(op?.[field])} → ${describe(value)}\n\nCette modification est immédiate : elle retire la validation chef et le planning publié de cet OF. Revalidez, puis recalculez et publiez le planning pour voir les dates et les autres OF touchés. Continuer ?`)) { if (input) input.value = op?.[field] ?? 0; return; }
+    if (!await ask(`${piece?.id || 'OF'} · ${op?.libelle || 'Opération'}\n${label} : ${describe(op?.[field])} → ${describe(value)}\n\nCette modification est immédiate : elle retire la validation chef et le planning publié de cet OF. Revalidez, puis recalculez et publiez le planning pour voir les dates et les autres OF touchés. Continuer ?`)) { if (input) input.value = op?.[field] ?? 0; return; }
     try {
       await api(`/api/operations/${opId}`, 'PUT', payload);
       showToast('Opération mise à jour.');
@@ -229,7 +240,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
   }
 
   async function completeSubcontract(op, piece) {
-    const raw = window.prompt(`Quantité bonne reçue pour ${op.libelle} ?`, String(piece.quantitePrevue || 1));
+    const raw = await ask(`Quantité bonne reçue pour ${op.libelle} ?`, {title:'Retour de sous-traitance',defaultValue:String(piece.quantitePrevue || 1),confirmLabel:'Enregistrer'});
     if (raw === null) return;
     if (!/^\d+$/.test(raw.trim())) return showToast('Saisissez une quantité entière positive.', 'err');
     try { await api(`/api/operations/${op.id}/finish`, 'POST', {quantiteBonne:Number(raw)}); showToast('Retour de sous-traitance enregistré.'); reload(); }
@@ -239,7 +250,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
   async function deleteOperation(opId) {
     const piece = state.pieces.find(p => (p.operations || []).some(o => o.id === opId));
     const op = piece?.operations.find(o => o.id === opId);
-    if (!window.confirm(`Supprimer « ${op?.libelle || 'cette opération'} » ? La validation chef et le planning publié de cet OF seront retirés. Il faudra revalider, recalculer et publier.`)) return;
+    if (!await ask(`Supprimer « ${op?.libelle || 'cette opération'} » ? La validation chef et le planning publié de cet OF seront retirés. Il faudra revalider, recalculer et publier.`)) return;
     try {
       await api(`/api/operations/${opId}`, 'DELETE');
       showToast('Opération supprimée de la gamme.');
@@ -267,6 +278,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
 
   return (
     <div className="space-y-4">
+      {dialog}
       {toast.text && (
         <div className={`p-3 rounded-[6px] border text-xs font-medium ${
           toast.type === 'err'
@@ -315,7 +327,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
 
       {/* TAB 2: PLANNING & IA */}
       <div className={tab === 'planning' ? 'block' : 'hidden'}>
-        <ChefPlanningTab state={state} reload={reload} showToast={showToast} incomingProposal={planningProposal} />
+        <ChefPlanningTab state={state} reload={reload} showToast={showToast} incomingProposal={planningProposal} ask={ask} />
       </div>
 
       {/* TAB 3: ORDRES & GAMMES MULTI-OPERATIONS (REGLAGE vs USINAGE + SOUS-TRAITANCE) */}
@@ -399,7 +411,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
                           <Clock className="w-3.5 h-3.5 text-[#22D3EE]" /> Dossier
                         </button>
                         {!p.chefValide ? (
-                          <button type="button" onClick={() => validateChefOf(p.id)} className="px-3 py-1.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer">
+                          <button type="button" onClick={e => {if(hasUnsavedPiece(e.currentTarget.closest('form'),p)){showToast('Enregistrez d’abord les modifications de la fiche avant de valider.','err');return;}validateChefOf(p.id)}} className="px-3 py-1.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer">
                             Valider Matière & Distribution
                           </button>
                         ) : (
@@ -415,10 +427,11 @@ export default function ChefView({ state, user, reload, search = '' }) {
                   </form>
 
                   <div className="rounded border border-cyan-500/20 bg-cyan-500/5 p-2 text-[11px] text-slate-300">
-                    Les machines, opérateurs et temps se règlent dans chaque opération ci-dessous. Le changement direct est immédiat ; pour une autre machine de même type, utilisez le brouillon pour voir son impact. La validation chef ne publie pas le planning : préparez et publiez un brouillon dans Planning.
+                    1. Préparez matière et étapes ci-dessous. 2. Validez la préparation. 3. Dans Planning, calculez puis publiez le brouillon. En mode automatique, le moteur choisit la machine selon son type et ses disponibilités.
                     <span className="ml-1 font-medium">{p.planningValide ? 'Planning publié.' : 'Planning non publié ou à republier.'}</span>
                   </div>
-                  {/* GAMME MULTI-OPERATIONS WITH SETUP + UNIT TIME + SUBCONTRACTING */}
+                  <MaterialSummary pieceId={p.id} revision={materialRevision} onOpen={()=>{setMaterialRequest({id:p.id});setTab('matiere')}}/>
+                                    {/* GAMME MULTI-OPERATIONS WITH SETUP + UNIT TIME + SUBCONTRACTING */}
                   <div className="bg-[#0B0F14] border border-[#1E2A38] rounded-[6px] p-3 space-y-2.5">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="font-semibold text-white flex items-center gap-1.5">
@@ -446,23 +459,20 @@ export default function ChefView({ state, user, reload, search = '' }) {
                           {!op.estSousTraitance ? (
                             <>
                               <div className="md:col-span-2">
-                                <select
-                                  aria-label={`Machine actuelle pour ${op.libelle}`}
-                                  value={op.machineId || ''}
-                                  onChange={e => updateOperationField(op.id, { machineId: e.target.value })}
-                                  disabled={p.statut === 'Clôturé' || ['Terminée', 'En cours', 'Panne machine'].includes(op.statut)}
-                                  className="w-full p-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-[11px]"
-                                >
-                                  {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
-                                </select>
+                                <label className="block text-[10px] text-slate-400 mb-1">Choix de la machine</label>
                                 <select aria-label={`Choix machine pour ${op.libelle}`} value={op.machineTypeRequis || ''}
                                   onChange={e => updateOperationField(op.id, {machineTypeRequis:e.target.value})}
                                   disabled={p.statut === 'Clôturé' || ['Terminée', 'En cours', 'Panne machine'].includes(op.statut)}
-                                  className="w-full mt-1 p-1 rounded bg-[#0B0F14] border border-[#1E2A38] text-[11px]">
+                                  className="w-full p-2 rounded bg-[#0B0F14] border border-[#1E2A38] text-[11px]">
                                   <option value="">Machine imposée</option>
-                                  {[...new Set(activeMachines.map(m=>m.type).filter(Boolean))].sort().map(t=><option key={t} value={t}>Auto · {t}</option>)}
+                                  {[...new Set(activeMachines.map(m=>m.type).filter(Boolean))].sort().map(t=><option key={t} value={t}>Automatique · {t}</option>)}
                                 </select>
-                                {op.machineTypeRequis && <p className="text-[10px] text-amber-300">Choix par type seulement : vérifiez les capacités.</p>}
+                                {op.machineTypeRequis ? <p className="mt-1 text-[10px] text-cyan-200">Automatique : le moteur choisit une machine {op.machineTypeRequis}. Affectation actuelle : {state.machines.find(m=>m.id===op.machineId)?.nom || 'à calculer'}.</p> : <label className="block mt-2 text-[10px] text-slate-400">Machine imposée
+                                  <select aria-label={`Machine actuelle pour ${op.libelle}`} value={op.machineId || ''} onChange={e => updateOperationField(op.id, { machineId:e.target.value })} disabled={p.statut === 'Clôturé' || ['Terminée','En cours','Panne machine'].includes(op.statut)} className="w-full mt-1 p-2 rounded bg-[#0B0F14] border border-[#1E2A38] text-[11px]">
+                                    {!activeMachines.some(m=>m.id===op.machineId)&&<option value={op.machineId || ''}>{op.machine || 'Machine indisponible'}</option>}
+                                    {activeMachines.map(m=><option key={m.id} value={m.id}>{m.nom}</option>)}
+                                  </select></label>}
+                                {op.machineTypeRequis && <p className="text-[10px] text-amber-300">Vérifiez capacités et outillage avant publication.</p>}
                                 {op.statut === 'En attente' && p.statut !== 'Clôturé' && (() => {
                                   const current = state.machines.find(m => m.id === op.machineId);
                                   const alternatives = activeMachines.filter(m => m.id !== op.machineId && m.type && m.type === current?.type && !m.enPanne);
@@ -476,7 +486,8 @@ export default function ChefView({ state, user, reload, search = '' }) {
                                 })()}
                               </div>
                               <div className="md:col-span-2">
-                                <select
+                                <label className="block text-[10px] text-slate-400 mb-1">Opérateur</label>
+                                <select aria-label={`Opérateur pour ${op.libelle}`}
                                   value={op.operateurId || ''}
                                   onChange={e => updateOperationField(op.id, { operateurId: e.target.value })}
                                   disabled={p.statut === 'Clôturé' || ['Terminée', 'En cours', 'Panne machine'].includes(op.statut)}
@@ -485,7 +496,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
                                   {operators.map(o => <option key={o.id} value={o.id}>{o.nom}</option>)}
                                 </select>
                               </div>
-                              <div className="md:col-span-3 flex items-center gap-1 text-[10px]">
+                              <div className="md:col-span-3 flex flex-wrap items-center gap-1 text-[10px]"><span className="w-full text-slate-400">Réglage + temps par pièce · réel/prévu</span>
                                 <input
                                   type="number"
                                   min="0"
@@ -572,14 +583,19 @@ export default function ChefView({ state, user, reload, search = '' }) {
 
                           {!newOp.estSousTraitance ? (
                             <>
-                              <select
+                              <label className="sm:col-span-2 text-[10px] text-slate-400">Machine : mode
+                                <select aria-label="Mode machine nouvelle étape" value={newOp.machineTypeRequis || ''} onChange={e=>setNewOpByPiece(prev=>({...prev,[p.id]:{...newOp,machineTypeRequis:e.target.value}}))} className="w-full mt-1 p-1.5 rounded bg-[#111821] border border-[#1E2A38] text-slate-200">
+                                  <option value="">Machine imposée</option>{[...new Set(activeMachines.map(m=>m.type).filter(Boolean))].sort().map(t=><option value={t} key={t}>Automatique · {t}</option>)}
+                                </select>
+                              </label>
+                              {!newOp.machineTypeRequis && <select aria-label="Machine imposée nouvelle étape"
                                 value={newOp.machineId || activeMachines[0]?.id || ''}
                                 onChange={e => setNewOpByPiece(prev => ({ ...prev, [p.id]: { ...newOp, machineId: e.target.value } }))}
                                 className="sm:col-span-2 p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
                               >
                                 {activeMachines.map(m => <option key={m.id} value={m.id}>{m.nom}</option>)}
-                              </select>
-                              <select
+                              </select>}
+                              <select aria-label="Opérateur nouvelle étape"
                                 value={newOp.operateurId || operators[0]?.id || ''}
                                 onChange={e => setNewOpByPiece(prev => ({ ...prev, [p.id]: { ...newOp, operateurId: e.target.value } }))}
                                 className="sm:col-span-2 p-1.5 rounded bg-[#111821] border border-[#1E2A38]"
@@ -589,6 +605,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
                               <input
                                 type="number"
                                 min="0"
+                                aria-label="Réglage nouvelle étape (min)"
                                 placeholder="Régl. (m)"
                                 title="Temps réglage (min)"
                                 value={newOp.tempsReglageMin ?? 15}
@@ -599,6 +616,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
                                 type="number"
                                 min="0"
                                 step="0.5"
+                                aria-label="Temps unitaire nouvelle étape (min par pièce)"
                                 placeholder="m/pc"
                                 title="Temps unitaire par pièce (min)"
                                 value={newOp.tempsUnitaireMin ?? 0}
@@ -734,7 +752,7 @@ export default function ChefView({ state, user, reload, search = '' }) {
 
       {/* TAB 5: MATIERE */}
       <div className={tab === 'matiere' ? 'block' : 'hidden'}>
-        <MaterialCalculator state={state} reload={reload} showToast={showToast} materialRequest={materialRequest} />
+        <MaterialCalculator state={state} reload={reload} showToast={showToast} materialRequest={materialRequest} ask={ask} onSaved={()=>setMaterialRevision(x=>x+1)} />
       </div>
     </div>
   );
