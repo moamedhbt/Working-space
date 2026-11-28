@@ -26,7 +26,14 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   }
   if(viewport.width<768)await page.locator('nav').getByRole('button',{name:'Planning',exact:true}).click();else await page.getByText('Planning & Gantt',{exact:true}).click();
   await page.getByText('Planning des machines',{exact:true}).waitFor();
-  if(viewport.width===1440)await page.locator('aside').getByRole('region',{name:'Copilote atelier'}).waitFor();
+  await page.getByRole('button',{name:/Discuter avec le copilote/}).click();
+  const directorChat=page.getByRole('dialog',{name:'Copilote atelier'});await directorChat.waitFor();
+  let questions=[];await page.route('**/api/planning/copilot',async route=>{questions.push(route.request().postDataJSON());await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({answer:`Conseil ${questions.length}`,proposal:null,model:'test'})})});
+  await directorChat.getByLabel('Votre demande au copilote').fill('Quelles priorités ?');await directorChat.getByRole('button',{name:'Demander'}).click();await directorChat.getByText('Conseil 1').waitFor();
+  await directorChat.getByLabel('Votre demande au copilote').fill('Et après ?');await directorChat.getByRole('button',{name:'Demander'}).click();await directorChat.getByText('Conseil 2').waitFor();
+  if(!questions[1].history.some(x=>x.text==='Conseil 1'))throw Error('Contexte du chat Direction perdu');
+  await directorChat.getByRole('button',{name:'Fermer le copilote'}).click();await page.unroute('**/api/planning/copilot');
+  console.log(`✅ UI directeur ${viewport.width} : discussion accessible et multi-tours`);
   const mutations=[];const navListener=req=>{if(req.url().includes('/api/')&&!['GET','HEAD'].includes(req.method()))mutations.push(`${req.method()} ${req.url()}`)};
   page.on('request',navListener);
   await page.getByRole('button',{name:'Semaine',exact:true}).click();
@@ -179,8 +186,17 @@ for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
   const published=await publishResponse;if(published.status()!==200)throw Error(`Publication UI : ${await published.text()}`);
   console.log('✅ UI chef mobile : planning, confirmation intégrée et publication réelle');
  } catch(e) {failed=true;console.error('❌ UI chef mobile',e.message)} finally {await chefPage.close()}
- const adminPage=await browser.newPage({viewport:{width:1440,height:900}});
- try {await adminPage.goto(`http://127.0.0.1:${port}/`);await adminPage.getByRole('button',{name:'Directeur',exact:true}).click();await adminPage.getByText('Comptes & Audit',{exact:true}).click();await adminPage.getByText('Tokens IA par utilisateur').waitFor();await adminPage.getByLabel('Limite quotidienne Chef Atelier').fill('12345');const row=adminPage.locator('form').filter({has:adminPage.getByLabel('Limite quotidienne Chef Atelier')});const saved=adminPage.waitForResponse(r=>r.url().endsWith('/api/admin/ai-usage/u3/limit'));await row.getByRole('button',{name:'Enregistrer'}).click();if((await saved).status()!==200)throw Error('Limite non enregistrée');console.log('✅ UI directeur : compteur et limite par utilisateur');}catch(e){failed=true;console.error('❌ UI directeur limites',e.message)}finally{await adminPage.close()}
+ for(const viewport of [{width:1440,height:900},{width:390,height:844}]) {
+ const adminPage=await browser.newPage({viewport});
+ try {
+   await adminPage.goto(`http://127.0.0.1:${port}/`);await adminPage.getByRole('button',{name:'Directeur',exact:true}).click();
+   await adminPage.getByRole('button',{name:/Outils du chef d’atelier/}).click();await adminPage.getByRole('region',{name:'Les quatre outils du chef'}).waitFor();
+   await adminPage.reload();await adminPage.getByRole('button',{name:/Consommation & limites IA/}).click();
+   await adminPage.getByText('Tokens IA par utilisateur').waitFor();await adminPage.getByLabel('Limite quotidienne Chef Atelier').fill('12345');
+   const row=adminPage.locator('form').filter({has:adminPage.getByLabel('Limite quotidienne Chef Atelier')});const saved=adminPage.waitForResponse(r=>r.url().endsWith('/api/admin/ai-usage/u3/limit'));await row.getByRole('button',{name:'Enregistrer'}).click();if((await saved).status()!==200)throw Error('Limite non enregistrée');
+   console.log(`✅ UI directeur ${viewport.width} : raccourcis chef et tokens fonctionnels`);
+ }catch(e){failed=true;console.error(`❌ UI directeur ${viewport.width} raccourcis`,e.message)}finally{await adminPage.close()}
+ }
  const opPage=await browser.newPage({viewport:{width:390,height:844}});
  try{await opPage.goto(`http://127.0.0.1:${port}/`);await opPage.getByRole('button',{name:'Opérateur',exact:true}).click();await opPage.getByText('Vérifier le bridage avant démarrage').waitFor();console.log('✅ UI opérateur : consigne reçue');}
  catch(e){failed=true;console.error('❌ UI opérateur consigne',e.message)}finally{await opPage.close()}

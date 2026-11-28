@@ -170,6 +170,7 @@ export default function App() {
     {
       title: 'ADMINISTRATION',
       items: [
+        ['tokens', 'Tokens IA', Cpu],
         ['admin', 'Comptes & Audit', Shield]
       ]
     }
@@ -297,8 +298,8 @@ export default function App() {
             </div>
           )}
           <ViewErrorBoundary key={tab}>
-            {['overview', 'pilotage', 'planning', 'simulator', 'dossiers', 'admin'].includes(tab) && (
-              <DirectionView state={state} user={user} reload={reload} activePanel={tab} search={search} onOpenPlanning={() => setTab('planning')} />
+            {['overview', 'pilotage', 'planning', 'simulator', 'dossiers', 'admin', 'tokens'].includes(tab) && (
+              <DirectionView state={state} user={user} reload={reload} activePanel={tab} search={search} onOpenPlanning={() => setTab('planning')} onOpenTokens={() => setTab('tokens')} onOpenChef={() => setTab('chef')} />
             )}
             {tab === 'chef' && <ChefView state={state} user={user} reload={reload} search={search} />}
             {tab === 'be' && <BeView state={state} user={user} reload={reload} />}

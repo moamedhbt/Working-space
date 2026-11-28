@@ -32,7 +32,7 @@ function nowLinePercent() {
   return Math.max(0, Math.min(100, ((mins - start) / (end - start)) * 100));
 }
 
-export default function DirectionView({ state, user, reload, activePanel = 'overview', search = '', onOpenPlanning }) {
+export default function DirectionView({ state, user, reload, activePanel = 'overview', search = '', onOpenPlanning, onOpenTokens, onOpenChef }) {
   const activeMachines = state.machines.filter(m => m.actif);
   const operators = state.users.filter(u => u.role === 'operateur' && u.actif !== 0);
 
@@ -784,6 +784,11 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
             </div>
           </div>
 
+          <section className="grid grid-cols-1 sm:grid-cols-2 gap-2" aria-label="Accès rapides Direction">
+            <button type="button" onClick={onOpenChef} className="text-left rounded-xl border border-cyan-500/30 bg-[#10242e] px-4 py-3 hover:border-cyan-400"><strong className="block text-sm text-white">Outils du chef d’atelier →</strong><span className="block text-xs text-slate-400 mt-1">Alertes, imprévus, matières et bilan du jour</span></button>
+            <button type="button" onClick={onOpenTokens} className="text-left rounded-xl border border-purple-500/30 bg-[#1c192c] px-4 py-3 hover:border-purple-400"><strong className="block text-sm text-white">Consommation & limites IA →</strong><span className="block text-xs text-slate-400 mt-1">Tokens et limite quotidienne par utilisateur</span></button>
+          </section>
+
           {/* OFS EN ATTENTE DE VALIDATION DIRECTION (CRÉÉS PAR CHEF OU BE) */}
           {state.pieces.filter(p => p.statut === 'À valider').length > 0 && (
             <div className="p-4 rounded-[6px] bg-purple-500/15 border border-purple-500/40 space-y-2.5 text-xs">
@@ -1281,6 +1286,8 @@ export default function DirectionView({ state, user, reload, activePanel = 'over
           })}
         </div>
       )}
+
+      {activePanel === 'tokens' && <AiUsagePanel />}
 
       {/* PANEL 6: ADMIN */}
       {activePanel === 'admin' && (
